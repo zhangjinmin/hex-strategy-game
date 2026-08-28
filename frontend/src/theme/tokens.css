@@ -1,0 +1,254 @@
+/* ================================================
+   Dark Military Command — LOGH 统一设计令牌
+   风格：暗色军事指挥中心 / Art Deco点缀 / 扁平面板
+   ================================================ */
+
+/* ----- 全局基准（暗色默认）----- */
+:root {
+  /* 底色系统 */
+  --dmc-bg-base: #0a0e14;
+  --dmc-bg-panel: #141c26;
+  --dmc-bg-raised: #1a2332;
+  --dmc-bg-input: #0d131c;
+  --dmc-bg-hover: rgba(255, 255, 255, 0.04);
+  --dmc-bg-active: rgba(255, 255, 255, 0.06);
+  --dmc-bg-overlay: rgba(0, 0, 0, 0.7);
+
+  /* 文字 */
+  --dmc-text-primary: #dfe3e8;
+  --dmc-text-secondary: #8895a7;
+  --dmc-text-muted: #556070;
+  --dmc-text-inverse: #0a0e14;
+
+  /* 边框 */
+  --dmc-border: 1px solid rgba(255, 255, 255, 0.06);
+  --dmc-border-active: 1px solid rgba(255, 255, 255, 0.12);
+  --dmc-border-accent: 1px solid var(--dmc-gold);
+
+  /* 阵营色 */
+  --dmc-empire: #c0392b;
+  --dmc-empire-bright: #e74c3c;
+  --dmc-empire-dim: rgba(192, 57, 43, 0.15);
+  --dmc-alliance: #2471a3;
+  --dmc-alliance-bright: #3498db;
+  --dmc-alliance-dim: rgba(36, 113, 163, 0.15);
+
+  /* 功能色 */
+  --dmc-gold: #c9a96e;
+  --dmc-gold-dim: rgba(201, 169, 110, 0.15);
+  --dmc-success: #27ae60;
+  --dmc-warning: #f39c12;
+  --dmc-danger: #e74c3c;
+  --dmc-info: #3498db;
+
+  /* 字体 */
+  --dmc-font: 'Inter', 'Noto Sans SC', system-ui, -apple-system, sans-serif;
+  --dmc-font-mono: 'JetBrains Mono', 'Cascadia Code', monospace;
+
+  /* 间距（4px基准） */
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px;
+  --sp-4: 16px; --sp-5: 20px; --sp-6: 24px;
+  --sp-8: 32px; --sp-10: 40px;
+
+  /* 圆角 */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* 动画 */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+
+  /* ---------- 向后兼容别名 ---------- */
+  --color-background-body: var(--dmc-bg-base);
+  --color-background-surface: var(--dmc-bg-panel);
+  --color-background-card: var(--dmc-bg-raised);
+  --color-background-popover: var(--dmc-bg-raised);
+  --color-background-muted: rgba(20, 28, 38, 0.5);
+  --color-background-inverted: #dfe3e8;
+  --color-text-primary: var(--dmc-text-primary);
+  --color-text-secondary: var(--dmc-text-secondary);
+  --color-text-disabled: var(--dmc-text-muted);
+  --color-text-on-inverted: var(--dmc-text-inverse);
+  --color-border: rgba(255, 255, 255, 0.06);
+  --color-border-emphasized: rgba(255, 255, 255, 0.12);
+  --color-accent: var(--dmc-text-primary);
+  --color-accent-muted: rgba(223, 227, 232, 0.14);
+  --color-on-accent: var(--dmc-text-inverse);
+  --color-brand: var(--dmc-info);
+  --color-success: var(--dmc-success);
+  --color-success-muted: rgba(39, 174, 96, 0.15);
+  --color-warning: var(--dmc-warning);
+  --color-warning-muted: rgba(243, 156, 18, 0.15);
+  --color-error: var(--dmc-danger);
+  --color-error-muted: rgba(231, 76, 60, 0.15);
+  --color-overlay: rgba(0, 0, 0, 0.7);
+  --color-overlay-hover: var(--dmc-bg-hover);
+  --color-overlay-pressed: var(--dmc-bg-active);
+  --color-shadow: rgba(0, 0, 0, 0.4);
+  --color-skeleton: var(--dmc-text-muted);
+  --color-track: var(--dmc-text-muted);
+  --color-blue: var(--dmc-info);
+  --color-blue-muted: var(--dmc-alliance-dim);
+  --color-cyan: var(--dmc-info);
+  --color-cyan-muted: var(--dmc-alliance-dim);
+  --color-green: var(--dmc-success);
+  --color-green-muted: rgba(39, 174, 96, 0.15);
+  --color-orange: var(--dmc-warning);
+  --color-orange-muted: rgba(243, 156, 18, 0.15);
+  --color-red: var(--dmc-empire-bright);
+  --color-red-muted: var(--dmc-empire-dim);
+  --color-purple: #8e44ad;
+  --color-purple-muted: rgba(142, 68, 173, 0.15);
+
+  /* 阵营别名 */
+  --color-alliance: var(--dmc-alliance-bright);
+  --color-alliance-dim: var(--dmc-alliance-dim);
+  --color-empire: var(--dmc-empire-bright);
+  --color-empire-dim: var(--dmc-empire-dim);
+  --color-neutral-gold: var(--dmc-gold);
+
+  /* 面板别名 */
+  --neo-surface: var(--dmc-bg-panel);
+  --neo-surface-raised: var(--dmc-bg-raised);
+  --neo-surface-inset: var(--dmc-bg-input);
+  --neo-body: var(--dmc-bg-base);
+  --overlay-surface: rgba(20, 28, 38, 0.95);
+  --overlay-border: rgba(255, 255, 255, 0.08);
+  --overlay-border-strong: rgba(255, 255, 255, 0.14);
+  --overlay-scrim: rgba(0, 0, 0, 0.85);
+  --overlay-hover: var(--dmc-bg-hover);
+
+  /* 阵营色 navbar */
+  --nav-empire-bg: rgba(192, 57, 43, 0.12);
+  --nav-empire-border: var(--dmc-empire-bright);
+  --nav-alliance-bg: rgba(36, 113, 163, 0.12);
+  --nav-alliance-border: var(--dmc-alliance-bright);
+
+  /* 间距/半径/字体 */
+  --spacing-1: var(--sp-1);
+  --spacing-2: var(--sp-2);
+  --spacing-3: var(--sp-3);
+  --spacing-4: var(--sp-4);
+  --spacing-5: var(--sp-5);
+  --spacing-6: var(--sp-6);
+  --spacing-8: var(--sp-8);
+  --spacing-10: var(--sp-10);
+  --radius-element: var(--radius-md);
+  --radius-container: var(--radius-lg);
+  --radius-page: var(--radius-lg);
+  --font-family: var(--dmc-font);
+  --shadow-low: none;
+  --shadow-med: 0 4px 16px rgba(0, 0, 0, 0.3);
+  --shadow-high: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+/* ========== 全局基础 ========== */
+
+body {
+  background: var(--dmc-bg-base);
+  color: var(--dmc-text-primary);
+  font-family: var(--dmc-font);
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ========== 扁平面板风格（替代拟态） ========== */
+
+.neo-card {
+  background: var(--dmc-bg-panel);
+  border: var(--dmc-border);
+  border-radius: var(--radius-md);
+}
+
+.neo-card.active {
+  border-color: var(--dmc-info);
+  background: rgba(52, 152, 219, 0.08);
+}
+
+.neo-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--dmc-bg-raised);
+  border: var(--dmc-border);
+  border-radius: var(--radius-sm);
+  color: var(--dmc-text-secondary);
+  font-weight: 600; font-size: 13px;
+  cursor: pointer; padding: 6px 14px;
+  transition: all var(--duration-fast) var(--ease-out);
+  user-select: none;
+}
+.neo-btn:hover:not(:disabled) {
+  background: var(--dmc-bg-hover);
+  color: var(--dmc-text-primary);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+.neo-btn:active:not(:disabled),
+.neo-btn.active {
+  background: rgba(52, 152, 219, 0.1);
+  border-color: var(--dmc-info);
+  color: var(--dmc-info);
+}
+.neo-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.neo-btn.outline {
+  background: transparent;
+  border: var(--dmc-border);
+}
+
+.neo-btn.btn-sm { padding: 3px 10px; font-size: 12px; }
+.neo-btn.btn-xs { padding: 2px 6px; font-size: 11px; }
+.neo-btn.btn-confirm {
+  background: rgba(39, 174, 96, 0.12);
+  border-color: rgba(39, 174, 96, 0.3);
+  color: var(--dmc-success);
+}
+.neo-btn.abort-btn {
+  background: transparent;
+  border: none;
+  color: var(--dmc-text-muted);
+  padding: 4px 8px; font-size: 16px;
+}
+.neo-btn.abort-btn:hover {
+  color: var(--dmc-danger);
+  background: rgba(231, 76, 60, 0.1);
+}
+
+.neo-inset {
+  background: var(--dmc-bg-input);
+  border: var(--dmc-border);
+  border-radius: var(--radius-sm);
+}
+
+/* ========== 工具类 ========== */
+
+.text-cyan { color: var(--dmc-info); }
+.text-gold { color: var(--dmc-gold); }
+.text-emerald { color: var(--dmc-success); }
+.text-red { color: var(--dmc-danger); }
+.text-amber { color: var(--dmc-warning); }
+.text-player { color: var(--dmc-info); }
+.text-ally { color: var(--dmc-alliance-bright); }
+.text-slate-400 { color: var(--dmc-text-secondary); }
+.text-slate-500 { color: var(--dmc-text-muted); }
+.text-amber { color: var(--dmc-warning); }
+.text-gray { color: var(--dmc-text-muted); }
+
+.global-toast {
+  position: fixed; top: 72px; left: 50%; transform: translateX(-50%);
+  background: var(--dmc-bg-raised);
+  color: var(--dmc-success);
+  padding: 12px 24px; border-radius: 99px;
+  font-weight: 600; font-size: 14px; z-index: 9999;
+  border: var(--dmc-border);
+  box-shadow: var(--shadow-med);
+  animation: slideDown 0.4s var(--ease-out);
+}
+
+@keyframes slideDown {
+  from { top: 0; opacity: 0; transform: translateX(-50%) scale(0.95); }
+  to { top: 40px; opacity: 1; transform: translateX(-50%) scale(1); }
+}
+
+/* 说明：已移除明暗模式（用户需求），统一保留暗色+阵营配色方案 */
+

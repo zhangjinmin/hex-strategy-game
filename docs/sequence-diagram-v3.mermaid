@@ -1,0 +1,183 @@
+%% ===== 时序图 1: 军议瘦身后提案生成→表决→执行流程 =====
+sequenceDiagram
+    participant GS as gameStore
+    participant PE as proposalEngine
+    participant RC as roleConfig
+    participant CP as CouncilPanel.vue
+    participant AS as adminStore
+
+    Note over GS: 每月1号 strategicTick 触发
+    GS->>PE: generateMonthlyProposals(ctx)
+    Note over PE: 只从7种 ProposalType 中生成<br/>（删除了 logistics 提案生成逻辑）
+    PE-->>GS: proposals[] (3-5条，类型∈7种)
+    GS->>GS: pendingProposals.push(...proposals)
+    GS->>GS: councilPendingCount = pendingProposals.length
+
+    Note over CP: 玩家打开军议面板
+    CP->>GS: 读取 pendingProposals
+    CP->>CP: 渲染7种类型的提案卡片
+
+    Note over CP: 玩家点击提案→确认→表决
+    CP->>GS: resolveProposal(proposalIdx)
+    GS->>GS: submitProposal(type, targetNodeId)
+    GS->>RC: canPropose(admiral, type)
+    RC-->>GS: true/false
+    alt 无权限
+        GS-->>CP: toast「职级不足」
+    else 有权限
+        GS->>GS: 计算 support/oppose 权重
+        alt 通过 (support > oppose && !vetoed)
+            GS->>PE: executeProposalEffect(proposal, ctx)
+            Note over PE: switch 7种 case 执行效果<br/>invasion/defense/budget/personnel/<br/>conscription/morale_boost/fortify
+            PE->>AS: 修改 adminState buff 字段
+            PE->>GS: 修改 fleet/node 状态
+            PE-->>GS: 完成
+            GS->>GS: councilHistory.push(proposal)
+            GS-->>CP: toast「提案通过」
+        else 否决
+            GS->>PE: executeProposalRejection(proposal, ctx)
+            Note over PE: 仅 budget/morale_boost/invasion 有后果
+            PE-->>GS: 完成
+            GS-->>CP: toast「提案被否决」
+        end
+    end
+    GS->>GS: pendingProposals.splice(idx, 1)
+    GS->>GS: councilPendingCount--
+
+%% ===== 时序图 2: 行政院外交/情报 tab 操作流程（含权限校验+二次确认）=====
+sequenceDiagram
+    participant AP as AdminPanel.vue
+    participant AS as adminStore
+    participant RC as roleConfig
+    participant GS as gameStore
+    participant CD as ConfirmDialog.vue
+
+    Note over AP: 玩家在外交 tab 点击「外交施压」
+    AP->>RC: ROLE_ADMIN_PERMISSIONS[playerRole].includes('diplomat_op')
+    alt 无权限
+        AP-->>AP: button disabled + tooltip
+    else 有权限
+        AP->>AP: 检查国库 ≥ ₮500
+        alt 国库不足
+            AP-->>AP: toast「国库不足」
+        else 国库充足
+            Note over AP: ₮500 < ₮2000，无需二次确认
+            AP->>AS: executeDiplomatPressure(targetFactionId)
+            AS->>AS: relations[target] += 20
+            AS->>GS: metaGold -= 500
+            AS-->>AP: { success: true, message: '外交施压成功，关系+20' }
+            AP-->>AP: toast 反馈
+        end
+    end
+
+    Note over AP: 玩家在情报 tab 点击「情报行动」
+    AP->>RC: ROLE_ADMIN_PERMISSIONS[playerRole].includes('intel_op')
+    alt 无权限
+        AP-->>AP: button disabled
+    else 有权限
+        AP->>AP: 检查国库 ≥ ₮1000
+        alt 国库不足
+            AP-->>AP: toast「国库不足」
+        else 国库充足
+            Note over AP: ₮1000 < ₮2000，无需二次确认
+            AP->>AS: executeIntelAction()
+            AS->>AS: intelligence.intelOpBuffDays = 15
+            AS->>GS: metaGold -= 1000
+            AS-->>AP: { success: true }
+            AP-->>AP: toast 反馈
+        end
+    end
+
+    Note over AP: 玩家在财政 tab 点击「后勤改革」(₮2000)
+    AP->>RC: ROLE_ADMIN_PERMISSIONS[playerRole].includes('logistics')
+    alt 有权限 && 国库 ≥ ₮2000
+        Note over AP: ₮2000 ≥ ₮2000，需二次确认
+        AP->>GS: requestConfirm('后勤改革', '消耗₮2000，补给消耗-30%（30天）', 2000, callback)
+        GS->>GS: pendingConfirm = { ... }
+        CD->>CD: 渲染确认弹窗
+        alt 玩家点击确认
+            CD->>GS: resolveConfirm(true)
+            GS->>GS: 执行 onConfirm callback
+            GS->>AS: executeLogisticsReform()
+            AS->>AS: 所有舰队 logisticsBuffDays = 30
+            AS->>GS: metaGold -= 2000
+            AS-->>AP: toast「后勤改革完成」
+        else 玩家点击取消
+            CD->>GS: resolveConfirm(false)
+            GS-->>AP: 不执行
+        end
+    end
+
+%% ===== 时序图 3: 星球右键本地化操作流程（友方7项/敌方3项）=====
+sequenceDiagram
+    participant SS as StrategicScene
+    participant GS as gameStore
+    participant AS as adminStore
+    participant RC as roleConfig
+    participant CD as ConfirmDialog.vue
+
+    Note over SS: 玩家右键点击友方星球
+    SS->>SS: showContextMenu(wx, wy, nodeData)
+    SS->>SS: isFriendly = nodeOwnerFactionId === playerFactionId
+    alt 友方节点
+        SS->>SS: showLocalOpPanel(wx, wy, nodeData)
+        Note over SS: 绘制 Phaser Container<br/>7项操作 + 底部"驻守"
+        SS->>AS: canLocalOp(admiral, nodeId, opType) × 7
+        SS->>AS: isLocalOpCoolingDown(nodeId, opType) × 7
+        Note over SS: 无权/冷却中/国库不足 → 灰色禁用
+
+        Note over SS: 玩家点击「征收特别税」(L1, 无消耗, 10天冷却)
+        SS->>AS: executeLocalOp(nodeId, 'special_tax')
+        AS->>AS: 检查冷却 key = `${nodeId}_special_tax`
+        AS->>AS: metaGold += 500
+        AS->>AS: node.security -= 5
+        AS->>AS: localCooldowns[key] = 10
+        AS-->>SS: { success: true, message: '征收特别税+₮500' }
+        SS->>GS: triggerToast(message)
+        SS->>SS: hideLocalOpPanel()
+
+        Note over SS: 玩家点击「要塞化」(L4, ₮4000, ≥₮2000需确认)
+        SS->>GS: requestConfirm('要塞化', '消耗₮4000，防御HP+50%（永久）', 4000, callback)
+        CD->>CD: 渲染确认弹窗
+        alt 确认
+            CD->>GS: resolveConfirm(true)
+            GS->>AS: executeLocalOp(nodeId, 'fortify_local')
+            AS->>AS: node.defenseHp = floor(defenseHp × 1.5)
+            AS->>AS: node.maxDefenseHp = floor(maxDefenseHp × 1.5)
+            AS->>AS: node.defenseTurrets += 10
+            AS->>AS: node.fortified = true
+            AS->>GS: metaGold -= 4000
+            AS-->>SS: toast「要塞化完成」
+        end
+    else 敌方/中立节点
+        SS->>SS: showEnemyOpPanel(wx, wy, nodeData)
+        Note over SS: 绘制 Phaser Container<br/>3项操作 + 底部"出击"(敌方)
+
+        Note over SS: 玩家点击「侦察」(E1, ₮200)
+        SS->>AS: executeEnemyOp(nodeId, 'recon')
+        AS->>AS: 检查国库 ≥ ₮200
+        AS->>AS: node.revealedUntil = next结算日
+        AS->>GS: metaGold -= 200
+        AS-->>SS: { success: true, message: '侦察成功，舰队信息已揭露' }
+        SS->>GS: triggerToast(message)
+
+        Note over SS: 玩家点击「策反」(E3, ₮1500, 需情报≥detailed, 30天冷却)
+        SS->>AS: executeEnemyOp(nodeId, 'subvert')
+        AS->>AS: 检查情报等级 ≥ detailed (Lv.3)
+        AS->>AS: 检查冷却 key = `${nodeId}_subvert`
+        AS->>AS: 检查目标节点是否有驻守提督
+        alt 无驻守提督
+            AS-->>SS: { success: false, message: '该节点无驻军指挥官，无法策反' }
+        else 有驻守提督
+            AS->>AS: 40% 失败概率
+            alt 成功
+                AS->>AS: admiral.loyalty -= random(20, 40)
+                AS-->>SS: { success: true, message: '策反成功，守军忠诚-30' }
+            else 失败
+                AS->>AS: 己方情报等级 -1
+                AS-->>SS: { success: false, message: '策反失败，情报等级下降' }
+            end
+            AS->>AS: localCooldowns[key] = 30
+            AS->>GS: metaGold -= 1500
+        end
+    end

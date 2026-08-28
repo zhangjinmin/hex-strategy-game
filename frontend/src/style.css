@@ -1,0 +1,31 @@
+html {
+    background-color: var(--color-background-body);
+    text-align: center;
+    color: var(--color-text-primary);
+    transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+body {
+    margin: 0;
+    color: var(--color-text-primary);
+    font-family: var(--font-family);
+}
+
+/* 全局主题切换过渡：让所有使用 var() 的属性平滑变化 */
+body, .neo-card, .neo-btn, .neo-inset, .modal-content, .selection-modal,
+.title-screen, .main-menu-container, .strategic-screen, .menu-sidebar {
+    transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+}
+
+@font-face {
+    font-family: "Nunito";
+    font-style: normal;
+    font-weight: 400;
+    src: local(""),
+    url("assets/fonts/nunito-v16-latin-regular.woff2") format("woff2");
+}
+
+#app {
+    height: 100vh;
+    text-align: center;
+}

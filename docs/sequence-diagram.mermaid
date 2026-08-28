@@ -1,0 +1,109 @@
+%% 军议提案提交 + 效果执行 + 月度生成 时序图
+sequenceDiagram
+    autonumber
+    participant ST as strategicTick<br/>(gameStore)
+    participant GS as gameStore
+    participant PE as proposalEngine
+    participant AS as adminStore
+    participant CP as CouncilPanel.vue
+    participant NS as nodeStore
+
+    Note over ST,NS: === 每月1号：自动提案生成 ===
+
+    ST->>ST: universeDate.endsWith('.01')
+    ST->>PE: generateMonthlyProposals(context)
+    PE->>PE: analyzeStrategicContext(playerFactionId)
+    Note right of PE: 读取: atWar, treasury,<br/>avgMorale, avgSupplyDistance
+    PE->>PE: 智能选择 3-5 条提案
+    PE-->>GS: 返回 Proposal[]
+    GS->>GS: pendingProposals.push(...proposals)
+    GS->>GS: councilPendingCount = pendingProposals.length
+    Note right of GS: 红点数字更新<br/>不暂停游戏，不弹窗
+
+    Note over ST,NS: === 玩家主动打开军议面板 ===
+
+    CP->>GS: showCouncilPanel = true
+    Note right of CP: 侧滑面板展开<br/>战略时钟继续运行
+    CP->>GS: 读取 pendingProposals, councilHistory
+    GS-->>CP: 返回提案列表
+    CP->>CP: 渲染待处理提案卡片 + 历史决议
+
+    Note over ST,NS: === 玩家投票处理提案 ===
+
+    CP->>CP: 点击提案卡片 → 弹出详情确认卡
+    CP->>CP: 显示效果/风险/权限
+    CP->>CP: 玩家确认投票
+
+    CP->>GS: submitProposal(type, targetNodeId?)
+    GS->>GS: 权限校验: ROLE_PERMISSIONS_V2[role].includes(type)
+    alt 权限不足
+        GS-->>CP: 返回 false
+        GS->>GS: triggerToast('职级不足，无权执行此操作')
+    else 权限通过
+        GS->>GS: calculateAIVote() 遍历阵营提督投票
+        GS->>GS: 统计 supportWeight vs opposeWeight
+        alt 提案通过 (support > oppose)
+            GS->>PE: executeProposalEffect(proposal, context)
+            PE->>AS: applyFactionBuff / applyNodeBuff
+            PE->>GS: 修改 metaGold / tacticalMerit
+            PE->>NS: 修改 StarNode.defenseHp / security
+            PE->>GS: 修改 fleet.morale / composition
+            PE-->>GS: 效果执行完成
+            GS->>GS: activeProposals.unshift(approved proposal)
+            GS->>GS: councilHistory.unshift(proposal) 保留20条
+            GS-->>CP: 返回 true
+            CP->>CP: 提案从待处理移至历史决议
+            GS->>GS: triggerToast('表决通过：...')
+        else 提案否决 (oppose >= support)
+            GS->>PE: executeProposalRejection(proposal, context)
+            Note right of PE: 仅 budget/morale_boost/conscription<br/>有否决后果
+            alt budget 被否决
+                PE->>GS: metaGold -= maintenance
+                alt 国库 < 0
+                    PE->>GS: fleet.morale -= 5/日
+                end
+            else morale_boost 被否决且 avgMorale < 40
+                PE->>GS: 2支随机舰队 morale -= 20
+                PE->>GS: triggerToast('军心涣散！')
+            end
+            PE-->>GS: 否决后果执行完成
+            GS->>GS: activeProposals.unshift(rejected proposal)
+            GS->>GS: councilHistory.unshift(proposal)
+            GS-->>CP: 返回 false
+            CP->>CP: 提案从待处理移至历史决议
+        end
+    end
+
+    Note over ST,NS: === 每日行政结算（strategicTick 内） ===
+
+    ST->>ST: internalTickCounter >= TICKS_PER_DAY
+    ST->>ST: advanceUniverseDate()
+    ST->>AS: processDailyFinance()
+    AS->>NS: 读取己方节点 economy/security
+    AS->>GS: 读取 strategicFleets 计算维护费
+    AS->>AS: metaGold += income - maintenance
+    alt 国库赤字
+        AS->>GS: fleet.morale -= 3, supply -= 2
+        AS->>GS: triggerToast('国库赤字！')
+    end
+    ST->>AS: processDailyPersonnel()
+    AS->>GS: 读取阵营提督列表
+    loop 每名提督
+        AS->>AS: loyalty -= 0.5 (基础衰减)
+        AS->>AS: 标签修正: righteous+0.3, opportunist-0.2
+        AS->>AS: calculateRoleEfficiency(adm) 更新效率
+        alt ambition_faction && loyalty < 30
+            AS->>AS: triggerMutinyEvent(adm)
+            AS->>GS: fleet.factionId = 敌方, parentCommanderId = null
+        end
+    end
+    ST->>AS: processDailyTechnology()
+    AS->>AS: researchProgress[focus] += researchSpeed × efficiency
+    alt progress >= 100
+        AS->>AS: level++, progress=0
+        AS->>GS: triggerToast('科技突破！')
+    end
+    ST->>AS: processDailyWelfare()
+    AS->>NS: 读取节点 security/development
+    AS->>NS: 治安+0.5/日 (防卫司令官辖区+1.5)
+    AS->>AS: 计算 avgSecurity, unrestRisk

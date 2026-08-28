@@ -1,0 +1,16 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "LOGH-Strategye",
+  "outputfilename": "LOGH-Strategy",
+  "frontend:install": "npm install",
+  "frontend:build": "npm run build",
+  "frontend:dev:watcher": "npm run dev",
+  "frontend:dev:serverUrl": "auto",
+  "productVersion": "0.1.0",
+  "author": {
+    "name": "JM@IN",
+    "email": "damocles@sina.com"
+  },
+  "icon": "assets/icon.ico"
+
+}

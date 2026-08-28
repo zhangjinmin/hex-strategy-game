@@ -1,0 +1,298 @@
+classDiagram
+    direction TB
+
+    %% ===== 类型定义 =====
+    class ProposalType {
+        <<union type>>
+        invasion
+        defense
+        budget
+        personnel
+        tax
+        conscription
+        logistics
+        tech_mobilize
+        intel_op
+        diplomat_op
+        morale_boost
+        fortify
+    }
+
+    class AdminState {
+        +FinanceState finance
+        +PersonnelState personnel
+        +TechnologyState technology
+        +WelfareState welfare
+        +DiplomacyState diplomacy
+        +IntelligenceState intelligence
+    }
+
+    class FinanceState {
+        +number treasury
+        +number baseTaxRate
+        +number warTaxRate
+        +number fleetMaintenanceCost
+        +number monthlyIncome
+        +number monthlyExpense
+    }
+
+    class PersonnelState {
+        +AppointmentRecord[] appointments
+        +Record~number, number~ loyaltyModifiers
+    }
+
+    class AppointmentRecord {
+        +number admiralId
+        +NationalRole role
+        +string appointedDate
+        +number efficiency
+    }
+
+    class TechnologyState {
+        +number weaponLevel
+        +number armorLevel
+        +number engineLevel
+        +number electronicLevel
+        +Record~TechField, number~ researchProgress
+        +number researchSpeed
+        +TechField researchFocus
+        +number techMobilizeBuffDays
+    }
+
+    class WelfareState {
+        +number avgSecurity
+        +number avgDevelopment
+        +number unrestRisk
+    }
+
+    class DiplomacyState {
+        +Record~number, number~ relations
+        +Treaty[] treaties
+    }
+
+    class IntelligenceState {
+        +Record~number, IntelLevel~ intelLevel
+        +number[] revealedFleets
+        +number intelOpBuffDays
+    }
+
+    class Treaty {
+        +number targetFactionId
+        +string type
+        +string expiryDate
+    }
+
+    class Proposal {
+        +number id
+        +number proposerId
+        +number factionId
+        +ProposalType type
+        +number targetNodeId
+        +number targetAdmiralId
+        +number targetFactionId
+        +number budgetAmount
+        +number supportWeight
+        +number opposeWeight
+        +ProposalStatus status
+        +string createdAt
+        +string generatedDate
+        +string resolvedDate
+        +number duration
+        +string rejectionEffect
+        +string risk
+        +NationalRole[] requiredRoles
+    }
+
+    AdminState --> FinanceState
+    AdminState --> PersonnelState
+    AdminState --> TechnologyState
+    AdminState --> WelfareState
+    AdminState --> DiplomacyState
+    AdminState --> IntelligenceState
+    PersonnelState --> AppointmentRecord
+    DiplomacyState --> Treaty
+
+    %% ===== 配置层 =====
+    class RoleConfig {
+        <<config/roleConfig.ts>>
+        +ROLE_PERMISSIONS_V2: Record~NationalRole, ProposalType[]~
+        +ROLE_FLEET_AUTHORITY: Record~NationalRole, string~
+        +canCommandFleet(admiral, fleet) boolean
+        +calculateRoleEfficiency(admiral) number
+    }
+
+    class FleetAssignment {
+        <<config/fleetAssignment.ts>>
+        +REINHARD_FLEET_COMMANDERS: Set~number~
+        +MUECKENBERGER_FLEET_COMMANDERS: Set~number~
+        +ALLIANCE_FLEET_COMMANDERS: Set~number~
+        +assignFleetByNovel(admirals, fleets) void
+    }
+
+    class TagConfig {
+        <<config/tagConfig.ts>>
+        +POLITICAL_VOTE_COEFFICIENTS: Record~PoliticalTag, Record~ProposalType, number~~
+        +ROLE_VOTE_INFLUENCE: Record~string, Partial~Record~ProposalType, number~~~
+        +ROLE_FITNESS_MAP: Record~AbilityTag, NationalRole[]~
+    }
+
+    %% ===== 提案引擎 =====
+    class ProposalEngine {
+        <<utils/proposalEngine.ts>>
+        +PROPOSAL_DEFINITIONS: Record~ProposalType, ProposalDef~
+        +executeProposalEffect(proposal, context) void
+        +executeProposalRejection(proposal, context) void
+        +generateMonthlyProposals(context) Proposal[]
+        -applyFactionBuff(factionId, type, value, days) void
+        -applyFactionMoraleBuff(factionId, value) void
+        -applyNodeBuff(nodeId, type, value, days) void
+        -replenishFleetComposition(factionId, ratio) void
+        -analyzeStrategicContext(factionId) StrategicContext
+    }
+
+    class ProposalDef {
+        +ProposalType type
+        +string name
+        +string description
+        +string effect
+        +string rejectionEffect
+        +string risk
+        +NationalRole[] requiredRoles
+        +number cost
+        +number duration
+        +boolean requiresTargetNode
+        +boolean requiresTargetFaction
+    }
+
+    ProposalEngine --> ProposalDef : PROPOSAL_DEFINITIONS
+    ProposalEngine ..> Proposal : creates
+    ProposalEngine ..> AdminState : modifies via context
+
+    %% ===== Store 层 =====
+    class GameStore {
+        <<store/gameStore.ts>>
+        -pendingProposals: Ref~Proposal[]~
+        -councilPendingCount: Ref~number~
+        -councilHistory: Ref~Proposal[]~
+        -showCouncilPanel: Ref~boolean~
+        -showAdminPanel: Ref~boolean~
+        +initFleetAssignment(admirals, fleets) void
+        +submitProposal(type, targetNodeId?) boolean
+        +strategicTick() void
+        +generateMonthlyProposals() void
+        +evaluateRandomEvents() void
+    }
+
+    class AdminStore {
+        <<store/adminStore.ts>>
+        +adminState: Ref~AdminState~
+        +initAdminState(factionId) void
+        +processDailyFinance() void
+        +processDailyPersonnel() void
+        +processDailyTechnology() void
+        +processDailyWelfare() void
+        +setTaxRate(rate) void
+        +toggleWarTax() void
+        +appointAdmiral(admiralId, role) void
+        +setResearchFocus(field) void
+    }
+
+    class NodeStore {
+        <<store/nodeStore.ts>>
+        +processDailyEconomy() TaxResult
+        +processDailyNodeRecovery(factionId) void
+        +captureNode(nodeId, factionId) void
+    }
+
+    GameStore ..> ProposalEngine : calls executeProposalEffect
+    GameStore ..> FleetAssignment : calls assignFleetByNovel
+    GameStore ..> RoleConfig : calls ROLE_PERMISSIONS_V2
+    GameStore ..> AdminStore : calls processDaily*
+    AdminStore ..> GameStore : reads strategicFleets, metaGold
+    AdminStore ..> NodeStore : reads node economy/security
+    AdminStore ..> RoleConfig : calls calculateRoleEfficiency
+    AdminStore --> AdminState : manages
+
+    %% ===== UI 层 =====
+    class CouncilPanel {
+        <<components/meta/CouncilPanel.vue>>
+        -showCouncilPanel: boolean
+        -selectedProposal: Proposal
+        +handleProposalVote(type) void
+        +closePanel() void
+    }
+
+    class AdminPanel {
+        <<components/meta/AdminPanel.vue>>
+        -showAdminPanel: boolean
+        -activeTab: string
+        +handleTaxRateChange(rate) void
+        +handleWarTaxToggle() void
+        +handleAppointment(admiralId, role) void
+        +handleResearchFocus(field) void
+    }
+
+    class StrategicScreen {
+        <<components/meta/StrategicScreen.vue>>
+        -councilPendingCount: number
+        +toggleCouncilPanel() void
+        +toggleAdminPanel() void
+    }
+
+    CouncilPanel ..> GameStore : reads pendingProposals, councilHistory
+    CouncilPanel ..> GameStore : calls submitProposal
+    CouncilPanel ..> ProposalEngine : reads PROPOSAL_DEFINITIONS
+    AdminPanel ..> AdminStore : reads adminState
+    AdminPanel ..> AdminStore : calls setTaxRate, appointAdmiral
+    AdminPanel ..> RoleConfig : checks ROLE_PERMISSIONS_V2
+    StrategicScreen ..> GameStore : reads councilPendingCount
+    StrategicScreen ..> GameStore : sets showCouncilPanel, showAdminPanel
+
+    %% ===== 核心数据模型 =====
+    class BaseAdmiral {
+        +number id
+        +string name
+        +string faction
+        +NationalRole role
+        +AdmiralTag[] tags
+        +number loyalty
+        +number assignedNodeId
+        +number currentNodeId
+        +number assignedFleetId
+    }
+
+    class StrategicFleet {
+        +number id
+        +number factionId
+        +number commanderId
+        +number currentNodeId
+        +FleetStatus status
+        +FleetComposition composition
+        +number morale
+        +number supply
+        +number parentCommanderId
+        +number fleetNumber
+    }
+
+    class StarNode {
+        +number id
+        +string name
+        +string type
+        +number ownerFactionId
+        +number defenseHp
+        +number maxDefenseHp
+        +number security
+        +number economy
+        +number shipyardLevel
+        +number defenseTurrets
+    }
+
+    RoleConfig ..> BaseAdmiral : canCommandFleet param
+    RoleConfig ..> StrategicFleet : canCommandFleet param
+    FleetAssignment ..> BaseAdmiral : assignFleetByNovel param
+    FleetAssignment ..> StrategicFleet : assignFleetByNovel param
+    AdminStore ..> BaseAdmiral : processDailyPersonnel iterates
+    AdminStore ..> StrategicFleet : processDailyFinance reads
+    AdminStore ..> StarNode : processDailyWelfare reads
+    GameStore --> StrategicFleet : manages
+    GameStore --> StarNode : via nodeStore

@@ -1,0 +1,2409 @@
+import * as Phaser from 'phaser';
+import { useGameStore } from '../../store/gameStore';
+import { useAdminStore } from '../../store/adminStore';
+import allianceShip2Url from '../../assets/ship/alliance_ship_2.png';
+import empireShip2Url from '../../assets/ship/empire_ship_2.png';
+
+/**
+ * 自动扫描 assets/planet/ 下所有 .png 文件，提取星球 ID。
+ * 放入新图片即可生效，无需修改代码。
+ */
+const planetImageModules = import.meta.glob('../../assets/planet/*.png', {
+    eager: true,
+    query: '?url',
+    import: 'default',
+});
+
+const customPlanetIds: number[] = Object.keys(planetImageModules)
+    .map(key => {
+        const match = key.match(/\/(\d+)\.png$/);
+        return match ? parseInt(match[1], 10) : null;
+    })
+    .filter((id): id is number => id !== null && !isNaN(id))
+    .sort((a, b) => a - b);
+
+export class StrategicScene extends Phaser.Scene {
+    private store: any;
+    private edgeGraphics!: Phaser.GameObjects.Graphics;
+    private edgeFlowGraphics!: Phaser.GameObjects.Graphics; 
+    private edges: { x1: number; y1: number; x2: number; y2: number; length: number; factionHint: number }[] = [];
+    private edgeNextPulseTimes: number[] = [];
+    private activePulses: { edgeIdx: number; progress: number; duration: number; color: number }[] = [];
+    private readonly MAX_ACTIVE_PULSES = 10; 
+    
+    private bgStarFar!: Phaser.GameObjects.Graphics;
+    private bgStarMid!: Phaser.GameObjects.Graphics;
+    private bgStarNear!: Phaser.GameObjects.Graphics;
+    
+    private fleetContainer!: Phaser.GameObjects.Container;
+    private fleetSprites: Map<number | string, Phaser.GameObjects.Container> = new Map();
+    private nodeSprites: Map<number, Phaser.GameObjects.Image> = new Map();
+    private constellationContainers: Phaser.GameObjects.Container[] = []; 
+    private label_texts: Phaser.GameObjects.Text[] = []; 
+    
+    // ===== 右键菜单（v3.1 已删除，改为直接弹出面板）=====
+    private fleetPanel: Phaser.GameObjects.Container | null = null;
+    private contextAction: string = '';
+
+    // ===== v3 新增：本地操作面板 =====
+    private localOpPanel: Phaser.GameObjects.Container | null = null;
+    private enemyOpPanel: Phaser.GameObjects.Container | null = null;
+    private adminStore: any = null;
+    
+    // ===== 阶段六：Warp 系统视觉状态 =====
+    private prevFleetStatuses: Map<number, string> = new Map();
+    private prevPendingArrival: any = null;
+    private etaMarkers: Map<number, Phaser.GameObjects.Container> = new Map();
+    private prevNodeOwnership: Map<number, number> = new Map();
+    private prevMapVersion: number = -1;
+    
+    // ================= 阶段一新增：节点动态归属权映射表 =================
+    private nodeGraphicsMap: Map<number, Phaser.GameObjects.Arc> = new Map();
+
+    // ===== 主题颜色系统 =====
+    private themeColors: Record<string, number> = {};
+    private isLightTheme: boolean = false;
+
+    private refreshThemeColors() {
+        this.isLightTheme = document.documentElement.dataset.theme === 'light';
+        const c = this.themeColors;
+        if (this.isLightTheme) {
+            c.bg = 0xF0EBE0; c.surface = 0xFFFFFF; c.surfaceInset = 0xEDE7DC;
+            c.text = 0x15110C; c.textMuted = 0x4E606F; c.textDisabled = 0xA4B0BC;
+            c.border = 0xCCD3DB; c.borderStrong = 0x8A93A0;
+            c.hover = 0xE8E4DD; c.hoverText = 0x1A1D21;
+            c.alliance = 0x225BFF; c.empire = 0xE3193B; c.neutral = 0x6B7280;
+            c.accentSortie = 0xE3193B; c.accentGarrison = 0x225BFF; c.accentHover = 0xE3193B;
+            c.checkBg = 0xF0EBE0; c.checkActive = 0x225BFF; c.checkBorder = 0xCCD3DB;
+            c.overlay = 0xFFFFFF; c.overlayAlpha = 0.9;
+        } else {
+            c.bg = 0x030308; c.surface = 0x0F172A; c.surfaceInset = 0x090B0E;
+            c.text = 0xF8FAFC; c.textMuted = 0x94A3B8; c.textDisabled = 0x64748B;
+            c.border = 0x334155; c.borderStrong = 0x475569;
+            c.hover = 0x1E293B; c.hoverText = 0xFFFFFF;
+            c.alliance = 0x3B82F6; c.empire = 0xEF4444; c.neutral = 0x6B7280;
+            c.accentSortie = 0xEF4444; c.accentGarrison = 0x06B6D4; c.accentHover = 0xEF4444;
+            c.checkBg = 0x1E293B; c.checkActive = 0x06B6D4; c.checkBorder = 0x475569;
+            c.overlay = 0x000000; c.overlayAlpha = 0.85;
+        }
+    }
+
+    private hexIntToStr(hex: number): string {
+        const r = (hex >> 16) & 0xFF;
+        const g = (hex >> 8) & 0xFF;
+        const b = hex & 0xFF;
+        return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+    }
+
+    /**
+     * 绘制拟态风格凸起面板：外阴影 + 主表面 + 顶部高光 + 底部暗边
+     * @param g Graphics 对象
+     * @param x 左上角 x
+     * @param y 左上角 y
+     * @param w 宽
+     * @param h 高
+     * @param radius 圆角
+     */
+    private drawNeoPanel(g: Phaser.GameObjects.Graphics, x: number, y: number, w: number, h: number, radius: number = 10) {
+        const c = this.themeColors;
+        // 1. 外阴影（多层叠加模拟模糊）
+        g.fillStyle(0x000000, this.isLightTheme ? 0.10 : 0.55);
+        g.fillRoundedRect(x + 2, y + 3, w, h, radius);
+        g.fillStyle(0x000000, this.isLightTheme ? 0.06 : 0.35);
+        g.fillRoundedRect(x + 1, y + 2, w, h, radius);
+        // 2. 主表面
+        g.fillStyle(c.surface, 0.98);
+        g.fillRoundedRect(x, y, w, h, radius);
+        // 3. 顶部高光线（亮色）
+        const hi = this.isLightTheme ? 0xFFFFFF : 0x1E293B;
+        g.lineStyle(1, hi, this.isLightTheme ? 0.9 : 0.5);
+        g.beginPath();
+        g.moveTo(x + radius, y + 0.5);
+        g.lineTo(x + w - radius, y + 0.5);
+        g.strokePath();
+        // 4. 底部暗边
+        const lo = this.isLightTheme ? 0xD4CFC4 : 0x05070A;
+        g.lineStyle(1, lo, this.isLightTheme ? 0.6 : 0.7);
+        g.beginPath();
+        g.moveTo(x + radius, y + h - 0.5);
+        g.lineTo(x + w - radius, y + h - 0.5);
+        g.strokePath();
+        // 5. 细边框
+        g.lineStyle(1, c.border, this.isLightTheme ? 0.5 : 0.4);
+        g.strokeRoundedRect(x, y, w, h, radius);
+    }
+
+    /**
+     * 绘制拟态风格凹陷表面：用于列表背景、checkbox 未选中态
+     */
+    private drawNeoInset(g: Phaser.GameObjects.Graphics, x: number, y: number, w: number, h: number, radius: number = 6) {
+        const c = this.themeColors;
+        // 1. 凹陷表面（略深）
+        g.fillStyle(c.surfaceInset, 0.95);
+        g.fillRoundedRect(x, y, w, h, radius);
+        // 2. 顶部内阴影（暗线）
+        const topShadow = this.isLightTheme ? 0xC8C2B5 : 0x05070A;
+        g.lineStyle(1, topShadow, this.isLightTheme ? 0.5 : 0.6);
+        g.beginPath();
+        g.moveTo(x + radius, y + 1);
+        g.lineTo(x + w - radius, y + 1);
+        g.strokePath();
+        // 3. 底部内高光（亮线）
+        const botHi = this.isLightTheme ? 0xFFFFFF : 0x1E293B;
+        g.lineStyle(1, botHi, this.isLightTheme ? 0.7 : 0.3);
+        g.beginPath();
+        g.moveTo(x + radius, y + h - 1);
+        g.lineTo(x + w - radius, y + h - 1);
+        g.strokePath();
+    }
+
+    preload() {
+        Object.entries(planetImageModules).forEach(([key, url]) => {
+            const match = key.match(/\/(\d+)\.png$/);
+            if (match) {
+                const id = parseInt(match[1], 10);
+                const textureKey = `planet_${id}`;
+                this.load.image(textureKey, url as string);
+            }
+        });
+        this.load.image('alliance_flag', '/src/assets/flag/alliance.png');
+        this.load.image('empire_flag', '/src/assets/flag/empire.png');
+        this.load.image('alliance_ship_2', allianceShip2Url);
+        this.load.image('empire_ship_2', empireShip2Url);
+    }
+
+    create() {
+        this.store = useGameStore();
+        this.adminStore = useAdminStore();
+        this.cameras.main.centerOn(0, 0); 
+        this.cameras.main.setZoom(0.8);
+        // 读取当前主题并设置背景色
+        this.refreshThemeColors();
+        this.cameras.main.setBackgroundColor(this.themeColors.bg); 
+
+        this.createGlowTexture();
+        this.createStarfieldBackground();
+
+        this.edgeGraphics = this.add.graphics().setDepth(1).setBlendMode(Phaser.BlendModes.ADD);
+        this.edgeFlowGraphics = this.add.graphics().setDepth(1).setBlendMode(Phaser.BlendModes.ADD);
+        this.fleetContainer = this.add.container(0, 0).setDepth(5);
+
+        // ================= 宏大叙事弯曲星带背景与公转 =================
+        this.generateStarBeltTexture();
+
+        const createStarBelt = (x: number, y: number, tint: number, scaleX: number, scaleY: number, orbitSpeed: number) => {
+            const pivot = this.add.container(0, 0).setDepth(-20);
+            const belt = this.add.image(x, y, 'star_belt_texture')
+                .setBlendMode(Phaser.BlendModes.ADD) 
+                .setTint(tint)
+                .setAlpha(0.4) 
+                .setScale(scaleX, scaleY);
+            
+            pivot.add(belt);
+            
+            this.tweens.add({
+                targets: belt,
+                alpha: 0.2,
+                duration: Math.random() * 2000 + 6000, 
+                yoyo: true,
+                repeat: -1,
+                ease: 'Sine.easeInOut'
+            });
+
+            this.time.addEvent({
+                delay: 50,
+                loop: true,
+                callback: () => {
+                    pivot.rotation += orbitSpeed;
+                }
+            });
+        };
+
+        createStarBelt(-1000, 0, 0x44aaff, 5.0, 3.5, 0.0005);
+        createStarBelt(1000, 0, 0xff77aa, -5.0, 3.5, -0.0003);
+
+        // ================= 阵营全息水印 =================
+        const addWatermark = (key: string, x: number, y: number, customScale: number) => {
+            const img = this.add.image(x, y, key)
+                .setDepth(-10)
+                .setAlpha(0.019)
+                .setBlendMode(Phaser.BlendModes.ADD);
+            img.setScale(customScale); 
+            return img;
+        };
+
+        const allianceWatermark = addWatermark('alliance_flag', -1500, 500, 1.0); 
+        const empireWatermark = addWatermark('empire_flag', 1200, 200, 2.5);     
+
+        this.time.addEvent({
+            delay: 50,
+            loop: true,
+            callback: () => {
+                allianceWatermark.rotation -= 0.0003;
+                empireWatermark.rotation += 0.0003;
+            }
+        });
+
+        this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
+            if (pointer.isDown && pointer.button === 0) { 
+                this.cameras.main.scrollX -= (pointer.x - pointer.prevPosition.x) / this.cameras.main.zoom;
+                this.cameras.main.scrollY -= (pointer.y - pointer.prevPosition.y) / this.cameras.main.zoom;
+            }
+        });
+
+        // 禁用浏览器右键菜单
+        this.input.mouse?.disableContextMenu();
+
+        // 全局右键 + 关闭菜单
+        this.input.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+            // 右键
+            if (pointer.button === 2) {
+                const hitNode = this.hitTestNodeAt(pointer.worldX, pointer.worldY);
+                if (hitNode) {
+                    this.showNodeRightMenu(pointer.worldX, pointer.worldY, hitNode);
+                }
+                return;
+            }
+            // 左键：点击面板外关闭面板
+            if (this.localOpPanel?.active) {
+                if (!this.isPointerInModal(pointer, this.localOpPanel)) {
+                    this.hideLocalOpPanel();
+                }
+            }
+            if (this.enemyOpPanel?.active) {
+                if (!this.isPointerInModal(pointer, this.enemyOpPanel)) {
+                    this.hideEnemyOpPanel();
+                }
+            }
+        });
+
+        this.input.on('wheel', (pointer: any, gameObjects: any, deltaX: number, deltaY: number) => {
+            this.cameras.main.setZoom(Phaser.Math.Clamp(this.cameras.main.zoom - deltaY * 0.001, 0.3, 2.0));
+        });
+
+        this.renderStaticTopology();
+    }
+
+    // 获取阵营标准色 (用于领土环和舰队)
+    private getFactionColor(factionId: number): number {
+        if (factionId === 1) return 0x44aaff; 
+        if (factionId === 2) return 0xff77aa; 
+        return 0x888888; 
+    }
+
+    update() {
+        if (!this.store) return;
+
+        // 检测战略地图版本变化（新游戏/读档后 initStrategicMap 重新执行）
+        const currVersion = (this.store as any).strategicMapVersion?.value ?? (this.store as any).strategicMapVersion ?? 0;
+        if (currVersion !== this.prevMapVersion && this.prevMapVersion !== -1) {
+            // 版本变化 → 清空所有动态精灵，强制重建
+            this.fleetSprites.forEach(container => container.destroy());
+            this.fleetSprites.clear();
+            this.etaMarkers.forEach(container => container.destroy());
+            this.etaMarkers.clear();
+            this.prevFleetStatuses.clear();
+            this.prevNodeOwnership.clear();
+            this.prevPendingArrival = null;
+        }
+        this.prevMapVersion = currVersion;
+
+        try {
+
+        // 主题变化检测：每帧检查 data-theme，变化时更新背景色 + 关闭已打开面板强制重绘
+        const currTheme = document.documentElement.dataset.theme === 'light';
+        if (currTheme !== this.isLightTheme) {
+            this.refreshThemeColors();
+            this.cameras.main.setBackgroundColor(this.themeColors.bg);
+            this.hideFleetPanel();
+            this.hideLocalOpPanel();
+            this.hideEnemyOpPanel();
+        }
+
+        // 1. 同步星座网格自转
+        this.constellationContainers.forEach(container => {
+            container.rotation += (container as any).rotSpeed;
+        });
+
+        // 2. 标签抗缩放
+        const zoom = this.cameras.main.zoom;
+        this.label_texts.forEach(text => {
+            text.setScale(1 / zoom);
+        });
+
+        // 3. 视差背景漂移
+        if (this.bgStarNear) {
+            this.bgStarNear.x = this.cameras.main.scrollX * -0.02;
+            this.bgStarNear.y = this.cameras.main.scrollY * -0.02;
+        }
+        if (this.bgStarMid) {
+            this.bgStarMid.x = this.cameras.main.scrollX * -0.01;
+            this.bgStarMid.y = this.cameras.main.scrollY * -0.01;
+        }
+
+        // 4. ================= 阶段一：同步节点归属权颜色 =================
+        const rawNodes = this.store.strategicNodes;
+        const nodes = rawNodes?.value !== undefined ? rawNodes.value : (rawNodes || []);
+        
+        nodes.forEach((nodeData: any) => {
+            const territoryRing = this.nodeGraphicsMap.get(nodeData.id);
+            if (territoryRing) {
+                // 根据当前 ownerFactionId 实时改变外环颜色（保持极淡，不喧宾夺主）
+                territoryRing.setStrokeStyle(0, this.getFactionColor(nodeData.ownerFactionId), 0.2);
+            }
+        });
+
+        this.updateEdgeFlow();
+        this.updateDynamicEntities();
+
+        // 舰队面板 / 本地操作面板 / 敌方操作面板对抗缩放：zoom 变化时同步 scale
+        if (this.fleetPanel) {
+            this.fleetPanel.setScale(1 / this.cameras.main.zoom);
+        }
+        if (this.localOpPanel) {
+            this.localOpPanel.setScale(1 / this.cameras.main.zoom);
+        }
+        if (this.enemyOpPanel) {
+            this.enemyOpPanel.setScale(1 / this.cameras.main.zoom);
+        }
+
+        } catch (err) {
+            console.error('[StrategicScene.update] crash prevented:', err);
+            // 不清空 store，让下一帧继续尝试恢复
+        }
+    }
+
+    // ================= 阶段六：舰队视觉（IDLE 驻留 + WARPING ETA 标记 + 跃迁 VFX）=================
+    private updateDynamicEntities() {
+        const rawFleets = this.store.strategicFleets;
+        const fleets: any[] = rawFleets?.value !== undefined ? rawFleets.value : (rawFleets || []);
+        const rawNodes = this.store.strategicNodes;
+        const nodes: any[] = rawNodes?.value !== undefined ? rawNodes.value : (rawNodes || []);
+        const time = this.time.now;
+        const selectedId = this.store.selectedFleetId;
+        const aliveKeys = new Set<string>();
+
+        // ---- 分组：IDLE / WARPING / 其他 ----
+        const idleByNode = new Map<number, any[]>();
+        const warpingFleets: any[] = [];
+        fleets.forEach((f: any) => {
+            const totalShips = (f.composition?.battleships || 0) + (f.composition?.cruisers || 0) + (f.composition?.destroyers || 0);
+            if (f.status === 'warping') {
+                warpingFleets.push(f);
+            } else if (totalShips > 0) {
+                const nid = f.currentNodeId;
+                if (nid >= 0) {
+                    if (!idleByNode.has(nid)) idleByNode.set(nid, []);
+                    idleByNode.get(nid)!.push(f);
+                }
+            }
+        });
+
+        // ---- 检测跃迁出发 VFX ----
+        fleets.forEach((fleet: any) => {
+            const prevStatus = this.prevFleetStatuses.get(fleet.id);
+            if (prevStatus && prevStatus !== 'warping' && fleet.status === 'warping') {
+                this.playWarpOutVFX(fleet, nodes);
+            }
+        });
+
+        // ---- 驻留舰队：星球上空 ----
+        const renderedNodes = new Set<number>();
+        idleByNode.forEach((nodeFleets, nodeId) => {
+            const node = nodes.find((n: any) => n.id === nodeId);
+            if (!node) return;
+            renderedNodes.add(nodeId);
+            const texKey = nodeFleets[0].factionId === 1 ? 'alliance_ship_2' : 'empire_ship_2';
+            const key = `garrison_${nodeId}`;
+            aliveKeys.add(key);
+
+            let container = this.fleetSprites.get(key);
+            if (!container) {
+                container = this.add.container(node.x, node.y - 50).setDepth(9);
+                const flagship = this.add.image(0, 0, texKey).setDisplaySize(52, 22);
+                const escorts: Phaser.GameObjects.Image[] = [];
+                for (let i = 0; i < 3; i++) {
+                    escorts.push(this.add.image(0, 0, texKey).setDisplaySize(23, 10).setAlpha(0.55 + i * 0.08));
+                }
+                container.add([flagship, ...escorts]);
+                this.fleetContainer.add(container);
+                this.fleetSprites.set(key, container);
+                flagship.setInteractive();
+                flagship.on('pointerdown', () => {
+                    const first = nodeFleets[0];
+                    if (first) this.store.selectedFleetId = this.store.selectedFleetId === first.id ? null : first.id;
+                });
+            }
+
+            container.setPosition(node.x, node.y - 50);
+            const flagship = container.list?.[0] as Phaser.GameObjects.Image;
+            if (flagship) {
+                // 原始图像已按阵营正确朝向：同盟朝右，帝国朝左
+                // 无需翻转
+            }
+
+            for (let i = 1; i <= 3 && i < container.list.length; i++) {
+                const esc = container.list[i] as Phaser.GameObjects.Image;
+                if (esc) {
+                    esc.setAlpha(0.5 + Math.sin(time * 0.001 + i) * 0.1);
+                }
+                const baseX = -36;
+                const baseY = (i - 2) * 15;
+                esc.x = baseX + Math.sin(time * 0.0004 + i * 2.3) * 2;
+                esc.y = baseY + Math.cos(time * 0.0005 + i * 1.7) * 2;
+            }
+        });
+
+        // ---- WARPING 舰队：ETA 浮动标记 ----
+        warpingFleets.forEach((fleet: any) => {
+            const targetNodeId = fleet.warpTargetId;
+            if (targetNodeId == null) return;
+            const targetNode = nodes.find((n: any) => n.id === targetNodeId);
+            if (!targetNode) return;
+            const markerKey = `eta_${fleet.id}`;
+            aliveKeys.add(markerKey);
+
+            let markerContainer = this.etaMarkers.get(fleet.id);
+            if (!markerContainer) {
+                markerContainer = this.add.container(targetNode.x, targetNode.y - 70).setDepth(10).setAlpha(0.85);
+                const etaBg = this.add.graphics();
+                this.drawNeoPanel(etaBg, -60, -14, 120, 28, 6);
+                const label = this.add.text(0, 0, '', {
+                    fontSize: '10px', color: this.hexIntToStr(this.themeColors.alliance), fontFamily: 'sans-serif',
+                    stroke: this.hexIntToStr(this.themeColors.surface), strokeThickness: 2,
+                }).setOrigin(0.5);
+                markerContainer.add([etaBg, label]);
+                markerContainer.setName('etaMarker');
+                this.etaMarkers.set(fleet.id, markerContainer);
+            }
+
+            markerContainer.setPosition(targetNode.x, targetNode.y - 70);
+
+            const allAdms = this.store.allAdmirals?.value || this.store.allAdmirals || [];
+            const adm = allAdms.find((a: any) => a.id === fleet.commanderId);
+            const admName = adm?.name || '未知';
+            const ticksPerDay = 10;
+            const now = (this.store as any).totalTicks ?? 0;
+            const etaDay = fleet.etaDay != null ? Math.ceil(fleet.etaDay / ticksPerDay) : '?';
+            const remaining = fleet.etaDay != null ? Math.max(0, Math.ceil((fleet.etaDay - now) / ticksPerDay)) : '?';
+            const label = markerContainer.list?.[1] as Phaser.GameObjects.Text | undefined;
+            if (label) {
+                label.setText(`${admName}\nETA: Day${etaDay} · 剩余${remaining}日`);
+            }
+
+            // 与镜头缩放对抗
+            markerContainer.setScale(1 / this.cameras.main.zoom);
+        });
+
+        // ---- 清理过期精灵与标记 ----
+        this.fleetSprites.forEach((container, key) => {
+            if (!aliveKeys.has(String(key))) {
+                container.destroy(); this.fleetSprites.delete(key);
+            }
+        });
+        this.etaMarkers.forEach((container, fleetId) => {
+            if (!aliveKeys.has(`eta_${fleetId}`)) {
+                container.destroy(); this.etaMarkers.delete(fleetId);
+            }
+        });
+
+        // ---- 保存状态快照用于下次帧检测变化 ----
+        fleets.forEach((f: any) => {
+            this.prevFleetStatuses.set(f.id, f.status);
+        });
+
+        // ---- 跃迁到达 VFX ----
+        const currPendingArrival = this.store.pendingArrival?.value ?? this.store.pendingArrival;
+        if (currPendingArrival && this.prevPendingArrival !== currPendingArrival) {
+            this.playWarpInVFX(currPendingArrival, nodes);
+        }
+        this.prevPendingArrival = currPendingArrival;
+
+        // ---- 行星占领：白色闪烁 → 目标颜色 =====
+        nodes.forEach((node: any) => {
+            const prevOwner = this.prevNodeOwnership.get(node.id);
+            if (prevOwner !== undefined && prevOwner !== node.ownerFactionId) {
+                const sprite = this.nodeSprites.get(node.id);
+                // 防御：Phaser GameObject 上才有 setTint/setFillStyle；Phaser Graphics 没有 setTint
+                if (sprite && sprite.active && typeof (sprite as any).setTint === 'function') {
+                    const targetTint = node.ownerFactionId === 1 ? 0x4a90d9 : node.ownerFactionId === 2 ? 0xd94a4a : 0xdddddd;
+                    // 先闪白 150ms，再过渡到目标色
+                    (sprite as any).setTint(0xffffff);
+                    this.tweens.add({
+                        targets: sprite,
+                        tintValue: targetTint,
+                        duration: 650, delay: 150,
+                        ease: 'Quad.easeInOut',
+                    });
+                }
+            }
+            this.prevNodeOwnership.set(node.id, node.ownerFactionId);
+        });
+
+        // ---- ROUT 溃败：自动撤退跃迁 VFX ----
+        const currPendingPostBattle = this.store.pendingPostBattle?.value ?? this.store.pendingPostBattle;
+        if (currPendingPostBattle?.result?.outcome === 'rout') {
+            const fleet = fleets.find((f: any) => f.id === currPendingPostBattle.fleetId);
+            if (fleet) {
+                this.playWarpOutVFX(fleet, nodes);
+            }
+        }
+    }
+
+    /** 跃迁出发 VFX：舰船缩小 + 淡出 + 粒子尾迹 + 白色光环扩散 */
+    private playWarpOutVFX(fleet: any, nodes: any[]) {
+        try {
+        const originNodeId = fleet.warpOriginId ?? fleet.prevNodeId;
+        if (originNodeId == null || originNodeId < 0) return;
+        const node = nodes.find((n: any) => n.id === originNodeId);
+        if (!node) return;
+
+        const texKey = fleet.factionId === 1 ? 'alliance_ship_2' : 'empire_ship_2';
+        const ship = this.add.image(node.x, node.y - 50, texKey).setDisplaySize(52, 22).setDepth(15).setFlipX(true);
+        const ring = this.add.circle(node.x, node.y, 8, 0xffffff, 0.7)
+            .setDepth(14).setBlendMode(Phaser.BlendModes.ADD).setStrokeStyle(2, 0xbfdbfe);
+
+        // 粒子尾迹
+        const trailParticles: Phaser.GameObjects.Ellipse[] = [];
+        for (let i = 0; i < 5; i++) {
+            const trail = this.add.ellipse(node.x, node.y - 50, 3 + i, 3 + i, 0x93c5fd, 0.6 - i * 0.1)
+                .setDepth(13).setBlendMode(Phaser.BlendModes.ADD);
+            trailParticles.push(trail);
+            this.tweens.add({
+                targets: trail,
+                x: node.x + (Math.random() - 0.5) * 40,
+                y: node.y - 50 - (i + 1) * 18,
+                alpha: 0, scaleX: 0.1, scaleY: 0.1,
+                duration: 500 + i * 80, delay: i * 60,
+                ease: 'Quad.easeOut',
+                onComplete: () => trail.destroy(),
+            });
+        }
+
+        // 舰船缩小 + 淡出
+        this.tweens.add({
+            targets: ship,
+            scaleX: 0.1, scaleY: 0.1, alpha: 0,
+            duration: 600, ease: 'Quad.easeIn',
+            onComplete: () => ship.destroy(),
+        });
+
+        // 光环向外扩散
+        this.tweens.add({
+            targets: ring,
+            scaleX: 4, scaleY: 4, alpha: 0,
+            duration: 800, ease: 'Quad.easeOut',
+            onComplete: () => ring.destroy(),
+        });
+        } catch (err) {
+            console.error('[playWarpOutVFX] VFX error:', err);
+        }
+    }
+
+    /** 跃迁到达 VFX：光粒子汇聚 + 舰船淡入放大 + 镜头拉近 */
+    private playWarpInVFX(arrivalCtx: any, nodes: any[]) {
+        try {
+        const targetNode = nodes.find((n: any) => n.id === arrivalCtx.targetNodeId);
+        if (!targetNode) return;
+
+        // 镜头平滑移到事件星球（使用 scrollTo 而非 pan 避免锁定）
+        const cam = this.cameras.main;
+        const targetScrollX = targetNode.x - cam.width / 2 / cam.zoom;
+        const targetScrollY = targetNode.y - cam.height / 2 / cam.zoom;
+        const fromSX = cam.scrollX, fromSY = cam.scrollY;
+        this.tweens.addCounter({
+            from: 0, to: 1, duration: 1800, ease: 'Quad.easeInOut',
+            onUpdate: (tween: Phaser.Tweens.Tween) => {
+                const p = tween.getValue() ?? 0;
+                cam.scrollX = fromSX + (targetScrollX - fromSX) * p;
+                cam.scrollY = fromSY + (targetScrollY - fromSY) * p;
+            },
+        });
+
+        // 事件星球高亮 — 六边形扫描环 + 中心光点
+        const allianceColor = 0x3b82f6;
+        const empireColor = 0xef4444;
+        const nodeColor = targetNode.ownerFactionId !== 1 ? empireColor : allianceColor;
+        
+        // 内环：发光核心
+        const core = this.add.circle(targetNode.x, targetNode.y, 8, nodeColor, 0.3)
+            .setDepth(12).setBlendMode(Phaser.BlendModes.ADD);
+        this.tweens.add({
+            targets: core, alpha: 0, scaleX: 2.5, scaleY: 2.5,
+            duration: 1200, ease: 'Quad.easeOut',
+            onComplete: () => core.destroy(),
+        });
+        
+        // 外环：六边形扫描线
+        const hex = this.add.graphics().setDepth(11);
+        const hexRadius = 40;
+        for (let k = 0; k < 3; k++) {
+            this.tweens.addCounter({
+                from: 0, to: 1, delay: k * 400, duration: 1200,
+                ease: 'Quad.easeInOut',
+                onUpdate: (tween: Phaser.Tweens.Tween) => {
+                    hex.clear();
+                    const prog = tween.getValue() ?? 0;
+                    const r = hexRadius * (0.6 + 0.4 * prog);
+                    const alpha = 1 - prog;
+                    hex.lineStyle(1.5, nodeColor, alpha * 0.8);
+                    const pts = [];
+                    for (let i = 0; i < 7; i++) {
+                        const a = (i / 6) * Math.PI * 2 - Math.PI / 2 + prog * Math.PI;
+                        pts.push({ x: targetNode.x + Math.cos(a) * r, y: targetNode.y + Math.sin(a) * r });
+                    }
+                    hex.beginPath();
+                    hex.moveTo(pts[0].x, pts[0].y);
+                    for (let i = 1; i < 7; i++) hex.lineTo(pts[i].x, pts[i].y);
+                    hex.strokePath();
+                },
+                onComplete: () => { if (k === 2) { this.tweens.add({ targets: hex, alpha: 0, duration: 400, onComplete: () => hex.destroy() }); } },
+            });
+        }
+
+        // 光粒子汇聚
+        const particles: Phaser.GameObjects.Ellipse[] = [];
+        for (let i = 0; i < 10; i++) {
+            const angle = (i / 10) * Math.PI * 2;
+            const startDist = 80 + Math.random() * 50;
+            const px = targetNode.x + Math.cos(angle) * startDist;
+            const py = targetNode.y + Math.sin(angle) * startDist;
+            const particle = this.add.ellipse(px, py, 4, 4, 0xa5d8ff, 0.9)
+                .setDepth(15).setBlendMode(Phaser.BlendModes.ADD);
+            particles.push(particle);
+
+            this.tweens.add({
+                targets: particle,
+                x: targetNode.x, y: targetNode.y,
+                alpha: 0, scaleX: 0.3, scaleY: 0.3,
+                duration: 500 + i * 50,
+                ease: 'Quad.easeIn',
+                onComplete: () => particle.destroy(),
+            });
+        }
+
+        // 舰船淡入 + 放大（用 displaySize 避免原始纹理尺寸爆炸）
+        const fleet = this.store.strategicFleets?.value?.find((f: any) => f.id === arrivalCtx.fleetId)
+            || this.store.strategicFleets?.find((f: any) => f.id === arrivalCtx.fleetId);
+        const texKey = fleet?.factionId === 1 ? 'alliance_ship_2' : 'empire_ship_2';
+        const ship = this.add.image(targetNode.x, targetNode.y - 50, texKey)
+            .setDisplaySize(10, 5).setDepth(16).setFlipX(true).setAlpha(0);
+
+        this.tweens.add({
+            targets: ship,
+            displayWidth: 44, displayHeight: 24,
+            alpha: 1,
+            duration: 700, delay: 500,
+            ease: 'Quad.easeOut',
+            onComplete: () => {
+                this.tweens.add({
+                    targets: ship,
+                    alpha: 0, displayWidth: 50, displayHeight: 27,
+                    duration: 300, delay: 800,
+                    onComplete: () => ship.destroy(),
+                });
+            },
+        });
+        } catch (err) {
+            console.error('[playWarpInVFX] VFX error:', err);
+        }
+    }
+
+    private updateEdgeFlow() {
+        const g = this.edgeFlowGraphics;
+        const now = this.time.now;
+
+        if (this.activePulses.length < this.MAX_ACTIVE_PULSES) {
+            for (let idx = 0; idx < this.edges.length; idx++) {
+                if (now >= this.edgeNextPulseTimes[idx]) {
+                    const e = this.edges[idx];
+                    let color: number;
+                    if (e.factionHint === 1) color = 0xa5d8ff;
+                    else if (e.factionHint === 2) color = 0xfecaca;
+                    else if (e.factionHint === 0) color = 0xfef08a;
+                    else color = 0xcffafe;
+
+                    const duration = 1000 + ((idx * 97) % 800);
+
+                    this.activePulses.push({ edgeIdx: idx, progress: 0, duration, color });
+                    this.edgeNextPulseTimes[idx] = now + 6000 + ((idx * 311) % 9000);
+                    break;
+                }
+            }
+        }
+
+        g.clear();
+        for (let i = this.activePulses.length - 1; i >= 0; i--) {
+            const pulse = this.activePulses[i];
+            pulse.progress += (this.game.loop.delta / pulse.duration);
+
+            if (pulse.progress >= 1) {
+                this.activePulses.splice(i, 1);
+                continue;
+            }
+
+            const e = this.edges[pulse.edgeIdx];
+            const p = pulse.progress;
+
+            let lifeAlpha: number;
+            if (p < 0.04) lifeAlpha = p / 0.04;
+            else if (p > 0.88) lifeAlpha = 1 - ((p - 0.88) / 0.12);
+            else lifeAlpha = 1.0;
+
+            const tailLen = 0.20;
+            const segments = 12;
+
+            for (let s = segments - 1; s >= 0; s--) {
+                const segStartT = Math.max(0, p - (s / segments) * tailLen);
+                const segEndT = Math.max(0, p - ((s - 1) / segments) * tailLen);
+                if (segEndT <= 0 && segStartT <= 0) continue;
+
+                const sx = Phaser.Math.Linear(e.x1, e.x2, segStartT);
+                const sy = Phaser.Math.Linear(e.y1, e.y2, segStartT);
+                const ex = Phaser.Math.Linear(e.x1, e.x2, segEndT);
+                const ey = Phaser.Math.Linear(e.y1, e.y2, segEndT);
+
+                const t = 1 - s / segments;
+                const lineWidth = 0.3 + t * 2.2; 
+                const segAlpha = lifeAlpha * t * 0.8;
+
+                g.lineStyle(lineWidth, pulse.color, segAlpha);
+                g.beginPath();
+                g.moveTo(sx, sy);
+                g.lineTo(ex, ey);
+                g.strokePath();
+            }
+        }
+    }
+
+    private createGlowTexture() {
+        if (this.textures.exists('soft_glow')) return;
+        const radius = 64;
+        const canvas = document.createElement('canvas');
+        canvas.width = radius * 2;
+        canvas.height = radius * 2;
+        const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+        const grd = ctx.createRadialGradient(radius, radius, 0, radius, radius, radius);
+        grd.addColorStop(0, 'rgba(255, 255, 255, 1)');
+        grd.addColorStop(0.2, 'rgba(255, 255, 255, 0.8)');
+        grd.addColorStop(0.5, 'rgba(255, 255, 255, 0.3)');
+        grd.addColorStop(1, 'rgba(255, 255, 255, 0)');
+        ctx.fillStyle = grd;
+        ctx.fillRect(0, 0, radius * 2, radius * 2);
+        this.textures.addCanvas('soft_glow', canvas);
+    }
+
+    private createStarfieldBackground() {
+        const RANGE = 2400;
+        this.createNebulaGlowTexture();
+
+        this.bgStarFar = this.add.graphics().setDepth(-10);
+        for (let i = 0; i < 400; i++) {
+            const x = (Math.random() - 0.5) * RANGE * 2;
+            const y = (Math.random() - 0.5) * RANGE * 2;
+            const alpha = 0.2 + Math.random() * 0.35;
+            const c = Math.random();
+            let color = 0xffffff;
+            if (c > 0.92) color = 0xbfd4ff;
+            else if (c > 0.85) color = 0xffe8c4;
+            this.bgStarFar.fillStyle(color, alpha);
+            this.bgStarFar.fillCircle(x, y, 0.6 + Math.random() * 0.5);
+        }
+
+        const FACTION_BLUE   = 0x3b82f6;  
+        const FACTION_RED    = 0xf87171;  
+        const FACTION_GOLD   = 0xf59e0b;  
+        const FACTION_PINK   = 0xfca5a5;  
+        const FACTION_SKY    = 0x93c5fd;  
+
+        const nebulaConfigs: { x: number; y: number; r: number; color: number; alpha: number; sx?: number; sy?: number; rot?: number }[] = [
+            { x: -2200, y:  100, r: 900, color: FACTION_BLUE, alpha: 0.26, sx: 1.1, sy: 0.75, rot: -0.3 },
+            { x: -2100, y:  200, r: 600, color: FACTION_BLUE, alpha: 0.22, sx: 0.7, sy: 1.2, rot:  0.6 },
+            { x: -2350, y:   50, r: 500, color: FACTION_SKY,  alpha: 0.18, sx: 1.3, sy: 0.65, rot:  0.1 },
+            { x: -1400, y:  150, r: 800, color: FACTION_BLUE, alpha: 0.22, sx: 0.85, sy: 1.15, rot: -0.4 },
+            { x: -1550, y:  300, r: 550, color: FACTION_BLUE, alpha: 0.18, sx: 1.25, sy: 0.7,  rot:  0.35 },
+            { x: -1150, y:  850, r: 750, color: FACTION_BLUE, alpha: 0.20, sx: 0.9,  sy: 1.05, rot: -0.15 },
+            { x: -1300, y: 1000, r: 500, color: FACTION_SKY,  alpha: 0.14, sx: 1.4,  sy: 0.55, rot:  0.5 },
+            { x: -1850, y:  700, r: 650, color: FACTION_BLUE, alpha: 0.18, sx: 0.75, sy: 1.3,  rot:  0.2 },
+            { x: -2050, y:  950, r: 450, color: FACTION_SKY,  alpha: 0.14, sx: 1.15, sy: 0.85, rot: -0.55 },
+            { x:  1700, y:  480, r: 800, color: FACTION_RED,   alpha: 0.20, sx: 1.0,  sy: 0.8,  rot: -0.2 },
+            { x:  1820, y:  550, r: 550, color: FACTION_PINK,  alpha: 0.16, sx: 0.7,  sy: 1.25, rot:  0.45 },
+            { x:  1580, y:  380, r: 450, color: FACTION_PINK,  alpha: 0.13, sx: 1.35, sy: 0.6,  rot: -0.38 },
+            { x:  1100, y:  520, r: 750, color: FACTION_RED,   alpha: 0.17, sx: 0.88, sy: 1.12, rot:  0.15 },
+            { x:  1280, y:  650, r: 500, color: FACTION_PINK,  alpha: 0.13, sx: 1.2,  sy: 0.72, rot: -0.28 },
+            { x:   950, y:  400, r: 450, color: FACTION_RED,   alpha: 0.14, sx: 0.68, sy: 1.35, rot:  0.52 },
+            { x:  1250, y:    0, r: 600, color: FACTION_RED,   alpha: 0.16, sx: 1.08, sy: 0.78, rot: -0.12 },
+            { x:  1480, y:  100, r: 420, color: FACTION_PINK,  alpha: 0.12, sx: 0.78, sy: 1.18, rot:  0.33 },
+            { x:  1750, y:   10, r: 350, color: FACTION_PINK,  alpha: 0.11, sx: 1.42, sy: 0.58, rot: -0.45 },
+            { x:  1750, y:  950, r: 550, color: FACTION_RED,   alpha: 0.15, sx: 0.92, sy: 1.06, rot:  0.08 },
+            { x:  1450, y: 1050, r: 400, color: FACTION_PINK,  alpha: 0.12, sx: 1.22, sy: 0.66, rot: -0.42 },
+            { x:  -150, y:  840, r: 700, color: FACTION_GOLD, alpha: 0.24, sx: 0.95, sy: 1.08, rot: -0.18 },
+            { x:   -80, y:  960, r: 480, color: FACTION_GOLD, alpha: 0.18, sx: 1.28, sy: 0.68, rot:  0.36 },
+            { x:   220, y: 1000, r: 420, color: FACTION_GOLD, alpha: 0.15, sx: 0.74, sy: 1.22, rot: -0.26 },
+            { x:     0, y:    0, r: 480, color: FACTION_PINK,  alpha: 0.12, sx: 1.05, sy: 0.85, rot:  0.1 },
+        ];
+
+        nebulaConfigs.forEach(n => {
+            const img = this.add.image(n.x, n.y, 'nebula_glow')
+                .setDepth(-8)
+                .setTint(n.color)
+                .setBlendMode(Phaser.BlendModes.ADD)
+                .setDisplaySize(n.r * 2 * (n.sx || 1), n.r * 2 * (n.sy || 1))
+                .setAlpha(n.alpha);
+            if (n.rot !== undefined && n.rot !== 0) {
+                img.setRotation(n.rot);
+            }
+        });
+
+        this.bgStarMid = this.add.graphics().setDepth(-5).setBlendMode(Phaser.BlendModes.ADD);
+        for (let i = 0; i < 120; i++) {
+            const x = (Math.random() - 0.5) * RANGE * 2;
+            const y = (Math.random() - 0.5) * RANGE * 2;
+            const alpha = 0.25 + Math.random() * 0.35;
+            const c = Math.random();
+            let color = 0xffffff;
+            if (c > 0.9) color = 0x93c5fd;
+            else if (c > 0.8) color = 0xfde68a;
+            this.bgStarMid.fillStyle(color, alpha);
+            this.bgStarMid.fillCircle(x, y, 0.8 + Math.random() * 0.7);
+        }
+
+        this.bgStarNear = this.add.graphics().setDepth(-1).setBlendMode(Phaser.BlendModes.ADD);
+        for (let i = 0; i < 30; i++) {
+            const x = (Math.random() - 0.5) * RANGE * 2;
+            const y = (Math.random() - 0.5) * RANGE * 2;
+            const alpha = 0.45 + Math.random() * 0.35;
+            this.add.image(x, y, 'soft_glow')
+                .setDepth(-1)
+                .setBlendMode(Phaser.BlendModes.ADD)
+                .setDisplaySize(8 + Math.random() * 8, 8 + Math.random() * 8)
+                .setAlpha(alpha * 0.55);
+            this.bgStarNear.fillStyle(0xffffff, alpha);
+            this.bgStarNear.fillCircle(x, y, 1.0 + Math.random() * 0.7);
+        }
+    }
+
+    private createNebulaGlowTexture() {
+        if (this.textures.exists('nebula_glow')) return;
+        const size = 256;
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+        const grd = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+        grd.addColorStop(0,    'rgba(255, 255, 255, 0.85)');
+        grd.addColorStop(0.15, 'rgba(255, 255, 255, 0.55)');
+        grd.addColorStop(0.35, 'rgba(255, 255, 255, 0.28)');
+        grd.addColorStop(0.6,  'rgba(255, 255, 255, 0.10)');
+        grd.addColorStop(0.85, 'rgba(255, 255, 255, 0.03)');
+        grd.addColorStop(1,    'rgba(255, 255, 255, 0)');
+        ctx.fillStyle = grd;
+        ctx.fillRect(0, 0, size, size);
+        this.textures.addCanvas('nebula_glow', canvas);
+    }
+
+    private getOrCreatePlanetTexture(node: any): string {
+        const customKey = `planet_${node.id}`;
+        if (customPlanetIds.includes(node.id) && this.textures.exists(customKey)) {
+            return customKey;
+        }
+
+        const procKey = `proc_planet_${node.id}`;
+        if (this.textures.exists(procKey)) return procKey; 
+
+        const isCap = node.type === 'capital' || node.type === 'fortress';
+        const baseRadius = isCap ? 28 : 20;
+        const PADDING = baseRadius * 0.3; 
+        const size = baseRadius * 2 + PADDING * 2; 
+        const radius = baseRadius; 
+        const canvas = document.createElement('canvas');
+        const SS = 2;
+        canvas.width = Math.ceil(size * SS);
+        canvas.height = Math.ceil(size * SS);
+        const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
+        ctx.scale(SS, SS);
+        ctx.translate(PADDING, PADDING); 
+
+        let seed = node.id * 997 + node.ownerFactionId * 31337 + 42;
+        const rand = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
+
+        type PlanetType = 'terrestrial' | 'gas' | 'desert' | 'ice' | 'ocean' | 'lava' | 'rocky';
+        const planetTypes: PlanetType[] = ['terrestrial', 'gas', 'desert', 'ice', 'ocean', 'lava', 'rocky'];
+        const typeIndex = Math.abs((node.id * 7919 + node.ownerFactionId * 3571)) % planetTypes.length;
+        const planetType = planetTypes[typeIndex];
+
+        const isEarthWasteland = (node.id === 99);
+
+        const PALETTES: Record<PlanetType, { main: string; secondary: string; highlight: string; atmosphere: string; bands?: boolean }> = {
+            terrestrial: { main: '#2d5a3d', secondary: '#1e4d6b', highlight: '#7fb069', atmosphere: 'rgba(120, 180, 220, 0.6)', bands: false },
+            gas: { main: '#c8956b', secondary: '#8b5a2b', highlight: '#e8c39e', atmosphere: 'rgba(220, 180, 140, 0.5)', bands: true },
+            desert: { main: '#b5563a', secondary: '#7a3520', highlight: '#d97757', atmosphere: 'rgba(200, 100, 60, 0.4)', bands: false },
+            ice: { main: '#5ab3c4', secondary: '#2a7a8a', highlight: '#a8e6ed', atmosphere: 'rgba(150, 220, 240, 0.55)', bands: false },
+            ocean: { main: '#1e5b8c', secondary: '#0d3a5c', highlight: '#4a9bc7', atmosphere: 'rgba(80, 160, 220, 0.6)', bands: false },
+            lava: { main: '#3d1810', secondary: '#7a2810', highlight: '#ff6b2b', atmosphere: 'rgba(255, 100, 40, 0.45)', bands: false },
+            rocky: { main: '#6b6b6b', secondary: '#4a4a4a', highlight: '#9a9a9a', atmosphere: 'rgba(180, 180, 180, 0.3)', bands: false },
+        };
+
+        const WASTELAND_PALETTE = {
+            main: '#4a3f35', secondary: '#2d2620', highlight: '#6b5d4d', atmosphere: 'rgba(120, 90, 60, 0.25)', bands: false
+        };
+
+        let palette = isEarthWasteland ? WASTELAND_PALETTE : PALETTES[planetType];
+
+        let factionTint = '';
+        if (node.ownerFactionId === 1) factionTint = 'rgba(40, 80, 180, 0.08)';
+        else if (node.ownerFactionId === 2) factionTint = 'rgba(180, 40, 40, 0.08)';
+        else if (node.ownerFactionId === 0) factionTint = 'rgba(200, 150, 30, 0.08)';
+
+        const lightX = radius * 0.65;
+        const lightY = radius * 0.65;
+        const baseGrad = ctx.createRadialGradient(lightX, lightY, 0, lightX, lightY, radius * 1.4);
+        baseGrad.addColorStop(0, palette.highlight);
+        baseGrad.addColorStop(0.35, palette.main);
+        baseGrad.addColorStop(0.75, palette.secondary);
+        baseGrad.addColorStop(1, '#000000');
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(radius, radius, radius, 0, Math.PI * 2);
+        ctx.clip();
+        ctx.fillStyle = baseGrad;
+        ctx.fillRect(0, 0, size, size);
+
+        if (palette.bands) {
+            const numBands = 5 + Math.floor(rand() * 4);
+            for (let i = 0; i < numBands; i++) {
+                const bandY = (i / numBands) * size + (rand() - 0.5) * 4;
+                const bandH = (radius * 2 / numBands) * (0.6 + rand() * 0.5);
+                const bandAlpha = 0.15 + rand() * 0.25;
+                const bandColor = rand() > 0.5 ? palette.secondary : (rand() > 0.5 ? palette.highlight : palette.main);
+                ctx.fillStyle = this.hexToRgba(bandColor, bandAlpha);
+                ctx.beginPath();
+                ctx.moveTo(0, bandY);
+                for (let x = 0; x <= size; x += 3) {
+                    const wave = Math.sin((x / size) * Math.PI * 3 + i * 1.7) * 1.5;
+                    ctx.lineTo(x, bandY + wave);
+                }
+                ctx.lineTo(size, bandY + bandH);
+                for (let x = size; x >= 0; x -= 3) {
+                    const wave = Math.sin((x / size) * Math.PI * 3 + i * 1.7 + 0.5) * 1.5;
+                    ctx.lineTo(x, bandY + bandH + wave);
+                }
+                ctx.closePath();
+                ctx.fill();
+            }
+            if (rand() > 0.6) {
+                const sx = radius * (0.5 + rand() * 0.8);
+                const sy = radius * (0.7 + rand() * 0.6);
+                const sr = radius * (0.15 + rand() * 0.15);
+                const stormGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, sr);
+                stormGrad.addColorStop(0, this.hexToRgba(palette.secondary, 0.7));
+                stormGrad.addColorStop(1, this.hexToRgba(palette.secondary, 0));
+                ctx.fillStyle = stormGrad;
+                ctx.beginPath();
+                ctx.ellipse(sx, sy, sr * 1.3, sr * 0.7, rand() * Math.PI, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        } else {
+            const numContinents = 2 + Math.floor(rand() * 4);
+            for (let i = 0; i < numContinents; i++) {
+                const cx = radius + (rand() - 0.5) * radius * 1.5;
+                const cy = radius + (rand() - 0.5) * radius * 1.5;
+                const cw = radius * (0.25 + rand() * 0.4);
+                const ch = radius * (0.2 + rand() * 0.35);
+                const rot = rand() * Math.PI;
+                const contAlpha = 0.35 + rand() * 0.35;
+                ctx.save();
+                ctx.translate(cx, cy);
+                ctx.rotate(rot);
+                const contGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, Math.max(cw, ch));
+                contGrad.addColorStop(0, this.hexToRgba(palette.highlight, contAlpha));
+                contGrad.addColorStop(0.6, this.hexToRgba(palette.highlight, contAlpha * 0.5));
+                contGrad.addColorStop(1, this.hexToRgba(palette.highlight, 0));
+                ctx.fillStyle = contGrad;
+                ctx.beginPath();
+                ctx.ellipse(0, 0, cw, ch, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            }
+
+            const numDetails = 4 + Math.floor(rand() * 6);
+            for (let i = 0; i < numDetails; i++) {
+                const cx = radius + (rand() - 0.5) * radius * 1.4;
+                const cy = radius + (rand() - 0.5) * radius * 1.4;
+                const cr = radius * (0.05 + rand() * 0.15);
+                const isLight = rand() > 0.5;
+                const detailColor = isLight ? palette.highlight : palette.secondary;
+                ctx.fillStyle = this.hexToRgba(detailColor, 0.2 + rand() * 0.3);
+                ctx.beginPath();
+                ctx.arc(cx, cy, cr, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            if (planetType === 'lava') {
+                const numCracks = 2 + Math.floor(rand() * 3);
+                for (let i = 0; i < numCracks; i++) {
+                    ctx.strokeStyle = this.hexToRgba(palette.highlight, 0.6 + rand() * 0.3);
+                    ctx.lineWidth = 0.8 + rand() * 0.8;
+                    ctx.beginPath();
+                    let cx = radius + (rand() - 0.5) * radius * 1.2;
+                    let cy = radius + (rand() - 0.5) * radius * 1.2;
+                    ctx.moveTo(cx, cy);
+                    const segs = 3 + Math.floor(rand() * 3);
+                    for (let j = 0; j < segs; j++) {
+                        cx += (rand() - 0.5) * radius * 0.5;
+                        cy += (rand() - 0.5) * radius * 0.5;
+                        ctx.lineTo(cx, cy);
+                    }
+                    ctx.stroke();
+                }
+            }
+
+            if (planetType === 'ice' || planetType === 'ocean' || planetType === 'terrestrial') {
+                if (rand() > 0.4) {
+                    const polarGrad = ctx.createRadialGradient(radius, radius * 0.2, 0, radius, radius * 0.2, radius * 0.5);
+                    polarGrad.addColorStop(0, 'rgba(255, 255, 255, 0.7)');
+                    polarGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+                    ctx.fillStyle = polarGrad;
+                    ctx.beginPath();
+                    ctx.ellipse(radius, radius * 0.2, radius * 0.7, radius * 0.3, 0, 0, Math.PI * 2);
+                    ctx.fill();
+                    
+                    const polarGrad2 = ctx.createRadialGradient(radius, radius * 1.8, 0, radius, radius * 1.8, radius * 0.5);
+                    polarGrad2.addColorStop(0, 'rgba(255, 255, 255, 0.6)');
+                    polarGrad2.addColorStop(1, 'rgba(255, 255, 255, 0)');
+                    ctx.fillStyle = polarGrad2;
+                    ctx.beginPath();
+                    ctx.ellipse(radius, radius * 1.8, radius * 0.7, radius * 0.3, 0, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+        }
+
+        if (isEarthWasteland) {
+            const dustBands = 3 + Math.floor(rand() * 2);
+            for (let i = 0; i < dustBands; i++) {
+                const bandY = radius * (0.2 + i * 0.25) + (rand() - 0.5) * radius * 0.15;
+                const bandH = radius * (0.08 + rand() * 0.06);
+                const dustGrad = ctx.createLinearGradient(0, bandY - bandH, 0, bandY + bandH);
+                dustGrad.addColorStop(0, 'rgba(90, 70, 50, 0)');
+                dustGrad.addColorStop(0.5, 'rgba(100, 80, 60, 0.25 + rand() * 0.15)');
+                dustGrad.addColorStop(1, 'rgba(90, 70, 50, 0)');
+                ctx.fillStyle = dustGrad;
+                ctx.fillRect(0, bandY - bandH, size, bandH * 2);
+            }
+
+            const numRuins = 5 + Math.floor(rand() * 4);
+            for (let i = 0; i < numRuins; i++) {
+                const rx = radius + (rand() - 0.5) * radius * 1.4;
+                const ry = radius + (rand() - 0.5) * radius * 1.4;
+                const rr = radius * (0.08 + rand() * 0.12);
+                const ruinGrad = ctx.createRadialGradient(rx, ry, 0, rx, ry, rr);
+                ruinGrad.addColorStop(0, 'rgba(30, 22, 18, 0.45)');
+                ruinGrad.addColorStop(0.7, 'rgba(40, 30, 24, 0.25)');
+                ruinGrad.addColorStop(1, 'rgba(40, 30, 24, 0)');
+                ctx.fillStyle = ruinGrad;
+                ctx.beginPath();
+                ctx.arc(rx, ry, rr, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            const deadZones = 2 + Math.floor(rand() * 2);
+            for (let i = 0; i < deadZones; i++) {
+                const dx = radius + (rand() - 0.5) * radius * 1.0;
+                const dy = radius + (rand() - 0.5) * radius * 1.0;
+                const dr = radius * (0.15 + rand() * 0.2);
+                const deadGrad = ctx.createRadialGradient(dx, dy, 0, dx, dy, dr);
+                deadGrad.addColorStop(0, 'rgba(60, 55, 50, 0.2)');
+                deadGrad.addColorStop(1, 'rgba(60, 55, 50, 0)');
+                ctx.fillStyle = deadGrad;
+                ctx.beginPath();
+                ctx.ellipse(dx, dy, dr * 1.2, dr * 0.8, rand() * Math.PI, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        if (factionTint) {
+            ctx.fillStyle = factionTint;
+            ctx.fillRect(0, 0, size, size);
+        }
+
+        const shadowGrad = ctx.createRadialGradient(radius * 1.35, radius * 1.35, 0, radius * 1.35, radius * 1.35, radius * 1.2);
+        shadowGrad.addColorStop(0, 'rgba(0, 0, 0, 0.55)');
+        shadowGrad.addColorStop(0.5, 'rgba(0, 0, 0, 0.25)');
+        shadowGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.fillStyle = shadowGrad;
+        ctx.fillRect(0, 0, size, size);
+
+        ctx.restore();
+
+        const atmoGrad = ctx.createRadialGradient(radius, radius, radius * 0.85, radius, radius, radius * 1.15);
+        atmoGrad.addColorStop(0, 'rgba(255, 255, 255, 0)');
+        atmoGrad.addColorStop(0.5, palette.atmosphere);
+        atmoGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+        ctx.fillStyle = atmoGrad;
+        ctx.beginPath();
+        ctx.arc(radius, radius, radius * 1.15, 0, Math.PI * 2);
+        ctx.fill();
+
+        const specGrad = ctx.createRadialGradient(radius * 0.6, radius * 0.6, 0, radius * 0.6, radius * 0.6, radius * 0.35);
+        specGrad.addColorStop(0, 'rgba(255, 255, 255, 0.45)');
+        specGrad.addColorStop(0.5, 'rgba(255, 255, 255, 0.12)');
+        specGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+        ctx.fillStyle = specGrad;
+        ctx.beginPath();
+        ctx.arc(radius, radius, radius, 0, Math.PI * 2);
+        ctx.clip();
+        ctx.fillRect(0, 0, size, size);
+
+        this.textures.addCanvas(procKey, canvas);
+        return procKey;
+    }
+
+    private hexToRgba(hex: string, alpha: number): string {
+        const h = hex.replace('#', '');
+        const r = parseInt(h.substring(0, 2), 16);
+        const g = parseInt(h.substring(2, 4), 16);
+        const b = parseInt(h.substring(4, 6), 16);
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+
+    private renderStaticTopology() {
+        this.edgeGraphics.clear();
+        this.edgeFlowGraphics.clear();
+        this.edges = [];
+        this.edgeNextPulseTimes = [];
+        this.activePulses = [];
+        this.nodeGraphicsMap.clear();
+
+        this.constellationContainers.forEach(c => c.destroy());
+        this.constellationContainers = [];
+
+        const rawNodes = this.store.strategicNodes;
+        const nodes = rawNodes?.value !== undefined ? rawNodes.value : (rawNodes || []);
+        const now = this.time.now;
+
+        const drawnEdges = new Set<string>();
+        nodes.forEach((node: any) => {
+            (node.connections || []).forEach((targetId: number) => {
+                const edgeKey = [node.id, targetId].sort().join('-');
+                if (!drawnEdges.has(edgeKey)) {
+                    drawnEdges.add(edgeKey);
+                    const targetNode = nodes.find((n: any) => n.id === targetId);
+                    if (targetNode) {
+                        let factionHint = -1;
+                        if (node.ownerFactionId === targetNode.ownerFactionId) {
+                            factionHint = node.ownerFactionId;
+                        }
+                        const idx = this.edges.length;
+                        this.edges.push({
+                            x1: node.x, y1: node.y,
+                            x2: targetNode.x, y2: targetNode.y,
+                            length: Phaser.Math.Distance.Between(node.x, node.y, targetNode.x, targetNode.y),
+                            factionHint
+                        });
+
+                        this.edgeNextPulseTimes.push(now + idx * 600 + Math.random() * 3000);
+
+                        const line = new Phaser.Geom.Line(node.x, node.y, targetNode.x, targetNode.y);
+                        this.edgeGraphics.lineStyle(0.6, 0x334155, 0.2);
+                        this.edgeGraphics.strokeLineShape(line);
+                    }
+                }
+            });
+        });
+
+        nodes.forEach((node: any) => {
+            let color = 0x94a3b8;
+            let lightColor = 0xffffff;
+            if (node.ownerFactionId === 1) { color = 0x3b82f6; lightColor = 0x93c5fd; }
+            else if (node.ownerFactionId === 2) { color = 0xef4444; lightColor = 0xfca5a5; }
+            else if (node.ownerFactionId === 0) { color = 0xf59e0b; lightColor = 0xfde047; }
+
+            const isEarth = (node.id === 99);
+            if (isEarth) {
+                color = 0x5a4a3a;      
+                lightColor = 0x8a7a6a; 
+            }
+
+            const hasCustomImage = customPlanetIds.includes(node.id);
+            const isCapitalOrFort = node.type === 'capital' || node.type === 'fortress';
+            // 基础半径：有图片=45，首都/要塞=28，普通=20
+            let planetRadius = node.type === 'empty' ? 6 : (hasCustomImage ? 45 : (isCapitalOrFort ? 28 : 20));
+            // 非图片星球：基于 node.id 的稳定伪随机大小变化（±4px），增加视觉多样性
+            if (!hasCustomImage && node.type !== 'empty') {
+                const seed = (node.id * 2654435761) >>> 0; // Knuth 乘法哈希
+                const variation = ((seed % 9) - 4) * 0.9;  // -3.6 ~ +3.6，乘以0.9避免极端
+                planetRadius += variation;
+            }
+
+            // --- 领土归属指示（极淡的圆环，不喧宾夺主）---
+            if (node.type !== 'empty') {
+                const ringRadius = (hasCustomImage ? planetRadius : planetRadius * 1.3) + 12;
+                const territoryRing = this.add.circle(node.x, node.y, ringRadius)
+                    .setDepth(2.5)
+                    .setStrokeStyle(0, this.getFactionColor(node.ownerFactionId), 0.2);
+                this.nodeGraphicsMap.set(node.id, territoryRing);
+            }
+
+            if (node.type !== 'empty') {
+                const earthNebulaAlpha = isEarth ? 0.22 : 0.2;  
+                const earthGlowAlpha = isEarth ? 0.55 : 0.6;    
+                const earthGlowScale = isEarth ? planetRadius * 3.8 : planetRadius * 4; 
+
+                this.add.image(node.x, node.y, 'soft_glow')
+                    .setDepth(0)
+                    .setTint(color)
+                    .setBlendMode(Phaser.BlendModes.ADD)
+                    .setDisplaySize(planetRadius * 12, planetRadius * 12)
+                    .setAlpha(earthNebulaAlpha);
+
+                const planetGlow = this.add.image(node.x, node.y, 'soft_glow')
+                    .setDepth(0)
+                    .setTint(color)
+                    .setBlendMode(Phaser.BlendModes.ADD)
+                    .setDisplaySize(earthGlowScale, earthGlowScale)
+                    .setAlpha(earthGlowAlpha);
+
+                this.tweens.add({
+                    targets: planetGlow,
+                    scaleX: (earthGlowScale * 1.18) / 128,
+                    scaleY: (earthGlowScale * 1.18) / 128,
+                    alpha: isEarth ? 0.30 : 0.3,  
+                    duration: isEarth ? 4000 + Math.random() * 2000 : 2000 + Math.random() * 1000,
+                    yoyo: true,
+                    repeat: -1,
+                    ease: 'Sine.easeInOut'
+                });
+
+                if (isEarth) {
+                    const atmoTextureKey = 'earth_wasteland_atmosphere';
+                    if (!this.textures.exists(atmoTextureKey)) {
+                        const atmoCanvas = document.createElement('canvas');
+                        const atmoSize = 512;  
+                        atmoCanvas.width = atmoSize;
+                        atmoCanvas.height = atmoSize;
+                        const aCtx = atmoCanvas.getContext('2d') as CanvasRenderingContext2D;
+                        const center = atmoSize / 2;
+
+                        const outerR = center * 0.95;
+                        const outerGrad = aCtx.createRadialGradient(center, center, center * 0.2, center, center, outerR);
+                        outerGrad.addColorStop(0, 'rgba(139, 90, 43, 0.20)');
+                        outerGrad.addColorStop(0.5, 'rgba(120, 80, 40, 0.12)');
+                        outerGrad.addColorStop(1, 'rgba(100, 70, 35, 0)');
+                        aCtx.fillStyle = outerGrad;
+                        aCtx.fillRect(0, 0, atmoSize, atmoSize);
+
+                        const midR = center * 0.58;
+                        const midGrad = aCtx.createRadialGradient(center, center, center * 0.25, center, center, midR);
+                        midGrad.addColorStop(0, 'rgba(160, 100, 50, 0)');
+                        midGrad.addColorStop(0.6, 'rgba(150, 95, 45, 0.18)');
+                        midGrad.addColorStop(1, 'rgba(140, 90, 42, 0)');
+                        aCtx.fillStyle = midGrad;
+                        aCtx.fillRect(0, 0, atmoSize, atmoSize);
+
+                        const innerR = center * 0.35;
+                        const innerGrad = aCtx.createRadialGradient(center, center, center * 0.2, center, center, innerR);
+                        innerGrad.addColorStop(0, 'rgba(180, 120, 60, 0.25)');
+                        innerGrad.addColorStop(0.7, 'rgba(160, 100, 50, 0.15)');
+                        innerGrad.addColorStop(1, 'rgba(140, 90, 43, 0)');
+                        aCtx.fillStyle = innerGrad;
+                        aCtx.fillRect(0, 0, atmoSize, atmoSize);
+
+                        this.textures.addCanvas(atmoTextureKey, atmoCanvas);
+                    }
+
+                    const atmoDisplaySize = planetRadius * 9;
+                    const atmosphereGlow = this.add.image(node.x, node.y, atmoTextureKey)
+                        .setDepth(-0.8)
+                        .setBlendMode(Phaser.BlendModes.ADD)
+                        .setDisplaySize(atmoDisplaySize, atmoDisplaySize)
+                        .setAlpha(0.9);
+
+                    this.tweens.add({
+                        targets: atmosphereGlow,
+                        alpha: { from: 0.7, to: 1.0 },
+                        duration: 5000 + Math.random() * 2000, 
+                        yoyo: true,
+                        repeat: -1,
+                        ease: 'Sine.easeInOut'
+                    });
+
+                    const debrisCount = 12;
+                    for (let i = 0; i < debrisCount; i++) {
+                        const orbitAngle = (i / debrisCount) * Math.PI * 2 + Math.random() * 0.6;
+                        const orbitDistance = planetRadius * (1.9 + Math.random() * 1.3);
+                        const orbitSpeed = 30000 + Math.random() * 25000;
+                        const particleSize = 2 + Math.random() * 1.5;
+
+                        const brightness = Math.random();
+                        let debrisColor: number;
+                        if (brightness > 0.7) debrisColor = 0xCD853F;
+                        else if (brightness > 0.3) debrisColor = 0xA0522D;
+                        else debrisColor = 0x6B4423;
+
+                        const debrisAlpha = 0.35 + Math.random() * 0.30;
+                        const debrisOrbitContainer = this.add.container(node.x, node.y).setDepth(-0.6);
+                        const debris = this.add.circle(
+                            Math.cos(orbitAngle) * orbitDistance,
+                            Math.sin(orbitAngle) * orbitDistance,
+                            particleSize,
+                            debrisColor,
+                            debrisAlpha
+                        ).setBlendMode(Phaser.BlendModes.ADD);
+                        
+                        debrisOrbitContainer.add(debris);
+
+                        this.tweens.add({
+                            targets: debrisOrbitContainer,
+                            rotation: Math.PI * 2,
+                            duration: orbitSpeed,
+                            repeat: -1,
+                            ease: 'Linear.None',
+                            delay: Math.random() * orbitSpeed
+                        });
+
+                        this.tweens.add({
+                            targets: debris,
+                            alpha: { from: debrisAlpha * 0.4, to: debrisAlpha },
+                            duration: 2000 + Math.random() * 2000,
+                            yoyo: true,
+                            repeat: -1,
+                            ease: 'Sine.easeInOut'
+                        });
+                    }
+
+                    const numGhostOrbits = 1 + Math.floor(Math.random() * 2);
+                    for (let o = 0; o < numGhostOrbits; o++) {
+                        const ghostOrbitContainer = this.add.container(node.x, node.y).setDepth(-0.9);
+                        const ghostGraphics = this.add.graphics().setBlendMode(Phaser.BlendModes.ADD);
+                        ghostOrbitContainer.add(ghostGraphics);
+
+                        const orbitA = planetRadius * (2.2 + Math.random() * 0.8);
+                        const orbitB = planetRadius * (1.6 + Math.random() * 0.6);
+
+                        ghostGraphics.lineStyle(0.5, 0x8B6914, 0.08);
+                        ghostGraphics.strokeEllipse(0, 0, orbitA * 2, orbitB * 2);
+
+                        this.tweens.add({
+                            targets: ghostOrbitContainer,
+                            rotation: Math.PI * 2,
+                            duration: 120000 + Math.random() * 60000,
+                            repeat: -1,
+                            ease: 'Linear.None'
+                        });
+                    }
+                }
+            }
+
+            if (node.type !== 'empty') {
+                const container = this.add.container(node.x, node.y).setDepth(2);
+
+                if (node.hasArtemisNecklace) {
+                    // ===== 阿尔泰米斯项链：12颗纯黑单点卫星 =====
+                    const artemisOrbitRadius = planetRadius * 1.9;
+                    const satelliteCount = 12;
+                    const orbitGraphics = this.add.graphics();
+                    orbitGraphics.lineStyle(0.5, 0x222233, 0.2);
+                    orbitGraphics.strokeCircle(0, 0, artemisOrbitRadius);
+                    container.add(orbitGraphics);
+
+                    for (let i = 0; i < satelliteCount; i++) {
+                        const angle = (i / satelliteCount) * Math.PI * 2;
+                        const sx = Math.cos(angle) * artemisOrbitRadius;
+                        const sy = Math.sin(angle) * artemisOrbitRadius;
+
+                        // 纯黑单点卫星，尖锐无发光
+                        const sat = this.add.circle(sx, sy, 2.8, 0x000000, 1.0);
+                        container.add(sat);
+
+                        // 淡脉动（暗→微亮→暗），不做发光扩散
+                        this.tweens.add({
+                            targets: sat,
+                            alpha: { from: 0.50, to: 0.85 },
+                            duration: 2500 + (i * 320) % 1500,
+                            yoyo: true,
+                            repeat: -1,
+                            ease: 'Sine.easeInOut'
+                        });
+                    }
+
+                    // 整体轨道缓慢逆时针旋转
+                    (container as any).rotSpeed = -0.003;
+                } else {
+                    // ===== 普通星座环（原有逻辑）=====
+                    const orbitGraphics = this.add.graphics();
+                    container.add(orbitGraphics);
+
+                    const earthConstellationAlpha = isEarth ? 0.08 : 0.3;
+                    orbitGraphics.lineStyle(1, color, earthConstellationAlpha);
+
+                    const pointsCount = isEarth ? Phaser.Math.Between(2, 3) : Phaser.Math.Between(4, 7);
+                    const isCustomPlanet = customPlanetIds.includes(node.id);
+                    const visualRadius = isCustomPlanet ? planetRadius : planetRadius * 1.3;
+                    const orbitRadius = Math.ceil(visualRadius + (isEarth ? 20 : 30));
+                    const points = [];
+
+                    for (let i = 0; i < pointsCount; i++) {
+                        const angle = (i / pointsCount) * Math.PI * 2 + Phaser.Math.FloatBetween(0, 0.5);
+                        const r = orbitRadius + Phaser.Math.Between(-10, 15);
+                        const px = Math.cos(angle) * r;
+                        const py = Math.sin(angle) * r;
+                        points.push({ x: px, y: py });
+
+                        const starSize = isEarth ? 5 : 8;
+                        const starAlpha = isEarth ? 0.3 : 1;
+                        const star = this.add.image(px, py, 'soft_glow')
+                            .setTint(lightColor)
+                            .setBlendMode(Phaser.BlendModes.ADD)
+                            .setDisplaySize(starSize, starSize)
+                            .setAlpha(starAlpha);
+
+                        container.add(star);
+
+                        this.tweens.add({
+                            targets: star,
+                            alpha: { from: isEarth ? 0.05 : 0.2, to: isEarth ? 0.25 : 1 },
+                            duration: isEarth ? Phaser.Math.Between(2000, 4000) : Phaser.Math.Between(500, 1500),
+                            yoyo: true,
+                            repeat: -1,
+                            ease: 'Sine.easeInOut'
+                        });
+                    }
+
+                    orbitGraphics.beginPath();
+                    orbitGraphics.moveTo(points[0].x, points[0].y);
+                    for (let i = 1; i < pointsCount; i++) {
+                        orbitGraphics.lineTo(points[i].x, points[i].y);
+                    }
+                    orbitGraphics.closePath();
+                    orbitGraphics.strokePath();
+
+                    (container as any).rotSpeed = Phaser.Math.FloatBetween(-0.005, 0.005);
+                }
+
+                this.constellationContainers.push(container);
+            }
+
+            if (node.type !== 'empty') {
+                const textureKey = this.getOrCreatePlanetTexture(node);
+                const isProcPlanet = textureKey.startsWith('proc_planet_');
+                const displaySize = isProcPlanet ? planetRadius * 2 * 1.3 : planetRadius * 2;
+                
+                const planetImg = this.add.image(node.x, node.y, textureKey).setDisplaySize(displaySize, displaySize).setDepth(3);
+                // 点击交互：使用原点中心的圆形碰撞（origin 0.5,0.5 下本地坐标中心=0,0）
+                planetImg.setInteractive(new Phaser.Geom.Circle(0, 0, displaySize/2 + 4), Phaser.Geom.Circle.Contains);
+                this.nodeSprites.set(node.id, planetImg);
+                this.bindNodeClick(planetImg, node);
+
+                const rotDir = Math.random() > 0.5 ? 1 : -1;
+                this.tweens.add({
+                    targets: planetImg,
+                    rotation: rotDir * Math.PI * 2,
+                    duration: Phaser.Math.Between(120000, 240000), 
+                    repeat: -1,
+                    ease: 'Linear'
+                });
+
+                if (isEarth && !isProcPlanet) {
+                    const overlayKey = 'earth_wasteland_overlay';
+                    if (!this.textures.exists(overlayKey)) {
+                        const ovCanvas = document.createElement('canvas');
+                        ovCanvas.width = 256; ovCanvas.height = 256;
+                        const oCtx = ovCanvas.getContext('2d') as CanvasRenderingContext2D;
+                        oCtx.clearRect(0, 0, 256, 256);
+                        oCtx.beginPath();
+                        oCtx.arc(128, 128, 126, 0, Math.PI * 2);  
+                        oCtx.clip();
+                        const ovGrad = oCtx.createRadialGradient(128, 128, 0, 128, 128, 128);
+                        ovGrad.addColorStop(0, 'rgba(61, 43, 31, 0.15)');   
+                        ovGrad.addColorStop(0.7, 'rgba(61, 43, 31, 0.28)'); 
+                        ovGrad.addColorStop(1, 'rgba(50, 35, 25, 0.35)');   
+                        oCtx.fillStyle = ovGrad;
+                        oCtx.fillRect(0, 0, 256, 256);
+                        this.textures.addCanvas(overlayKey, ovCanvas);
+                    }
+                    this.add.image(node.x, node.y, overlayKey)
+                        .setDisplaySize(displaySize * 0.95, displaySize * 0.95)
+                        .setDepth(3.5)
+                        .setBlendMode(Phaser.BlendModes.MULTIPLY);
+
+                    const edgeKey = 'earth_wasteland_edge';
+                    if (!this.textures.exists(edgeKey)) {
+                        const eCanvas = document.createElement('canvas');
+                        eCanvas.width = 256; eCanvas.height = 256;
+                        const eCtx = eCanvas.getContext('2d') as CanvasRenderingContext2D;
+                        eCtx.clearRect(0, 0, 256, 256);
+                        eCtx.beginPath();
+                        eCtx.arc(128, 128, 128, 0, Math.PI * 2);
+                        eCtx.clip();
+                        const eGrad = eCtx.createRadialGradient(128, 128, 100, 128, 128, 128);
+                        eGrad.addColorStop(0, 'rgba(205, 133, 63, 0)');
+                        eGrad.addColorStop(0.6, 'rgba(205, 133, 63, 0.12)'); 
+                        eGrad.addColorStop(1, 'rgba(180, 120, 60, 0.06)');   
+                        eCtx.fillStyle = eGrad;
+                        eCtx.fillRect(0, 0, 256, 256);
+                        this.textures.addCanvas(edgeKey, eCanvas);
+                    }
+                    const edgeGlow = this.add.image(node.x, node.y, edgeKey)
+                        .setDisplaySize(displaySize * 1.2, displaySize * 1.2)
+                        .setDepth(3.5)
+                        .setBlendMode(Phaser.BlendModes.ADD)
+                        .setAlpha(0.85);
+
+                    this.tweens.add({
+                        targets: edgeGlow,
+                        alpha: { from: 0.6, to: 0.95 },
+                        duration: 6000 + Math.random() * 2000,
+                        yoyo: true,
+                        repeat: -1,
+                        ease: 'Sine.easeInOut'
+                    });
+                }
+            } else {
+                const emptyCircle = this.add.circle(node.x, node.y, 6, color, 0.5).setDepth(3);
+                this.add.circle(node.x, node.y, 6, 0xffffff, 0.2).setDepth(3).setStrokeStyle(0, 0xffffff, 0.3);
+                emptyCircle.setInteractive(new Phaser.Geom.Circle(0, 0, 10), Phaser.Geom.Circle.Contains);
+                this.nodeSprites.set(node.id, emptyCircle as any);
+                this.bindNodeClick(emptyCircle, node);
+            }
+
+            const earthLabelColor = isEarth ? '#7a6a5a' : '#e2e8f0';
+            const labelText = this.add.text(node.x, node.y + planetRadius + 15, node.name, {
+                fontSize: node.type === 'empty' ? '12px' : '14px',
+                color: earthLabelColor,
+                fontFamily: 'sans-serif',
+                stroke: '#05050a',
+                strokeThickness: 5
+            }).setOrigin(0.5).setDepth(4);
+            this.label_texts.push(labelText);
+        });
+    }
+
+    // ===== 节点点击交互：选中舰队后点击目标节点 → 下达移动指令 =====
+    private hitTestNodeAt(wx: number, wy: number): any | null {
+        const rawNodes = this.store.strategicNodes;
+        const allNodes = rawNodes?.value !== undefined ? rawNodes.value : (rawNodes || []);
+        for (const node of allNodes) {
+            const d = Phaser.Math.Distance.Between(wx, wy, node.x, node.y);
+            if (d < 28) return node; // 28px 命中范围，覆盖所有星球尺寸
+        }
+        return null;
+    }
+
+    private bindNodeClick(sprite: Phaser.GameObjects.GameObject, nodeData: any) {
+        sprite.on('pointerdown', (pointer: Phaser.Input.Pointer) => {
+            // 右键 → 弹出战略菜单
+            if (pointer.button === 2) {
+                this.showNodeRightMenu(pointer.worldX, pointer.worldY, nodeData);
+                return;
+            }
+            // 左键 → 原有逻辑（全局点击关闭菜单已在 create 中处理）
+            const selectedId = this.store.selectedFleetId;
+            if (selectedId) {
+                this.store.issueWarpOrder(selectedId, nodeData.id);
+            } else {
+                this.store.selectedNodeId = nodeData.id;
+            }
+        });
+    }
+
+    // ===== v3.1：右键直达面板（删除 ContextMenu 中间层）=====
+    private showNodeRightMenu(wx: number, wy: number, nodeData: any) {
+        const playerFac = this.store.factions?.find((f: any) => f.type === 'player');
+        const playerFactionId = playerFac?.id || (this.store.playerAdmiralId >= 0 ? 1 : null);
+        const isFriendly = nodeData.ownerFactionId === playerFactionId;
+        if (isFriendly) {
+            this.hideEnemyOpPanel();
+            this.showLocalOpPanel(wx, wy, nodeData);
+        } else {
+            this.hideLocalOpPanel();
+            this.showEnemyOpPanel(wx, wy, nodeData);
+        }
+    }
+        this.hideContextMenu();
+        this.hideLocalOpPanel();
+        this.hideEnemyOpPanel();
+        this.contextNodeData = nodeData;
+
+        const playerFac = this.store.factions?.find((f: any) => f.type === 'player');
+        const playerFactionId = playerFac?.id || (this.store.playerAdmiralId >= 0 ? 1 : null);
+        const rawNodes = this.store.strategicNodes;
+        const allNodes = rawNodes?.value !== undefined ? rawNodes.value : (rawNodes || []);
+        const nodeOwnerFaction = nodeData.ownerFactionId;
+        const isFriendly = nodeOwnerFaction === playerFactionId;
+        const isNeutral = nodeOwnerFaction === 0;
+
+        const c = this.themeColors;
+        const ITEM_H = 36, PAD = 12, W = 160;
+        const items: { label: string; enabled: boolean; action: () => void; accent: number }[] = [];
+
+        if (isFriendly) {
+            // v3：友方节点"行政"→弹出本地操作面板
+            items.push({ label: '行政', enabled: true, accent: c.accentGarrison, action: () => { this.hideContextMenu(); this.showLocalOpPanel(wx, wy, nodeData); } });
+            items.push({ label: '驻守', enabled: true, accent: c.alliance, action: () => { this.hideContextMenu(); this.showFleetPanel(nodeData, 'garrison'); } });
+        } else if (isNeutral) {
+            // v3：中立节点"情报"→弹出敌方操作面板
+            items.push({ label: '情报', enabled: true, accent: c.neutral, action: () => { this.hideContextMenu(); this.showEnemyOpPanel(wx, wy, nodeData); } });
+        } else {
+            // v3：敌方节点"情报"→弹出敌方操作面板
+            items.push({ label: '情报', enabled: true, accent: c.neutral, action: () => { this.hideContextMenu(); this.showEnemyOpPanel(wx, wy, nodeData); } });
+            const hasAdjacentFriendly = nodeData.connections?.some((connId: number) => {
+                const neighbor = allNodes.find((n: any) => n.id === connId);
+                return neighbor && neighbor.ownerFactionId === playerFactionId;
+            });
+            items.push({ label: '出击', enabled: !!hasAdjacentFriendly, accent: c.accentSortie, action: () => {
+                if (!hasAdjacentFriendly) return;
+                this.hideContextMenu();
+                this.showFleetPanel(nodeData, 'sortie');
+            }});
+        }
+
+        const H = items.length * ITEM_H + PAD * 2;
+        const menu = this.add.container(wx, wy).setDepth(100);
+
+        // 拟态风格背景面板
+        const bg = this.add.graphics().setDepth(100);
+        this.drawNeoPanel(bg, -W / 2, -H / 2, W, H, 10);
+        menu.add(bg);
+
+        // 顶部彩色 accent 细条
+        const topAccent = items[0]?.accent || c.border;
+        const accentBar = this.add.graphics().setDepth(101);
+        accentBar.fillStyle(topAccent, 0.85);
+        accentBar.fillRoundedRect(-W / 2, -H / 2, W, 3, { tl: 10, tr: 10, bl: 0, br: 0 });
+        menu.add(accentBar);
+
+        const textMutedStr = this.hexIntToStr(c.textMuted);
+        const textStr = this.hexIntToStr(c.text);
+        const textDisabledStr = this.hexIntToStr(c.textDisabled);
+        const hoverStr = this.hexIntToStr(c.hoverText);
+
+        items.forEach((item, idx) => {
+            const yOff = -H / 2 + PAD + idx * ITEM_H + ITEM_H / 2;
+            // 左侧 accent 色点
+            const dot = this.add.rectangle(-W / 2 + 12, yOff, 3, 14, item.accent, item.enabled ? 0.9 : 0.25);
+            // 文字（纯视觉，不再 setInteractive）
+            const color = item.enabled ? textMutedStr : textDisabledStr;
+            const txt = this.add.text(-W / 2 + 26, yOff, item.label, {
+                fontSize: '13px', color, fontFamily: 'sans-serif'
+            }).setOrigin(0, 0.5);
+            // hover 凹陷高亮底
+            const hoverBg = this.add.graphics().setAlpha(0);
+            // 整行透明交互层（顶层，覆盖整行 hit area，替代 txt 的狭小点击区）
+            const rowZone = this.add.graphics();
+            rowZone.fillStyle(0xffffff, 0.001);
+            rowZone.fillRect(-W / 2 + 4, yOff - ITEM_H / 2 + 1, W - 8, ITEM_H - 2);
+            rowZone.setInteractive(
+                new Phaser.Geom.Rectangle(-W / 2 + 4, yOff - ITEM_H / 2 + 1, W - 8, ITEM_H - 2),
+                Phaser.Geom.Rectangle.Contains
+            );
+            // 加入容器顺序：dot → hoverBg → txt → rowZone（顶层交互）
+            menu.add([dot, hoverBg, txt, rowZone]);
+
+            if (item.enabled) {
+                rowZone.on('pointerover', () => {
+                    hoverBg.clear();
+                    this.drawNeoInset(hoverBg, -W / 2 + 4, yOff - ITEM_H / 2 + 1, W - 8, ITEM_H - 2, 6);
+                    hoverBg.setAlpha(0.9);
+                    dot.setFillStyle(item.accent, 1);
+                    txt.setColor(hoverStr);
+                });
+                rowZone.on('pointerout', () => {
+                    hoverBg.clear();
+                    hoverBg.setAlpha(0);
+                    dot.setFillStyle(item.accent, 0.9);
+                    txt.setColor(textMutedStr);
+                });
+                rowZone.on('pointerdown', item.action);
+            }
+        });
+
+        // 菜单尺寸不随地图缩放
+        menu.setScale(1 / this.cameras.main.zoom);
+        this.contextMenu = menu;
+    }
+
+    private hideContextMenu() {
+        if (this.contextMenu) { this.contextMenu.destroy(); this.contextMenu = null; }
+    }
+
+    // ===== v3 新增：本地操作面板（友方7项） =====
+    private showLocalOpPanel(wx: number, wy: number, nodeData: any) {
+        this.hideLocalOpPanel();
+        this.hideEnemyOpPanel();
+
+        const c = this.themeColors;
+        const W = 260;
+        const ITEM_H = 36;
+        const PAD = 10;
+        const HEADER_H = 34;
+
+        // 获取玩家提督
+        const allAdms = this.store.allAdmirals?.value || this.store.allAdmirals || [];
+        const playerAdmId = this.store.playerAdmiralId;
+        const playerAdm = allAdms.find((a: any) => a.id === playerAdmId);
+
+        // 操作定义：色点 + 名称 + 效果 + 消耗
+        const ops = [
+            { op: 'special_tax',    label: '征收特别税',  effect: '+₮500 治安-5',  cost: 0,    color: 0x22c55e, costLabel: '免费' },
+            { op: 'security_boost', label: '强化治安',    effect: '治安+15',       cost: 300,  color: 0xef4444, costLabel: '₮300' },
+            { op: 'welfare_invest', label: '民生投资',    effect: '开发+150',      cost: 800,  color: 0x3b82f6, costLabel: '₮800' },
+            { op: 'fortify_local',  label: '要塞化',      effect: '防御+50%',      cost: 4000, color: 0xef4444, costLabel: '₮4000' },
+            { op: 'set_hq',         label: '设为防卫司令部', effect: '治安×3 供给×2', cost: 0,  color: 0x3b82f6, costLabel: '免费' },
+            { op: 'emergency_draft',label: '紧急征召',    effect: '兵源+5% 士气-10', cost: 0,  color: 0xef4444, costLabel: '免费' },
+            { op: 'intel_gather',   label: '情报搜集',    effect: '揭示相邻敌方',   cost: 200,  color: 0xfbbf24, costLabel: '₮200' },
+        ];
+
+        const totalRows = ops.length + 1; // +1 for 驻守
+        const H = HEADER_H + totalRows * ITEM_H + PAD * 2;
+
+        const panel = this.add.container(wx, wy).setDepth(110);
+
+        // 拟态风格背景面板
+        const bg = this.add.graphics().setDepth(110);
+        this.drawNeoPanel(bg, -W / 2, -H / 2, W, H, 10);
+        panel.add(bg);
+
+        // 顶部 accent 条
+        const accentBar = this.add.graphics().setDepth(111);
+        accentBar.fillStyle(c.accentGarrison, 0.85);
+        accentBar.fillRoundedRect(-W / 2, -H / 2, W, 3, { tl: 10, tr: 10, bl: 0, br: 0 });
+        panel.add(accentBar);
+
+        // 标题
+        const nodeTypeLabel = nodeData.type === 'capital' ? '首都' : nodeData.type === 'fortress' ? '要塞' : nodeData.type === 'resource' ? '资源' : '星球';
+        const titleTxt = this.add.text(-W / 2 + 12, -H / 2 + 8, `▎ ${nodeData.name} (友方·${nodeTypeLabel})`, {
+            fontSize: '14px', color: this.hexIntToStr(c.text), fontFamily: 'sans-serif', fontStyle: 'bold'
+        }).setOrigin(0, 0.5);
+        panel.add(titleTxt);
+
+        const textMutedStr = this.hexIntToStr(c.textMuted);
+        const textDisabledStr = this.hexIntToStr(c.textDisabled);
+        const hoverStr = this.hexIntToStr(c.hoverText);
+        const metaGold = this.store.metaGold || 0;
+
+        // 绘制每行操作
+        ops.forEach((opDef, idx) => {
+            const yOff = -H / 2 + HEADER_H + PAD + idx * ITEM_H + ITEM_H / 2;
+
+            // 检查权限/冷却/国库
+            const hasPerm = playerAdm ? this.adminStore?.canLocalOp(playerAdm, nodeData.id, opDef.op) : false;
+            const coolingDown = this.adminStore?.isLocalOpCoolingDown(nodeData.id, opDef.op) ?? false;
+            const canAfford = opDef.cost === 0 || metaGold >= opDef.cost;
+            const enabled = hasPerm && !coolingDown && canAfford;
+
+            // 左侧色点
+            const dot = this.add.circle(-W / 2 + 14, yOff, 4, opDef.color, enabled ? 0.9 : 0.25);
+
+            // 操作名称（纯视觉，不再 setInteractive）
+            const nameColor = enabled ? textMutedStr : textDisabledStr;
+            const nameTxt = this.add.text(-W / 2 + 26, yOff - 6, opDef.label, {
+                fontSize: '13px', color: nameColor, fontFamily: 'sans-serif', fontStyle: 'bold'
+            }).setOrigin(0, 0.5);
+
+            // 效果 + 消耗
+            const effectTxt = this.add.text(-W / 2 + 26, yOff + 6, `${opDef.effect}  ${opDef.costLabel}`, {
+                fontSize: '11px', color: this.hexIntToStr(c.textDisabled), fontFamily: 'monospace'
+            }).setOrigin(0, 0.5);
+
+            // hover 背景
+            const hoverBg = this.add.graphics().setAlpha(0);
+
+            // 整行透明交互层（顶层，覆盖整行 hit area，替代 nameTxt 的狭小点击区）
+            const rowZone = this.add.graphics();
+            rowZone.fillStyle(0xffffff, 0.001);
+            rowZone.fillRect(-W / 2 + 4, yOff - ITEM_H / 2 + 1, W - 8, ITEM_H - 2);
+            rowZone.setInteractive(
+                new Phaser.Geom.Rectangle(-W / 2 + 4, yOff - ITEM_H / 2 + 1, W - 8, ITEM_H - 2),
+                Phaser.Geom.Rectangle.Contains
+            );
+
+            // 加入容器顺序：dot → nameTxt → effectTxt → hoverBg → rowZone（顶层交互）
+            panel.add([dot, nameTxt, effectTxt, hoverBg, rowZone]);
+
+            if (enabled) {
+                rowZone.on('pointerover', () => {
+                    hoverBg.clear();
+                    this.drawNeoInset(hoverBg, -W / 2 + 4, yOff - ITEM_H / 2 + 1, W - 8, ITEM_H - 2, 6);
+                    hoverBg.setAlpha(0.8);
+                    dot.setFillStyle(opDef.color, 1);
+                    nameTxt.setColor(hoverStr);
+                });
+                rowZone.on('pointerout', () => {
+                    hoverBg.clear();
+                    hoverBg.setAlpha(0);
+                    dot.setFillStyle(opDef.color, 0.9);
+                    nameTxt.setColor(textMutedStr);
+                });
+                rowZone.on('pointerdown', () => {
+                    this.hideLocalOpPanel();
+                    try {
+                        // ≥₮2000 需二次确认
+                        if (this.adminStore?.requiresConfirm(opDef.cost)) {
+                            this.store.requestConfirm(
+                                opDef.label,
+                                `消耗${opDef.costLabel}，${opDef.effect}`,
+                                opDef.cost,
+                                () => {
+                                    const result = this.adminStore.executeLocalOp(nodeData.id, opDef.op);
+                                    this.store.triggerToast(result.message);
+                                }
+                            );
+                        } else {
+                            const result = this.adminStore.executeLocalOp(nodeData.id, opDef.op);
+                            this.store.triggerToast(result.message);
+                        }
+                    } catch (err) {
+                        console.error('[showLocalOpPanel] pointerdown error:', err);
+                        this.store.triggerToast?.('操作执行失败：' + (err instanceof Error ? err.message : String(err)));
+                    }
+                });
+            }
+        });
+
+        // 底部"驻守"行
+        const garrisonYOff = -H / 2 + HEADER_H + PAD + ops.length * ITEM_H + ITEM_H / 2;
+        const garrisonDot = this.add.circle(-W / 2 + 14, garrisonYOff, 4, c.alliance, 0.9);
+        const garrisonTxt = this.add.text(-W / 2 + 26, garrisonYOff, '驻守（舰队编成）', {
+            fontSize: '13px', color: textMutedStr, fontFamily: 'sans-serif', fontStyle: 'bold'
+        }).setOrigin(0, 0.5);
+        const garrisonHoverBg = this.add.graphics().setAlpha(0);
+        // 整行透明交互层（顶层，覆盖整行 hit area，替代 garrisonTxt 的狭小点击区）
+        const garrisonRowZone = this.add.graphics();
+        garrisonRowZone.fillStyle(0xffffff, 0.001);
+        garrisonRowZone.fillRect(-W / 2 + 4, garrisonYOff - ITEM_H / 2 + 1, W - 8, ITEM_H - 2);
+        garrisonRowZone.setInteractive(
+            new Phaser.Geom.Rectangle(-W / 2 + 4, garrisonYOff - ITEM_H / 2 + 1, W - 8, ITEM_H - 2),
+            Phaser.Geom.Rectangle.Contains
+        );
+        // 加入容器顺序：garrisonDot → garrisonTxt → garrisonHoverBg → garrisonRowZone（顶层交互）
+        panel.add([garrisonDot, garrisonTxt, garrisonHoverBg, garrisonRowZone]);
+        garrisonRowZone.on('pointerover', () => {
+            garrisonHoverBg.clear();
+            this.drawNeoInset(garrisonHoverBg, -W / 2 + 4, garrisonYOff - ITEM_H / 2 + 1, W - 8, ITEM_H - 2, 6);
+            garrisonHoverBg.setAlpha(0.8);
+            garrisonTxt.setColor(hoverStr);
+        });
+        garrisonRowZone.on('pointerout', () => {
+            garrisonHoverBg.clear();
+            garrisonHoverBg.setAlpha(0);
+            garrisonTxt.setColor(textMutedStr);
+        });
+        garrisonRowZone.on('pointerdown', () => {
+            this.hideLocalOpPanel();
+            this.showFleetPanel(nodeData, 'garrison');
+        });
+
+        panel.setScale(1 / this.cameras.main.zoom);
+        this.localOpPanel = panel;
+    }
+
+    private hideLocalOpPanel() {
+        if (this.localOpPanel) { this.localOpPanel.destroy(); this.localOpPanel = null; }
+    }
+
+    // ===== v3 新增：敌方操作面板（敌方3项） =====
+    private showEnemyOpPanel(wx: number, wy: number, nodeData: any) {
+        this.hideEnemyOpPanel();
+        this.hideLocalOpPanel();
+
+        const c = this.themeColors;
+        const W = 260;
+        const ITEM_H = 36;
+        const PAD = 10;
+        const HEADER_H = 34;
+
+        const allAdms = this.store.allAdmirals?.value || this.store.allAdmirals || [];
+        const playerAdmId = this.store.playerAdmiralId;
+        const playerAdm = allAdms.find((a: any) => a.id === playerAdmId);
+
+        const ops = [
+            { op: 'recon',      label: '侦察',  effect: '显示舰队数量',  cost: 200,  color: 0xfbbf24, costLabel: '₮200' },
+            { op: 'infiltrate', label: '渗透',  effect: '持续可见15天',  cost: 800,  color: 0xfbbf24, costLabel: '₮800' },
+            { op: 'subvert',    label: '策反',  effect: '降低守军忠诚',  cost: 1500, color: 0xef4444, costLabel: '₮1500' },
+        ];
+
+        // 检查是否敌方（有出击选项）
+        const playerFac = this.store.factions?.find((f: any) => f.type === 'player');
+        const playerFactionId = playerFac?.id || (this.store.playerAdmiralId >= 0 ? 1 : null);
+        const isEnemy = nodeData.ownerFactionId !== playerFactionId && nodeData.ownerFactionId !== 0;
+
+        const totalRows = ops.length + (isEnemy ? 1 : 0); // 敌方有出击
+        const H = HEADER_H + totalRows * ITEM_H + PAD * 2;
+
+        const panel = this.add.container(wx, wy).setDepth(110);
+
+        const bg = this.add.graphics().setDepth(110);
+        this.drawNeoPanel(bg, -W / 2, -H / 2, W, H, 10);
+        panel.add(bg);
+
+        const accentBar = this.add.graphics().setDepth(111);
+        accentBar.fillStyle(c.neutral, 0.85);
+        accentBar.fillRoundedRect(-W / 2, -H / 2, W, 3, { tl: 10, tr: 10, bl: 0, br: 0 });
+        panel.add(accentBar);
+
+        const nodeTypeLabel = nodeData.type === 'capital' ? '首都' : nodeData.type === 'fortress' ? '要塞' : nodeData.type === 'resource' ? '资源' : '星球';
+        const factionLabel = isEnemy ? '敌方' : '中立';
+        const titleTxt = this.add.text(-W / 2 + 12, -H / 2 + 8, `▎ ${nodeData.name} (${factionLabel}·${nodeTypeLabel})`, {
+            fontSize: '14px', color: this.hexIntToStr(c.text), fontFamily: 'sans-serif', fontStyle: 'bold'
+        }).setOrigin(0, 0.5);
+        panel.add(titleTxt);
+
+        const textMutedStr = this.hexIntToStr(c.textMuted);
+        const textDisabledStr = this.hexIntToStr(c.textDisabled);
+        const hoverStr = this.hexIntToStr(c.hoverText);
+        const metaGold = this.store.metaGold || 0;
+
+        ops.forEach((opDef, idx) => {
+            const yOff = -H / 2 + HEADER_H + PAD + idx * ITEM_H + ITEM_H / 2;
+
+            const hasPerm = playerAdm ? this.adminStore?.canEnemyOp(playerAdm, nodeData.id, opDef.op) : false;
+            const coolingDown = this.adminStore?.isLocalOpCoolingDown(nodeData.id, opDef.op) ?? false;
+            const canAfford = metaGold >= opDef.cost;
+            const enabled = hasPerm && !coolingDown && canAfford;
+
+            const dot = this.add.circle(-W / 2 + 14, yOff, 4, opDef.color, enabled ? 0.9 : 0.25);
+
+            const nameColor = enabled ? textMutedStr : textDisabledStr;
+            const nameTxt = this.add.text(-W / 2 + 26, yOff - 6, opDef.label, {
+                fontSize: '13px', color: nameColor, fontFamily: 'sans-serif', fontStyle: 'bold'
+            }).setOrigin(0, 0.5);
+
+            const effectTxt = this.add.text(-W / 2 + 26, yOff + 6, `${opDef.effect}  ${opDef.costLabel}`, {
+                fontSize: '11px', color: this.hexIntToStr(c.textDisabled), fontFamily: 'monospace'
+            }).setOrigin(0, 0.5);
+
+            const hoverBg = this.add.graphics().setAlpha(0);
+
+            // 整行透明交互层（顶层，覆盖整行 hit area，替代 nameTxt 的狭小点击区）
+            const rowZone = this.add.graphics();
+            rowZone.fillStyle(0xffffff, 0.001);
+            rowZone.fillRect(-W / 2 + 4, yOff - ITEM_H / 2 + 1, W - 8, ITEM_H - 2);
+            rowZone.setInteractive(
+                new Phaser.Geom.Rectangle(-W / 2 + 4, yOff - ITEM_H / 2 + 1, W - 8, ITEM_H - 2),
+                Phaser.Geom.Rectangle.Contains
+            );
+
+            // 加入容器顺序：dot → nameTxt → effectTxt → hoverBg → rowZone（顶层交互）
+            panel.add([dot, nameTxt, effectTxt, hoverBg, rowZone]);
+
+            if (enabled) {
+                rowZone.on('pointerover', () => {
+                    hoverBg.clear();
+                    this.drawNeoInset(hoverBg, -W / 2 + 4, yOff - ITEM_H / 2 + 1, W - 8, ITEM_H - 2, 6);
+                    hoverBg.setAlpha(0.8);
+                    dot.setFillStyle(opDef.color, 1);
+                    nameTxt.setColor(hoverStr);
+                });
+                rowZone.on('pointerout', () => {
+                    hoverBg.clear();
+                    hoverBg.setAlpha(0);
+                    dot.setFillStyle(opDef.color, 0.9);
+                    nameTxt.setColor(textMutedStr);
+                });
+                rowZone.on('pointerdown', () => {
+                    this.hideEnemyOpPanel();
+                    try {
+                        if (this.adminStore?.requiresConfirm(opDef.cost)) {
+                            this.store.requestConfirm(
+                                opDef.label,
+                                `消耗${opDef.costLabel}，${opDef.effect}`,
+                                opDef.cost,
+                                () => {
+                                    const result = this.adminStore.executeEnemyOp(nodeData.id, opDef.op);
+                                    this.store.triggerToast(result.message);
+                                }
+                            );
+                        } else {
+                            const result = this.adminStore.executeEnemyOp(nodeData.id, opDef.op);
+                            this.store.triggerToast(result.message);
+                        }
+                    } catch (err) {
+                        console.error('[showEnemyOpPanel] pointerdown error:', err);
+                        this.store.triggerToast?.('操作执行失败：' + (err instanceof Error ? err.message : String(err)));
+                    }
+                });
+            }
+        });
+
+        // 敌方节点：底部"出击"行
+        if (isEnemy) {
+            const sortieYOff = -H / 2 + HEADER_H + PAD + ops.length * ITEM_H + ITEM_H / 2;
+            const rawNodes = this.store.strategicNodes;
+            const allNodes = rawNodes?.value !== undefined ? rawNodes.value : (rawNodes || []);
+            const hasAdjacentFriendly = nodeData.connections?.some((connId: number) => {
+                const neighbor = allNodes.find((n: any) => n.id === connId);
+                return neighbor && neighbor.ownerFactionId === playerFactionId;
+            });
+
+            const sortieDot = this.add.circle(-W / 2 + 14, sortieYOff, 4, c.accentSortie, hasAdjacentFriendly ? 0.9 : 0.25);
+            const sortieColor = hasAdjacentFriendly ? textMutedStr : textDisabledStr;
+            const sortieTxt = this.add.text(-W / 2 + 26, sortieYOff, '出击（舰队编成）', {
+                fontSize: '13px', color: sortieColor, fontFamily: 'sans-serif', fontStyle: 'bold'
+            }).setOrigin(0, 0.5);
+            const sortieHoverBg = this.add.graphics().setAlpha(0);
+            // 整行透明交互层（顶层，覆盖整行 hit area，替代 sortieTxt 的狭小点击区）
+            const sortieRowZone = this.add.graphics();
+            sortieRowZone.fillStyle(0xffffff, 0.001);
+            sortieRowZone.fillRect(-W / 2 + 4, sortieYOff - ITEM_H / 2 + 1, W - 8, ITEM_H - 2);
+            sortieRowZone.setInteractive(
+                new Phaser.Geom.Rectangle(-W / 2 + 4, sortieYOff - ITEM_H / 2 + 1, W - 8, ITEM_H - 2),
+                Phaser.Geom.Rectangle.Contains
+            );
+            // 加入容器顺序：sortieDot → sortieTxt → sortieHoverBg → sortieRowZone（顶层交互）
+            panel.add([sortieDot, sortieTxt, sortieHoverBg, sortieRowZone]);
+
+            if (hasAdjacentFriendly) {
+                sortieRowZone.on('pointerover', () => {
+                    sortieHoverBg.clear();
+                    this.drawNeoInset(sortieHoverBg, -W / 2 + 4, sortieYOff - ITEM_H / 2 + 1, W - 8, ITEM_H - 2, 6);
+                    sortieHoverBg.setAlpha(0.8);
+                    sortieTxt.setColor(hoverStr);
+                });
+                sortieRowZone.on('pointerout', () => {
+                    sortieHoverBg.clear();
+                    sortieHoverBg.setAlpha(0);
+                    sortieTxt.setColor(textMutedStr);
+                });
+                sortieRowZone.on('pointerdown', () => {
+                    this.hideEnemyOpPanel();
+                    this.showFleetPanel(nodeData, 'sortie');
+                });
+            }
+        }
+
+        panel.setScale(1 / this.cameras.main.zoom);
+        this.enemyOpPanel = panel;
+    }
+
+    private hideEnemyOpPanel() {
+        if (this.enemyOpPanel) { this.enemyOpPanel.destroy(); this.enemyOpPanel = null; }
+    }
+
+    private isPointerInModal(pointer: Phaser.Input.Pointer, container: Phaser.GameObjects.Container): boolean {
+        if (!container.active) return false;
+        const zoom = this.cameras.main.zoom;
+        // container 已经 setScale(1/zoom)，screen-space 尺寸 = 本地尺寸
+        const sW = container.width * 0.5 || 80;
+        const sH = container.height * 0.5 || 40;
+        const cam = this.cameras.main;
+        const scx = (container.x - cam.scrollX) * zoom + cam.width / 2;
+        const scy = (container.y - cam.scrollY) * zoom + cam.height / 2;
+        return pointer.x > scx - sW && pointer.x < scx + sW
+            && pointer.y > scy - sH && pointer.y < scy + sH;
+    }
+
+    // ===== 舰队派遣面板 =====
+    private showFleetPanel(nodeData: any, action: string) {
+        this.hideFleetPanel();
+        this.contextAction = action;
+
+        const cam = this.cameras.main;
+        const cx = cam.worldView.centerX;
+        const cy = cam.worldView.centerY;
+
+        const c = this.themeColors;
+        const panel = this.add.container(cx, cy).setDepth(200);
+        const isSortie = action === 'sortie';
+        const title = isSortie ? '出击舰队编成' : '驻守舰队编成';
+        const accentColor = isSortie ? c.accentSortie : c.accentGarrison;
+
+        // 获取玩家所有舰队
+        const allFleets = this.store.strategicFleets?.value || this.store.strategicFleets || [];
+        const allAdms = this.store.allAdmirals?.value || this.store.allAdmirals || [];
+        const playerAdmId = this.store.playerAdmiralId;
+        const playerFac = allAdms.find((a: any) => a.id === playerAdmId)?.faction || 'alliance';
+        const playerFactionId = playerFac === 'alliance' ? 1 : 2;
+
+        const myFleets = allFleets.filter((f: any) => {
+            return f.factionId === playerFactionId && f.commanderId !== playerAdmId;
+        });
+
+        const bgW = 540;
+        const headerH = 72;
+        const footerH = 64;
+        const rowH = 32;
+        const maxVisibleRows = 10;
+        const visibleRows = Math.min(myFleets.length, maxVisibleRows);
+        const listH = Math.max(120, visibleRows * rowH + 36);
+        const bgH = headerH + listH + footerH;
+
+        // 拟态风格主面板
+        const bg = this.add.graphics().setDepth(200);
+        this.drawNeoPanel(bg, -bgW / 2, -bgH / 2, bgW, bgH, 14);
+        panel.add(bg);
+
+        // 顶部 accent 彩条
+        const accentBar = this.add.graphics().setDepth(201);
+        accentBar.fillStyle(accentColor, 0.85);
+        accentBar.fillRoundedRect(-bgW / 2, -bgH / 2, bgW, 4, { tl: 14, tr: 14, bl: 0, br: 0 });
+        panel.add(accentBar);
+
+        const titleTxt = this.add.text(-bgW / 2 + 24, -bgH / 2 + 16, title, {
+            fontSize: '16px', color: this.hexIntToStr(c.text), fontFamily: 'sans-serif', fontStyle: 'bold'
+        });
+        const nodeName = this.store.strategicNodes?.find((n: any) => n.id === nodeData.id)?.name || '目标星域';
+        const subtitle = this.add.text(-bgW / 2 + 24, -bgH / 2 + 38, `目标: ${nodeName}`, {
+            fontSize: '12px', color: this.hexIntToStr(c.textMuted), fontFamily: 'sans-serif'
+        });
+        panel.add([titleTxt, subtitle]);
+
+        // 列表区域（拟态凹陷）
+        const listY = -bgH / 2 + headerH;
+        const listBgG = this.add.graphics().setDepth(201);
+        this.drawNeoInset(listBgG, -bgW / 2 + 16, listY, bgW - 32, listH, 8);
+        panel.add(listBgG);
+
+        const checkStates: Map<number, boolean> = new Map();
+        let y = listY + 14;
+
+        const headerColorStr = this.hexIntToStr(c.textDisabled);
+        const nameColorStr = this.hexIntToStr(c.text);
+        const posColorStr = this.hexIntToStr(c.textMuted);
+        const statColorStr = this.hexIntToStr(c.textDisabled);
+
+        if (myFleets.length === 0) {
+            const emptyTxt = this.add.text(-bgW / 2 + 32, y, '暂无可用舰队', {
+                fontSize: '12px', color: statColorStr, fontFamily: 'sans-serif'
+            });
+            panel.add(emptyTxt);
+        } else {
+            // 表头
+            panel.add(this.add.text(-bgW / 2 + 64, y, '提督', { fontSize: '12px', color: headerColorStr, fontFamily: 'sans-serif' }).setOrigin(0, 0.5));
+            panel.add(this.add.text(-bgW / 2 + 210, y, '位置', { fontSize: '12px', color: headerColorStr, fontFamily: 'sans-serif' }).setOrigin(0, 0.5));
+            panel.add(this.add.text(-bgW / 2 + 380, y, '状态', { fontSize: '12px', color: headerColorStr, fontFamily: 'sans-serif' }).setOrigin(0, 0.5));
+            y += 22;
+
+            // 只渲染可见行数的舰队，避免溢出
+            const visibleFleets = myFleets.slice(0, maxVisibleRows);
+            visibleFleets.forEach((fleet: any) => {
+                // 行级常量：捕获当前行的 Y 坐标，避免闭包引用外层可变变量 y 导致高亮位置错误
+                const rowY = y;
+                const adm = allAdms.find((a: any) => a.id === fleet.commanderId);
+                const admName = adm?.name || '未知';
+                const curNode = (this.store.strategicNodes?.value || this.store.strategicNodes || []).find((n: any) => n.id === fleet.currentNodeId);
+                const curName = curNode?.name || '未知星域';
+                const statusText = fleet.status === 'moving' ? `移动中` : `驻留`;
+
+                const rowW = bgW - 40;
+                const rowX = -bgW / 2 + 20;
+
+                // 行背景（独立 graphics，文字之下，随状态重绘）
+                const rowBg = this.add.graphics();
+
+                // checkbox（纯视觉 18×18，非 interactive）
+                const cb = this.add.graphics();
+
+                const nameTxt = this.add.text(rowX + 28, rowY, admName.length > 8 ? admName.substring(0, 8) + '…' : admName, {
+                    fontSize: '14px', color: nameColorStr, fontFamily: 'sans-serif'
+                }).setOrigin(0, 0.5);
+                const posTxt = this.add.text(rowX + 170, rowY, curName.length > 10 ? curName.substring(0, 10) + '…' : curName, {
+                    fontSize: '13px', color: posColorStr, fontFamily: 'sans-serif'
+                }).setOrigin(0, 0.5);
+                const statTxt = this.add.text(rowX + 340, rowY, statusText, {
+                    fontSize: '13px', color: statColorStr, fontFamily: 'sans-serif'
+                }).setOrigin(0, 0.5);
+
+                // 透明交互层：覆盖整行，加在所有视觉元素之后（顶层，保证可靠命中）
+                const rowZone = this.add.graphics();
+                rowZone.fillStyle(0xffffff, 0.001); // 几乎透明，用于撑起 hit area
+                rowZone.fillRect(rowX, rowY - rowH / 2 + 1, rowW, rowH - 2);
+                rowZone.setInteractive(
+                    new Phaser.Geom.Rectangle(rowX, rowY - rowH / 2 + 1, rowW, rowH - 2),
+                    Phaser.Geom.Rectangle.Contains
+                );
+
+                // 加入容器顺序：rowBg 最底 → cb → 文字(非 interactive) → rowZone 最顶
+                panel.add([rowBg, cb, nameTxt, posTxt, statTxt, rowZone]);
+                checkStates.set(fleet.id, false);
+
+                // 统一重绘函数：根据 checked + hovering 同时重绘 rowBg 和 cb，避免状态不一致
+                const redrawRow = (checked: boolean, hovering: boolean) => {
+                    // —— 行背景 ——
+                    rowBg.clear();
+                    if (checked && hovering) {
+                        // 选中 + hover：更强高亮
+                        rowBg.fillStyle(accentColor, 0.32);
+                        rowBg.fillRoundedRect(rowX, rowY - rowH / 2 + 1, rowW, rowH - 2, 6);
+                        rowBg.fillStyle(accentColor, 1);
+                        rowBg.fillRect(rowX, rowY - rowH / 2 + 1, 3, rowH - 2);
+                    } else if (checked) {
+                        // 选中：accent 背景 + 左侧 3px 竖条
+                        rowBg.fillStyle(accentColor, 0.22);
+                        rowBg.fillRoundedRect(rowX, rowY - rowH / 2 + 1, rowW, rowH - 2, 6);
+                        rowBg.fillStyle(accentColor, 1);
+                        rowBg.fillRect(rowX, rowY - rowH / 2 + 1, 3, rowH - 2);
+                    } else if (hovering) {
+                        // hover 未选：hover 色背景
+                        rowBg.fillStyle(c.hover, 0.35);
+                        rowBg.fillRoundedRect(rowX, rowY - rowH / 2 + 1, rowW, rowH - 2, 6);
+                    }
+                    // 默认：透明（clear 已处理）
+
+                    // —— checkbox 18×18 ——
+                    cb.clear();
+                    if (checked) {
+                        cb.fillStyle(accentColor, 1);
+                        cb.fillRoundedRect(rowX - 10, rowY - 9, 18, 18, 4);
+                        cb.lineStyle(2.5, 0xFFFFFF, 1);
+                        cb.beginPath();
+                        cb.moveTo(rowX - 6, rowY + 1);
+                        cb.lineTo(rowX - 3, rowY + 4);
+                        cb.lineTo(rowX + 2, rowY - 3);
+                        cb.strokePath();
+                    } else {
+                        this.drawNeoInset(cb, rowX - 10, rowY - 9, 18, 18, 4);
+                    }
+                };
+
+                // 初始绘制（未选 + 未 hover）
+                redrawRow(false, false);
+
+                // 事件绑定（仅 rowZone 一个 interactive 元素，无双触发）
+                let isHovering = false;
+                rowZone.on('pointerdown', () => {
+                    const cur = checkStates.get(fleet.id) ?? false;
+                    checkStates.set(fleet.id, !cur);
+                    redrawRow(!cur, isHovering);
+                });
+                rowZone.on('pointerover', () => {
+                    isHovering = true;
+                    redrawRow(checkStates.get(fleet.id) ?? false, true);
+                });
+                rowZone.on('pointerout', () => {
+                    isHovering = false;
+                    redrawRow(checkStates.get(fleet.id) ?? false, false);
+                });
+
+                y += rowH;
+            });
+        }
+
+        // 按钮区（拟态凸起按钮）
+        const btnY = bgH / 2 - 28;
+        const confirmBtnG = this.add.graphics().setInteractive(
+            new Phaser.Geom.Rectangle(-110, btnY - 16, 100, 32),
+            Phaser.Geom.Rectangle.Contains
+        );
+        // 确认按钮：accent 实心 + 外发光
+        confirmBtnG.fillStyle(0x000000, this.isLightTheme ? 0.12 : 0.5);
+        confirmBtnG.fillRoundedRect(-108, btnY - 14, 100, 32, 8);
+        confirmBtnG.fillStyle(accentColor, 0.95);
+        confirmBtnG.fillRoundedRect(-110, btnY - 16, 100, 32, 8);
+        panel.add(confirmBtnG);
+        const confirmTxt = this.add.text(-60, btnY, '确定', {
+            fontSize: '13px', color: '#ffffff', fontFamily: 'sans-serif', fontStyle: 'bold'
+        }).setOrigin(0.5);
+        panel.add(confirmTxt);
+
+        const cancelBtnG = this.add.graphics().setInteractive(
+            new Phaser.Geom.Rectangle(10, btnY - 16, 100, 32),
+            Phaser.Geom.Rectangle.Contains
+        );
+        // 取消按钮：拟态凸起中性
+        this.drawNeoPanel(cancelBtnG, 10, btnY - 16, 100, 32, 8);
+        panel.add(cancelBtnG);
+        const cancelTxt = this.add.text(60, btnY, '取消', {
+            fontSize: '13px', color: this.hexIntToStr(c.textMuted), fontFamily: 'sans-serif'
+        }).setOrigin(0.5);
+        panel.add(cancelTxt);
+
+        // 按钮 hover 效果
+        confirmBtnG.on('pointerover', () => {
+            confirmBtnG.clear();
+            confirmBtnG.fillStyle(0x000000, this.isLightTheme ? 0.18 : 0.6);
+            confirmBtnG.fillRoundedRect(-108, btnY - 14, 100, 32, 8);
+            confirmBtnG.fillStyle(accentColor, 1);
+            confirmBtnG.fillRoundedRect(-110, btnY - 16, 100, 32, 8);
+        });
+        confirmBtnG.on('pointerout', () => {
+            confirmBtnG.clear();
+            confirmBtnG.fillStyle(0x000000, this.isLightTheme ? 0.12 : 0.5);
+            confirmBtnG.fillRoundedRect(-108, btnY - 14, 100, 32, 8);
+            confirmBtnG.fillStyle(accentColor, 0.95);
+            confirmBtnG.fillRoundedRect(-110, btnY - 16, 100, 32, 8);
+        });
+        cancelBtnG.on('pointerover', () => {
+            cancelBtnG.clear();
+            cancelBtnG.fillStyle(c.hover, 0.9);
+            cancelBtnG.fillRoundedRect(10, btnY - 16, 100, 32, 8);
+            cancelBtnG.lineStyle(1, c.border, 0.5);
+            cancelBtnG.strokeRoundedRect(10, btnY - 16, 100, 32, 8);
+        });
+        cancelBtnG.on('pointerout', () => {
+            cancelBtnG.clear();
+            this.drawNeoPanel(cancelBtnG, 10, btnY - 16, 100, 32, 8);
+        });
+
+        confirmBtnG.on('pointerdown', () => {
+            const selectedIds: number[] = [];
+            checkStates.forEach((v, k) => { if (v) selectedIds.push(k); });
+            if (selectedIds.length === 0) {
+                this.store.triggerToast?.('请至少选择一支舰队。');
+                return;
+            }
+            let count = 0;
+            selectedIds.forEach(fid => {
+                this.store.issueWarpOrder(fid, nodeData.id);
+                count++;
+            });
+            this.store.triggerToast?.(`已向 ${count} 支舰队下达${isSortie ? '出击' : '驻守'}指令。`);
+            this.hideFleetPanel();
+        });
+        cancelBtnG.on('pointerdown', () => this.hideFleetPanel());
+
+        // 面板尺寸不随地图缩放（update 中同步以应对 zoom 实时变化）
+        panel.setScale(1 / this.cameras.main.zoom);
+        this.fleetPanel = panel;
+    }
+
+    private hideFleetPanel() {
+        if (this.fleetPanel) { this.fleetPanel.destroy(); this.fleetPanel = null; }
+    }
+
+    private generateStarBeltTexture() {
+        const key = 'star_belt_texture';
+        if (this.textures.exists(key)) return;
+
+        const size = 2048;
+        const texture = this.textures.createCanvas(key, size, size) as Phaser.Textures.CanvasTexture;
+        const ctx = texture.context;
+
+        const randomGaussian = () => {
+            let u = 0, v = 0;
+            while(u === 0) u = Math.random();
+            while(v === 0) v = Math.random();
+            return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+        };
+
+        for (let i = 0; i < 80000; i++) { 
+            const y = Math.random() * size;
+            const normalizedY = y / size; 
+            
+            const curveOffset = Math.sin(normalizedY * Math.PI) * 400; 
+            const spineX = 600 + curveOffset; 
+
+            const thickness = 400 + Math.sin(normalizedY * Math.PI) * 100;
+
+            const scatterX = randomGaussian() * thickness;
+            const scatterY = randomGaussian() * (thickness * 0.2); 
+
+            const finalX = spineX + scatterX;
+            const finalY = y + scatterY;
+
+            const distFromSpine = Math.abs(scatterX) / thickness;
+            const intensity = Math.max(0, 1.0 - distFromSpine); 
+
+            const alpha = (Math.random() * 0.5 + 0.1) * (0.3 + 0.7 * intensity);
+            
+            let starSize = 1;
+            if (intensity > 0.8 && Math.random() > 0.95) starSize = 2; 
+            if (intensity > 0.95 && Math.random() > 0.99) starSize = 3; 
+
+            ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+            ctx.fillRect(finalX, finalY, starSize, starSize);
+        }
+        texture.refresh();
+    }
+}

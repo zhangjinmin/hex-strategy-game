@@ -1,0 +1,201 @@
+classDiagram
+    class ProposalType {
+        <<type union - 7 types>>
+        invasion
+        defense
+        conscription
+        morale_boost
+        personnel
+        budget
+        fortify
+    }
+
+    class AdminOperationType {
+        <<type union - 4 types>>
+        logistics
+        tech_mobilize
+        intel_op
+        diplomat_op
+    }
+
+    class LocalOperationType {
+        <<type union - 7 types>>
+        special_tax
+        security_boost
+        welfare_invest
+        fortify_local
+        set_hq
+        emergency_draft
+        intel_gather
+    }
+
+    class EnemyOpType {
+        <<type union - 3 types>>
+        recon
+        infiltrate
+        subvert
+    }
+
+    class StarNode {
+        +id: number
+        +name: string
+        +type: string
+        +ownerFactionId: number
+        +connections: number[]
+        +garrisonFleets: number[]
+        +defenseHp: number
+        +maxDefenseHp: number
+        +population: number
+        +security: number
+        +economy: number
+        +shipyardLevel: number
+        +defenseTurrets: number
+        +hasArtemisNecklace?: boolean
+        +fortified?: boolean
+        +revealedUntil?: string
+    }
+
+    class AdminState {
+        +finance: FinanceState
+        +personnel: PersonnelState
+        +technology: TechnologyState
+        +welfare: WelfareState
+        +diplomacy: DiplomacyState
+        +intelligence: IntelligenceState
+        +localCooldowns: Record~string, number~
+    }
+
+    class FinanceState {
+        +treasury: number
+        +baseTaxRate: number
+        +warTaxRate: number
+        +fleetMaintenanceCost: number
+        +monthlyIncome: number
+        +monthlyExpense: number
+    }
+
+    class DiplomacyState {
+        +relations: Record~number, number~
+        +treaties: Treaty[]
+    }
+
+    class IntelligenceState {
+        +intelLevel: Record~number, IntelLevel~
+        +revealedFleets: number[]
+        +intelOpBuffDays: number
+    }
+
+    class roleConfig {
+        +ROLE_PERMISSIONS_V2: Record~NationalRole, ProposalType[]~
+        +ROLE_ADMIN_PERMISSIONS: Record~NationalRole, AdminOperationType[]~
+        +ROLE_LOCAL_PERMISSIONS: Record~NationalRole, LocalOperationType[]~
+        +ROLE_ENEMY_PERMISSIONS: Record~NationalRole, EnemyOpType[]~
+        +ROLE_FLEET_AUTHORITY: Record~NationalRole, string~
+        +canCommandFleet(admiral, fleet) boolean
+        +calculateRoleEfficiency(admiral) number
+        +canPropose(admiral, type) boolean
+    }
+
+    class adminStore {
+        +adminState: Ref~AdminState~
+        +localCooldowns: Ref~Record~string, number~~
+        +initAdminState(factionId) void
+        +processDailyFinance() void
+        +processDailyPersonnel() void
+        +processDailyWelfare() void
+        +processDailyTechnology() void
+        +processDailyLocalCooldowns() void
+        +executeLogisticsReform() void
+        +executeTechMobilize() void
+        +executeIntelAction() void
+        +executeDiplomatPressure(targetFactionId) void
+        +executeLocalOp(nodeId, opType) ResultObj
+        +executeEnemyOp(nodeId, opType) ResultObj
+        +canLocalOp(admiral, nodeId, opType) boolean
+        +canEnemyOp(admiral, nodeId, opType) boolean
+        +isLocalOpCoolingDown(nodeId, opType) boolean
+        +getCooldownKey(nodeId, opType) string
+        +requiresConfirm(cost) boolean
+        +setTaxRate(rate) void
+        +toggleWarTax() void
+        +setResearchFocus(field) void
+    }
+
+    class proposalEngine {
+        +PROPOSAL_DEFINITIONS: Record~ProposalType, ProposalDef~
+        +executeProposalEffect(proposal, ctx) void
+        +executeProposalRejection(proposal, ctx) void
+        +generateMonthlyProposals(ctx) Proposal[]
+    }
+
+    class gameStore {
+        +pendingProposals: Ref~Proposal[]~
+        +councilPendingCount: Ref~number~
+        +councilHistory: Ref~Proposal[]~
+        +pendingConfirm: Ref~ConfirmRequest~
+        +metaGold: number
+        +loadFromSlot(id) void
+        +saveToSlot(slotId, slotName) void
+        +submitProposal(type, targetNodeId) boolean
+        +resolveProposal(proposalIdx) void
+        +requestConfirm(title, message, cost, onConfirm) void
+        +resolveConfirm(approved) void
+        +triggerToast(message) void
+    }
+
+    class ConfirmRequest {
+        +title: string
+        +message: string
+        +cost: number
+        +onConfirm: () => void
+    }
+
+    class ConfirmDialog {
+        +title: string
+        +message: string
+        +cost: number
+        emit confirm()
+        emit cancel()
+    }
+
+    class StrategicScene {
+        +contextMenu: Container
+        +showContextMenu(wx, wy, nodeData) void
+        +showLocalOpPanel(wx, wy, nodeData) void
+        +showEnemyOpPanel(wx, wy, nodeData) void
+        +hideContextMenu() void
+        +hideLocalOpPanel() void
+        +hideEnemyOpPanel() void
+    }
+
+    class AdminPanel {
+        +activeTab: string
+        +外交 tab: 关系列表+施压+条约
+        +情报 tab: 等级面板+行动按钮+揭露信息
+        +财政 tab: 后勤改革按钮
+        +科技 tab: 科技动员按钮
+    }
+
+    class CouncilPanel {
+        +提案卡片: 7种类型
+        +删除5个CSS类
+    }
+
+    ResultObj --|> "{ success: boolean, message: string }"
+
+    StarNode --> AdminState : localCooldowns key uses nodeId
+    AdminState --> FinanceState
+    AdminState --> DiplomacyState
+    AdminState --> IntelligenceState
+    AdminState --> adminStore : managed by
+    adminStore --> roleConfig : uses permission tables
+    adminStore --> proposalEngine : effects migrated from
+    adminStore --> gameStore : cross-store calls
+    gameStore --> ConfirmRequest : pendingConfirm
+    ConfirmRequest --> ConfirmDialog : drives display
+    StrategicScene --> adminStore : calls executeLocalOp/executeEnemyOp
+    StrategicScene --> gameStore : calls requestConfirm/triggerToast
+    AdminPanel --> adminStore : calls admin operations
+    AdminPanel --> roleConfig : checks ROLE_ADMIN_PERMISSIONS
+    CouncilPanel --> gameStore : reads pendingProposals
+    CouncilPanel --> proposalEngine : executeProposalEffect
