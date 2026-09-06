@@ -8,6 +8,7 @@ import {
   drawCRTBackground, renderCRTWireframeMap, updateCRTEffects, redrawCRTFleets, drawCRTOverlays,
   type CrtContext,
 } from './crt/CrtRenderer';
+import { drawCommandSpace, drawCommandFleets, drawCommandScanOverlay } from './crt/CommandSpaceRenderer';
 
 // Vite 资源导入：返回运行时 URL，解决 Phaser 加载器找不到 src 下资源的问题
 import hyperionUrl from '../../assets/ship/hyperion.png';
@@ -18,9 +19,14 @@ import flameUrl from '../../assets/ship/flame.png';
 import isserlohnPlanetUrl from '../../assets/planet/1.png';
 
 // ── 指挥点系统 ──
-import { createCPState, updateCPState, getDamageMultiplier, getSpeedMultiplier, getMoraleModifier, executeCommand, canExecute, getCooldownMs, type CPState, type ActiveEffect } from '../../services/CommandPointSystem';
+import { createCPState, updateCPState, getDamageMultiplier, getIncomingMultiplier, getReflectRatio, getSpeedMultiplier, getMoraleModifier, executeCommand, canExecute, getCooldownMs, type CPState, type ActiveEffect } from '../../services/CommandPointSystem';
 import type { CommandAbility } from '../../config/commandAbilities';
+// ── 指挥带宽系统（指挥链延迟机制）──
+import { createBandwidthState, updateBandwidthState, getLinkStatus, hasChannel, establishChannel, canOrderInstantly, isRelayOrder, relayDelayMs, queueDelayedOrder, releaseChannel, degradeForFlagshipLoss, LINK_COLORS, LINK_CN, type BandwidthState, type LinkStatus, type PendingOrder } from '../../services/CommandBandwidthSystem';
 import { commandBridge } from '../../services/CommandBridge';
+// 3D 战场覆盖层特效桥：只推送事件，2D 特效代码零改动（3D 模式下 2D 层被隐藏）
+import { pushFx3d } from '../battle3dFx';
+import { updateSupplyChain, collectAuxShips, isSupplyUnit, SUPPLY_SOURCE_RADIUS, SUPPLY_AUX_RADIUS, type SupplyNode, type FleetSupplyInfo } from '../SupplyChainSystem';
 
 
 // 贴图 key → Vite URL 映射表
@@ -33,7 +39,7 @@ const SHIP_TEXTURES: Record<string, string> = {
 };
 
 const classToTypeCode: Record<string, string> = {
-    '战列': 'BB', '巡洋': 'CA', '驱逐': 'DD', '突击': 'CV', '电子': 'EW', '补给': 'AUX', '无': 'AUX'
+    '战列': 'BB', '巡洋': 'CA', '驱逐': 'DD', '突击': 'CV', '电子': 'EW', '补给': 'AUX', '运输': 'TR', '无': 'AUX'
 };
 
 const getShipTypeCode = (facTrait: string, cls: string) => {
@@ -80,12 +86,17 @@ export class BattleScene extends Phaser.Scene {
     private scriptReported: boolean = false;
 
     // === CRT 全息战术投影 ===
-    private mapStyle: 'hex' | 'crt' = 'hex';
+    // '3d' 走与 'hex' 完全相同的逻辑（所有 === 'crt' 判断对 '3d' 为 false）；3D 视觉由 Battle3DOverlay 叠加渲染
+    private mapStyle: 'hex' | 'crt' | '3d' | 'command' = 'command';
+    /** 指挥制宇宙起伏地形种子（同一局形状稳定） */
+    private commandSpaceSeed = 1;
     private crtGraphics!: Phaser.GameObjects.Graphics;
     private crtWireframe!: Phaser.GameObjects.Graphics;
     private crtFleets!: Phaser.GameObjects.Graphics;  // 每帧更新的舰队线框层
     private crtOverlay!: Phaser.GameObjects.Graphics;
     private crtHudLabel: Phaser.GameObjects.Text | null = null;
+    private crtScan: Phaser.GameObjects.Graphics | null = null;  // 指挥制：全屏扫描线 overlay（相机空间）
+    private cmdScanTimer = 0;
     private crtGlowTime: { val: number } = { val: 0 };
     private crtFleetRedrawTimer: { val: number } = { val: 0 };
 
@@ -117,6 +128,9 @@ export class BattleScene extends Phaser.Scene {
     private cpState: CPState | null = null;
     private cpCommandMode = false;  // 是否在选目标模式
     private pendingAbilityId: string | null = null;
+    // ── 指挥带宽系统（指挥链延迟机制）──
+    private bwState: BandwidthState | null = null;
+    private commMarkers: Map<number, Phaser.GameObjects.Text> = new Map(); // 舰队ID → 链路指示标记
     private intentLines!: Phaser.GameObjects.Graphics;
     private damageNumbers: { sprite: Phaser.GameObjects.Text; timer: number }[] = [];
     private spaceKey!: Phaser.Input.Keyboard.Key;
@@ -139,6 +153,9 @@ export class BattleScene extends Phaser.Scene {
         const state = (this.store as any).tacticalState;
         const isCampaign = state && state.mode === 'campaign';
         this.mapStyle = state?.mapStyle ?? 'hex';
+        if (this.mapStyle === '3d') {
+            console.log('[BattleScene] 3D battlefield mode: Phaser logic engine running, rendering delegated to Battle3DOverlay');
+        }
         console.log(`[BattleScene] create() mapStyle=${this.mapStyle}, state.mapStyle=${state?.mapStyle}, isCampaign=${isCampaign}`);
 
         // 重置战斗状态
@@ -156,22 +173,41 @@ export class BattleScene extends Phaser.Scene {
         if (this.store.selectedMapId.startsWith('custom_')) initZoom = Math.min(initZoom, 0.7);
         else if (this.store.selectedMapId === 'random_large') initZoom = Math.min(initZoom, 0.45);
         else if (this.store.selectedMapId === 'random_rect') initZoom = Math.min(initZoom, 0.55);
+        // 指挥制：无六边形格子，不按 hexRadius 缩放（否则 zoom 会被算到 0.3，
+        // 舰队小到看不见、背景线条被压缩成一片）。用固定舒适视角。
+        if (this.mapStyle === 'command') initZoom = 0.85;
         this.cameras.main.setZoom(initZoom);
 
         // === CRT 全息战术投影：3D 俯瞰透视 ===
-        if (this.mapStyle === 'crt') {
-            // 3D 俯瞰效果通过线框地图的 Y 轴压缩实现（CRT_Y_SCALE）
-            console.log(`[BattleScene] CRT holographic mode enabled (yScale=${CRT_Y_SCALE})`);
+        // command（指挥制）复用同一套 Graphics 图层与扫描线风格，
+        // 但渲染内容改为纯宇宙起伏等高线（不画六边形网格）。
+        if (this.mapStyle === 'crt' || this.mapStyle === 'command') {
+            if (this.mapStyle === 'crt') {
+                // 3D 俯瞰效果通过线框地图的 Y 轴压缩实现（CRT_Y_SCALE）
+                console.log(`[BattleScene] CRT holographic mode enabled (yScale=${CRT_Y_SCALE})`);
+            } else {
+                console.log('[BattleScene] Command mode enabled (pure space, no hex grid)');
+                this.commandSpaceSeed = Math.floor(Math.random() * 100000) + 1;
+            }
 
             this.cameras.main.setBackgroundColor(CRT_BG);
             this.crtGraphics = this.add.graphics().setDepth(0);
             this.crtWireframe = this.add.graphics().setDepth(1);
-            this.crtFleets = this.add.graphics().setDepth(2);
+            // 指挥制：舰队光环需盖在单位 sprite(depth 5/6) 之上，否则被遮挡看不见
+            this.crtFleets = this.add.graphics().setDepth(this.mapStyle === 'command' ? 10 : 2);
             this.crtOverlay = this.add.graphics().setDepth(100);
-            this.drawCRTBackground();
+            if (this.mapStyle === 'command') {
+                // 指挥制：全屏扫描线 overlay（独立层，每 ~60ms 随相机重绘）
+                this.crtScan = this.add.graphics().setDepth(101);
+                drawCommandSpace(this.cameras.main, this.crtGraphics, this.commandSpaceSeed);
+            } else {
+                this.drawCRTBackground();
+            }
         }
 
         this.hpBarsGraphics = this.add.graphics().setDepth(30);
+        // 补给链可视化：画补给源/运输舰的补给圈，以及到补给舰队的链路
+        this.supplyGfx = this.add.graphics().setDepth(12);
         this.globalFleets = [];
         this.phaserProjectiles = [];
         this.tilesList = [];
@@ -204,23 +240,53 @@ export class BattleScene extends Phaser.Scene {
             // 安全回退：未分配城堡的舰队 → 推到地图边缘（避免城堡在(0,0)中央）
             this.store.factions.forEach((f: any) => {
                 if (!f.castlePos || (f.castlePos.x === 0 && f.castlePos.y === 0)) {
-                    const edgeQ = f.team === 1 ? -20 : 20;
-                    f.castlePos = {
-                        x: this.hexRadius * (Math.sqrt(3) * edgeQ),
-                        y: (Math.random() - 0.5) * this.hexRadius * 6
-                    };
+                    if (this.mapStyle === 'command') {
+                        // 指挥制后勤战：攻左守右直接拉到战场边缘，留出补给纵深
+                        // （hex/crt 分支保持原样的 edgeQ 栅格回退）
+                        f.castlePos = {
+                            x: f.team === 1 ? -1500 : 1500,
+                            y: (Math.random() - 0.5) * 600
+                        };
+                    } else {
+                        const edgeQ = f.team === 1 ? -20 : 20;
+                        f.castlePos = {
+                            x: this.hexRadius * (Math.sqrt(3) * edgeQ),
+                            y: (Math.random() - 0.5) * this.hexRadius * 6
+                        };
+                    }
                 }
             });
             // 先实例化舰队，再渲染地块（确保地块多边形在上层，优先接收点击事件）
             this.spawnInitialFleets();
+            // 关键：renderHexMap 内部才会填充 tilesList/tilesDict（BattleScene.ts:1126），
+            // 而 AI 的探索/目标选择完全依赖 tilesList。此前指挥制直接跳过调用 → tilesList 为空
+            // → AI 找不到任何地块目标 → 舰队原地不动（用户实报）。
+            // 因此指挥制仍要建地块数据（只是不显示），保证 AI 逻辑完整。
             this.renderHexMap(mapDataMatrix);
-            // P1 地形标记渲染
-            this.renderTerrainMarkers();
+            if (this.mapStyle === 'command') {
+                // 纯宇宙：隐藏六边形地块与地形标记（保留数据层，仅关闭视觉与交互）
+                this.tilesList.forEach((t: any) => {
+                    if (t?.sprite) { t.sprite.setVisible(false); t.sprite.disableInteractive(); }
+                    if (t?.text) t.text.setVisible(false);
+                });
+            } else {
+                // P1 地形标记渲染
+                this.renderTerrainMarkers();
+            }
             // CRT 模式：绘制全息线框地图（sprite 在 update 中透明化 + 线框几何体叠加）
             if (this.mapStyle === 'crt') {
                 this.renderCRTWireframeMap(mapDataMatrix);
+            } else if (this.mapStyle === 'command') {
+                // 指挥制：绘制纯宇宙起伏等高线（覆盖在 crtGraphics 上）
+                if (this.crtGraphics) {
+                    drawCommandSpace(this.cameras.main, this.crtGraphics, this.commandSpaceSeed);
+                }
             }
         }
+
+        // 指挥制后勤战：中线带布置 3 个中立星球中继（占领后扩大补给半径）
+        // （函数内部自带 mapStyle==='command' 守卫，hex/crt 零影响）
+        this.spawnSupplyRelayPlanets();
 
         this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
             if (pointer.isDown) {
@@ -288,6 +354,9 @@ export class BattleScene extends Phaser.Scene {
         const pFac = this.store.factions.find((f: any) => f.type === 'player');
         const cmd = pFac?.admiralStats?.command || 50;
         this.cpState = createCPState(cmd);
+
+        // 初始化指挥带宽引擎（直连半径随地图缩放：半径的26倍 ≈ 跨越全图1/3）
+        this.bwState = createBandwidthState(cmd, this.hexRadius * 26);
 
         // 强行拦截小游戏的内政 Tick
         this.time.addEvent({
@@ -434,6 +503,7 @@ export class BattleScene extends Phaser.Scene {
 
                 this.updateSupplyNetwork();
                 this.processSupplyAndCapture();
+                this.drawSupplyChain();   // 补给链可视化（补给圈/运输舰/链路）
 
                 // 结算战略节点收益
                 this.tilesList.forEach(t => {
@@ -590,8 +660,11 @@ export class BattleScene extends Phaser.Scene {
         // 获取攻守双方的出生位置（从 faction.castlePos 读取，已在 buildCampaignEnvironment 中设置）
         const attackerFac = this.factionMap.get(state.attackers?.[0]?.factionId);
         const defenderFac = this.factionMap.get(state.defenders?.[0]?.factionId);
-        const attackerSpawn = attackerFac?.castlePos || { x: -150, y: 0 };
-        const defenderSpawn = defenderFac?.castlePos || { x: 150, y: 0 };
+        // 指挥制下默认值同步拉开到 ±1500（正常路径 castlePos 已由 buildCampaignEnvironment 给足，
+        // 这里是 castlePos 缺失时的兜底，hex/crt 保持 ±150 原样）
+        const fallbackSpawnDist = this.mapStyle === 'command' ? 1500 : 150;
+        const attackerSpawn = attackerFac?.castlePos || { x: -fallbackSpawnDist, y: 0 };
+        const defenderSpawn = defenderFac?.castlePos || { x: fallbackSpawnDist, y: 0 };
 
         const deploySide = (fleetsData: any[], isAttacker: boolean) => {
             const spawnX = isAttacker ? attackerSpawn.x : defenderSpawn.x;
@@ -601,8 +674,11 @@ export class BattleScene extends Phaser.Scene {
                     id: fleetData.fleetId, displayId: this.globalFleets.length + 1,
                     factionId: fleetData.factionId, target: null, state: 'idle',
                     units: [], formation: fleetData.formation || 'wedge',
+                    commanderId: (fleetData as any).commanderId ?? null,
+                    flagshipName: (fleetData as any).flagshipName || '',
                     facingAngle: isAttacker ? 0 : Math.PI,
                     stance: 'search', lastState: 'idle', halfHpTriggered: false,
+                    morale: (fleetData as any).morale ?? 100,
                     x: spawnX,
                     y: spawnY
                 };
@@ -654,10 +730,12 @@ export class BattleScene extends Phaser.Scene {
             const fleetId = Math.random();
             const fleet: any = {
                 id: fleetId, displayId: this.globalFleets.length + 1, factionId: fac.id,
+                commanderId: fac.id, flagshipName: (fac as any).flagshipName || (this.store.allAdmirals as any[]).find((a: any) => a.id === fac.id)?.flagshipName || '',
                 x: fac.castlePos.x, y: fac.castlePos.y, target: null, state: 'assembling', units: [] as any[],
                 formation: ['wedge', 'line', 'spindle', 'circle', 'square'][Math.floor(Math.random() * 5)] as any,
                 facingAngle: 0, stance: 'search', targetFlare: null,
-                lastState: 'assembling', halfHpTriggered: false // 追加状态记忆
+                lastState: 'assembling', halfHpTriggered: false, // 追加状态记忆
+                morale: 100,  // 士气(0-100)：断粮时先掉士气，归零后才扣结构生命
             };
             this.time.delayedCall(800, () => this.showFleetDialogue(fleet, 'spawn')); // 延迟触发舰队出击语录
 
@@ -771,7 +849,125 @@ export class BattleScene extends Phaser.Scene {
         }
     }
 
+    /** 指挥制补给源作用半径（世界单位）：旗舰在此距离内即获得补给。
+     *  初值由主理人设定，可按手感调整。 */
+    private static readonly SUPPLY_BASE_RADIUS = 420;
+
+    // ===== 补给链（后勤战）=====
+    /** 运输舰列表（每帧从存活舰队收集） */
+    private auxShips: any[] = [];
+    /** 各舰队补给状态：fleet → FleetSupplyInfo */
+    private supplyInfo: Map<any, any> = new Map();
+    /** 补给链可视化图层（指挥制/2D 通用，画补给圈与链路） */
+    private supplyGfx: Phaser.GameObjects.Graphics | null = null;
+
+    /** 绘制补给链可视化：补给圈 + 链路 + 运输舰标记。
+     *  让玩家一眼看出部队是否在补给范围内（此前完全不可见）。 */
+    private drawSupplyChain() {
+        const g = this.supplyGfx;
+        if (!g) return;
+        g.clear();
+        if (!this.store.showSupplyChain) return;   // 可在设置里关闭
+
+        // 补给源覆盖范围（基地/星球）
+        this.store.factions.forEach((f: any) => {
+            const tf = this.factionMap.get(f.id);
+            if (!f.castlePos || !tf) return;
+            g.lineStyle(1.5, tf.team === 1 ? 0x22c55e : 0xa855f7, 0.20);
+            g.strokeCircle(f.castlePos.x, f.castlePos.y, SUPPLY_SOURCE_RADIUS);
+        });
+        this.tilesList.forEach((t: any) => {
+            if (t.type !== 'planet' && t.type !== 'castle') return;
+            const tf = this.factionMap.get(t.ownerId);
+            if (!tf) return;
+            g.lineStyle(1.2, tf.team === 1 ? 0x22c55e : 0xa855f7, 0.14);
+            g.strokeCircle(t.x, t.y, SUPPLY_SOURCE_RADIUS);
+        });
+
+        // 运输舰：前出偏移 + 补给圈 + 到被补给舰队的链路
+        this.auxShips.forEach((aux: any) => {
+            const fl = aux.fleet;
+            if (!fl || !fl.units || fl.units.length === 0) return;
+            const ax = fl.x + (aux.ox || 0);
+            const ay = fl.y + (aux.oy || 0);
+            const team = this.factionMap.get(fl.factionId)?.team;
+            const color = team === 1 ? 0x22c55e : 0xa855f7;
+
+            // 运输舰补给范围
+            g.lineStyle(1.5, color, 0.32);
+            g.strokeCircle(ax, ay, SUPPLY_AUX_RADIUS);
+
+            // 运输舰本体标记（橙色方块，区别于作战舰）
+            g.fillStyle(0xfb923c, 0.9);
+            g.fillRect(ax - 5, ay - 5, 10, 10);
+
+            // 到所属舰队的连线（表现"前出"）
+            g.lineStyle(1, 0xfb923c, 0.5);
+            g.lineBetween(fl.x, fl.y, ax, ay);
+        });
+
+        // 舰队补给状态指示：断链画红圈，链内画绿环
+        this.supplyInfo.forEach((info: any, fl: any) => {
+            if (!fl.units || fl.units.length === 0) return;
+            if (info.inSupply) {
+                g.lineStyle(2, 0x22c55e, 0.55);
+                g.strokeCircle(fl.x, fl.y, 26);
+            } else {
+                g.lineStyle(2, 0xef4444, 0.60);
+                g.strokeCircle(fl.x, fl.y, 26);
+                // 断链警示：再画一个虚化红圈
+                g.lineStyle(1, 0xef4444, 0.25);
+                g.strokeCircle(fl.x, fl.y, 36);
+            }
+        });
+    }
+
+    /** 找最近的己方补给源（castle/planet）的距离；无补给源返回 null。
+     *  指挥制（无格子）下替代地块连通性判定，作为补给链的第一环。 */
+    private getNearestSupplySource(x: number, y: number, myTeam: number | undefined): number | null {
+        let best: number | null = null;
+        this.store.factions.forEach((f: any) => {
+            const tf = this.factionMap.get(f.id);
+            if (!tf || tf.team !== myTeam) return;
+            // 己方司令部
+            if (f.castlePos) {
+                const d = Phaser.Math.Distance.Between(x, y, f.castlePos.x, f.castlePos.y);
+                if (best === null || d < best) best = d;
+            }
+        });
+        // 己方已占领星球（中继点）
+        this.tilesList.forEach((t: any) => {
+            if (t.type !== 'planet' && t.type !== 'castle') return;
+            const tf = this.factionMap.get(t.ownerId);
+            if (!tf || tf.team !== myTeam) return;
+            const d = Phaser.Math.Distance.Between(x, y, t.x, t.y);
+            if (best === null || d < best) best = d;
+        });
+        return best;
+    }
+
     private processSupplyAndCapture() {
+        // ===== 补给链驱动（运输舰 AI + 补给状态计算）=====
+        // 运输舰自动前出为半径外友军补给；结果用于下面的补给判定与可视化。
+        // homeOf：母港 = 所属阵营 castlePos，写入 AuxShip.homeX/homeY（真往返的返航目标）
+        this.auxShips = collectAuxShips(
+            this.globalFleets.filter(f => f.units && f.units.length > 0),
+            (fl: any) => this.store.factions.find((f: any) => f.id === fl.factionId)?.castlePos ?? null);
+        const srcNodes: SupplyNode[] = [];
+        this.store.factions.forEach((f: any) => {
+            const tf = this.factionMap.get(f.id);
+            if (f.castlePos && tf) srcNodes.push({ x: f.castlePos.x, y: f.castlePos.y, team: tf.team, kind: 'castle' });
+        });
+        this.tilesList.forEach((t: any) => {
+            if (t.type !== 'planet' && t.type !== 'castle') return;
+            const tf = this.factionMap.get(t.ownerId);
+            if (tf) srcNodes.push({ x: t.x, y: t.y, team: tf.team, kind: t.type });
+        });
+        const teamOf = (fl: any) => this.factionMap.get(fl.factionId)?.team;
+        this.supplyInfo = updateSupplyChain(
+            this.globalFleets.filter(f => f.units && f.units.length > 0),
+            srcNodes, this.auxShips, this.store.currentSpeedFactor || 1, teamOf);
+
         this.globalFleets.forEach(fl => {
             const fac = this.factionMap.get(fl.factionId);
             if (!fac || fl.units.length === 0) return;
@@ -788,14 +984,30 @@ export class BattleScene extends Phaser.Scene {
             // 团队级补给：同team的任意阵营地块均可提供补给（非严格faction匹配）
             const myTeam = this.factionMap.get(fac.id)?.team;
 
+            // ===== 指挥制（无六边形格子）：改用"补给源空间距离"判定 =====
+            // 六边形模式下补给靠地块连通（tilesDict + connected）；
+            // 指挥制纯宇宙没有格子可依附，若沿用会永远判定为断补给 → 后勤战失效。
+            // 因此指挥制下改为：计算旗舰到最近己方补给源（castle/planet）的距离，
+            // 在 SUPPLY_BASE_RADIUS 内即视为获得补给。
+            const isCommandMode = this.mapStyle === 'command';
+            let inSupplyByDistance = false;
+            // 补给链判定：优先用 SupplyChainSystem 的结果（含运输舰延伸范围）
+            const chainInfo = this.supplyInfo.get(fl);
+            if (chainInfo) {
+                inSupplyByDistance = !!chainInfo.inSupply;
+            } else if (isCommandMode) {
+                const src = this.getNearestSupplySource(flagship.sprite.x, realY, myTeam);
+                if (src !== null && src < BattleScene.SUPPLY_BASE_RADIUS) inSupplyByDistance = true;
+            }
+
             fl.units.forEach((u: any) => {
-                let inSupply = false;
-                if (currentTile && currentTile.ownerId !== 0 && currentTile.connected) {
+                let inSupply = inSupplyByDistance;
+                if (!isCommandMode && currentTile && currentTile.ownerId !== 0 && currentTile.connected) {
                     const tileFac = this.factionMap.get(currentTile.ownerId);
                     if (tileFac && tileFac.team === myTeam) inSupply = true;
                 }
 
-                if (currentTile && currentTile.ownerId !== 0 && currentTile.type === 'barracks') {
+                if (!isCommandMode && currentTile && currentTile.ownerId !== 0 && currentTile.type === 'barracks') {
                     const tileFac = this.factionMap.get(currentTile.ownerId);
                     if (tileFac && tileFac.team === myTeam) {
                         inSupply = true;
@@ -804,18 +1016,27 @@ export class BattleScene extends Phaser.Scene {
                 }
 
                 if (inSupply) {
-                    u.supply = Math.min(100, (u.supply !== undefined ? u.supply : 100) + 5); 
+                    u.supply = Math.min(100, (u.supply !== undefined ? u.supply : 100) + 5);
+                    // 补给充足 → 士气回升
+                    fl.morale = Math.min(100, (fl.morale === undefined ? 100 : fl.morale) + 1);
                 } else {
                     // 动态后勤流失率：困难模式敌人自带补给压缩技术(流失极慢)，简单模式流失极快
                     let drainRate = 2;
                     if (fac.type === 'ai') {
                         drainRate = this.store.selectedDiff === 'hard' ? 1 : (this.store.selectedDiff === 'easy' ? 4 : 2);
                     }
-                    
-                    u.supply = Math.max(0, (u.supply !== undefined ? u.supply : 100) - drainRate); 
-                    
-                    // 断粮惩罚：如果补给归零，每秒扣除最大生命值的结构伤害
-                    if (u.supply <= 0) {
+
+                    u.supply = Math.max(0, (u.supply !== undefined ? u.supply : 100) - drainRate);
+
+                    // ===== 断粮三段式惩罚（用户要求：先掉士气，再掉生命）=====
+                    if (fl.morale === undefined) fl.morale = 100;
+                    // 阶段1：补给 < 30 → 士气持续下降（每帧 -1.5）
+                    if (u.supply < 30) {
+                        fl.morale = Math.max(0, fl.morale - 1.5);
+                    }
+                    // 阶段2：士气归零 且 补给仍为 0 → 才开始扣结构生命
+                    //        （士气未归零时只表现为战力/机动衰减，见伤害与速度计算处）
+                    if (u.supply <= 0 && fl.morale <= 0) {
                         u.hp -= u.maxHp * 0.02;
                     }
                 }
@@ -863,6 +1084,8 @@ export class BattleScene extends Phaser.Scene {
                         this.showFleetDialogue(fl, 'capture'); // 触发占领语录
                         currentTile.ownerId = fac.id;
                         currentTile.captureProgress = 0;
+                        // 3D 覆盖层：星球占领作战视觉
+                        pushFx3d({ kind: 'capture', at: { x: currentTile.x, y: currentTile.y }, factionId: fac.id, color: fac.color });
                         if (this.mapStyle !== 'crt') {
                             currentTile.sprite.setFillStyle(fac.color, 0.9); currentTile.sprite.setStrokeStyle(3, fac.color, 1.0);
                         }
@@ -941,8 +1164,31 @@ export class BattleScene extends Phaser.Scene {
             if (d < minDist) { minDist = d; nearest = fl; }
         });
         if (nearest) {
+            // ── 指挥带宽门控：新命令能否送达取决于链路状态 ──
+            if (this.bwState && factionId === this.store.factions.find((f: any) => f.type === 'player')?.id) {
+                const comm = this.getCommCenter();
+                const dist = comm ? Phaser.Math.Distance.Between(nearest.x, nearest.y, comm.x, comm.y) : 0;
+                const status = getLinkStatus(this.bwState, dist);
+
+                if (status === 'silent') {
+                    this.store.triggerToast(`⌁ 通讯链路中断：目标舰队超出旗舰中继范围，拒收信标。它将继续执行既有命令。`);
+                    return;
+                }
+                if (status === 'delayed') {
+                    const delayMs = relayDelayMs(this.bwState, dist);
+                    queueDelayedOrder(this.bwState, 'flare', nearest.id, { x, y }, delayMs);
+                    this.store.triggerToast(`⇢ 信标数据包已发出，经中继节点转发中（预计 ${Math.round(delayMs / 1000)} 秒送达）。`);
+                    return;
+                }
+                // direct：频道锁定失败（容量满）→ 拒发
+                if (!canOrderInstantly(this.bwState, status, nearest.id)) {
+                    this.store.triggerToast(`⌁ 通信频道已满（${this.bwState.channels.size}/${this.bwState.maxChannels}）：无法与更多舰队建立直连。`);
+                    return;
+                }
+            }
+
             nearest.targetFlare = {x, y};
-            nearest.stance = 'search'; 
+            nearest.stance = 'search';
             this.store.triggerToast("战术信标已部署，突击舰队正在改变航向。");
         }
     }
@@ -1063,10 +1309,58 @@ export class BattleScene extends Phaser.Scene {
         });
     }
 
+    /** 指挥制后勤战：战场中线带随机布置 3 个中立星球中继（ownerId=0），
+     *  占领后纳入补给源（getNearestSupplySource/processSupplyAndCapture 已支持 planet，无需新写）。
+     *  格网覆盖得到的位置就地改类型（复用已隐藏的 sprite）；覆盖不到的位置（战役小格网 + 大 hexRadius）
+     *  合成隐藏地块——sprite/text 不可见但必须存在：占领逻辑会调用 setFillStyle/setText（:1070-1086）。
+     *  hex/crt 直接 return，一行不动。 */
+    private spawnSupplyRelayPlanets() {
+        if (this.mapStyle !== 'command') return;
+        let placed = 0, guard = 0;
+        while (placed < 3 && guard++ < 200) {
+            const px = (Math.random() * 2 - 1) * 600;   // 战场中线带
+            const py = (Math.random() * 2 - 1) * 400;
+            // 避开攻守出生区（指挥制出生点已拉开到 ±1500，留 ≥300 缓冲）
+            if (Math.abs(Math.abs(px) - 1500) < 300) continue;
+            const q = Math.round((Math.sqrt(3) / 3 * px - 1 / 3 * py) / this.hexRadius);
+            const r = Math.round((2 / 3 * py) / this.hexRadius);
+            const key = `${q},${r}`;
+            const existing = this.tilesDict[key];
+            if (existing && (existing.type === 'planet' || existing.type === 'castle'
+                || existing.type === 'sea' || existing.type === 'ruined' || existing.type === 'fortress')) continue;
+            if (existing) {
+                existing.type = 'planet';
+                existing.typeName = '宜居行星';
+                existing.ownerId = 0;
+                existing.hp = 1000; existing.maxHp = 1000;
+            } else {
+                const x = this.hexRadius * (Math.sqrt(3) * q + Math.sqrt(3) / 2 * r);
+                const y = this.hexRadius * (3 / 2 * r);
+                const points: number[] = [];
+                for (let i = 0; i < 6; i++) {
+                    const angle = (Math.PI / 180) * (60 * i - 30);
+                    points.push(x + this.hexRadius * Math.cos(angle), y + this.hexRadius * Math.sin(angle));
+                }
+                const poly = this.add.polygon(0, 0, points, 0x92400e).setAlpha(0).setVisible(false);
+                const txt = this.add.text(x, y, '', { fontSize: '18px' }).setOrigin(0.5).setAlpha(0).setVisible(false);
+                const tile: any = {
+                    q, r, cost: 50, ownerId: 0, type: 'planet', typeName: '宜居行星',
+                    tileClass: 'none', tier: 'none', hp: 1000, maxHp: 1000, x, y,
+                    sprite: poly, text: txt, lastTowerShotTime: 0,
+                    connected: false, captureProgress: 0,
+                };
+                this.tilesList.push(tile);
+                this.tilesDict[key] = tile;
+            }
+            placed++;
+        }
+    }
+
     // ===== 为大地图会战生成纯净对峙宙域（无星系建筑、无经济节点）=====
     private buildCampaignMap() {
         const campaignMatrix: any[] = [];
-        const radius = 6; 
+        // 战役对峙宙域扩容：半径 6→10（127→331 格），3D 化后单帧 InstancedMesh 足以承载
+        const radius = 10;
         for (let q = -radius; q <= radius; q++) {
             for (let r = -radius; r <= radius; r++) {
                 if (Math.abs(q + r) > radius) continue;
@@ -1086,7 +1380,9 @@ export class BattleScene extends Phaser.Scene {
         const pFactionId = pAdm?.faction === 'alliance' ? 1 : (pAdm?.faction === 'empire' ? 2 : 0);
 
         // 阶段A：战役模式出生点按hexRadius动态缩放
-        const spawnDist = this.hexRadius * 8; // 26→208, 50→400
+        // 指挥制后勤战：攻左守右拉开到 ±1500（3D 纯宇宙战场跨度约 3000~5500，
+        // hexRadius*8 = 208~400 会让双方出生点挤在中线附近，补给纵深为零）
+        const spawnDist = this.mapStyle === 'command' ? 1500 : this.hexRadius * 8; // hex/crt: 26→208, 50→400
 
         if (state.attackers && state.attackers[0]) {
             const isPlayerFac = state.attackers[0].factionId === pFactionId;
@@ -1207,19 +1503,23 @@ export class BattleScene extends Phaser.Scene {
                     const fac = this.factionMap.get(fleet.factionId);
                     if (fac && fac.team === 1) {
                         if (type === 'stance') {
-                            fleet.stance = payload;
-                            fleet.assignedRole = payload;
-                            if (payload === 'search') fleet.formation = 'spindle';
-                            else if (payload === 'siege') fleet.formation = 'wedge';
-                            else if (payload === 'defend') fleet.formation = 'circle';
-                            else if (payload === 'fallback') fleet.formation = 'line';
-                            else if (payload === 'stealth') fleet.formation = 'spindle';
-                            
-                            const stanceNames: Record<string, string> = {
-                                search: '索敌-纺锤阵', siege: '攻坚-雁行阵', fallback: '撤退-线型阵',
-                                defend: '驻守-圆阵', stealth: '隐身潜行',
-                            };
-                            this.store.triggerToast(`舰队变阵：[${stanceNames[payload] || payload}]`);
+                            // ── 指挥带宽门控：变阵命令同样受链路状态约束 ──
+                            if (this.bwState) {
+                                const comm = this.getCommCenter();
+                                const dist = comm ? Phaser.Math.Distance.Between(fleet.x, fleet.y, comm.x, comm.y) : 0;
+                                const status = getLinkStatus(this.bwState, dist);
+                                if (status === 'silent') {
+                                    this.store.triggerToast(`⌁ 通讯链路中断：该舰队无法接收变阵命令，将继续按既有阵型行动。`);
+                                    return;
+                                }
+                                if (status === 'delayed') {
+                                    const delayMs = relayDelayMs(this.bwState, dist);
+                                    queueDelayedOrder(this.bwState, 'stance', fleet.id, payload, delayMs);
+                                    this.store.triggerToast(`⇢ 变阵命令已发出，中继转发中（预计 ${Math.round(delayMs / 1000)} 秒送达）。`);
+                                    return;
+                                }
+                            }
+                            this.applyStanceToFleet(fleet, payload);
                         }
                     }
                 }
@@ -1362,6 +1662,29 @@ export class BattleScene extends Phaser.Scene {
         const myPlanets = myTiles.filter(t => t.type === 'planet').length;
         const myCastles = myTiles.filter(t => t.type === 'castle').length;
         const enemyConnected = enemyTiles.filter(t => t.connected).length;
+        // ===== 斩链判定（P3）：补给链驱动，兼容无格子的指挥制 =====
+        // 原判定只看"敌方连通地块数下降"，指挥制没有格子 → 永远不成立。
+        // 改为：统计敌方舰队中断补给的比例；断链过半 或 全部运输舰被击沉 = 斩链成功。
+        let enemyFleetsInSupply = 0, enemyFleetsTotal = 0;
+        let enemyAuxAlive = 0, enemyAuxTotal = 0;
+        this.supplyInfo.forEach((info: any, fl: any) => {
+            if (!fl.units || fl.units.length === 0) return;
+            const tf = this.factionMap.get(fl.factionId);
+            const playerTeam = this.factionMap.get(this.store.factions.find((f: any) => f.isPlayer)?.id ?? -1)?.team;
+            if (!tf || tf.team === playerTeam) return;   // 只看敌方
+            enemyFleetsTotal++;
+            if (info.inSupply) enemyFleetsInSupply++;
+        });
+        this.auxShips.forEach((aux: any) => {
+            const tf = this.factionMap.get(aux.fleet?.factionId);
+            const playerTeam = this.factionMap.get(this.store.factions.find((f: any) => f.isPlayer)?.id ?? -1)?.team;
+            if (!tf || tf.team === playerTeam) return;
+            enemyAuxTotal++;
+            if (aux.unit && aux.unit.hp > 0) enemyAuxAlive++;
+        });
+        // 斩链条件：敌方过半舰队断补给，或敌方运输舰全灭（且曾经有过）
+        const enemyCutRatio = enemyFleetsTotal > 0 ? (1 - enemyFleetsInSupply / enemyFleetsTotal) : 0;
+        const supplyChainCut = enemyCutRatio >= 0.5 || (enemyAuxTotal > 0 && enemyAuxAlive === 0);
         const enemyCastles = enemyTiles.filter(t => t.type === 'castle').length;
 
         const reportStage = (stage: number, title: string, desc: string) => {
@@ -1373,7 +1696,7 @@ export class BattleScene extends Phaser.Scene {
         if (this.battleStage === 1 && (myPlanets >= 2 || myCastles >= 2)) {
             this.battleStage = 2; this.stageReported = false;
             reportStage(2, '斩链', '我方已建立前沿跳板，接下来切断敌方补给线！');
-        } else if (this.battleStage === 2 && (enemyConnected <= 8 || enemyCastles === 0)) {
+        } else if (this.battleStage === 2 && (supplyChainCut || enemyConnected <= 8 || enemyCastles === 0)) {
             this.battleStage = 3; this.stageReported = false;
             reportStage(3, '拔旗', '敌方补给断裂，向敌方基地发起总攻！');
         }
@@ -1506,6 +1829,7 @@ export class BattleScene extends Phaser.Scene {
             .filter((f: any) => f.active)
             .map((f: any) => f.id);
         commandBridge.selectedAbilityId = null;
+        commandBridge.staffBriefing = this.buildStaffBriefing(pFleet, pFac);
         commandBridge.visible = true;
         commandBridge.pendingCallback = (targetId: number | null) => {
             if (commandBridge.selectedAbilityId) {
@@ -1517,6 +1841,53 @@ export class BattleScene extends Phaser.Scene {
         this.store.isPaused = true;
     }
 
+    /** 参谋敌情摘要：可见敌舰队数、最近敌距离、我方阵型克制判断（复用 update 内 beats 表） */
+    private buildStaffBriefing(pFleet: any, pFac: any): string {
+        // 敌情收集：只统计迷雾可见的敌方舰队（复用渲染迷雾同款口径：友军建筑300px / 舰队250·450px）
+        let visibleEnemyCount = 0;
+        let nearestDist = Infinity;
+        let nearestEnemy: any = null;
+        const allyFactionIds = this.store.factions.filter((f: any) => f.team === pFac.team).map((f: any) => f.id);
+        const allyFleets = this.globalFleets.filter(fl => allyFactionIds.includes(fl.factionId));
+        const allyVisionNodes = this.tilesList.filter(t => allyFactionIds.includes(t.ownerId) && (t.type === 'castle' || t.type === 'tower' || t.type === 'planet'));
+        this.globalFleets.forEach(ef => {
+            if (ef.units.length === 0) return;
+            const efFac = this.factionMap.get(ef.factionId);
+            if (!efFac || efFac.team === pFac.team || !efFac.active) return;
+            const fx = ef.units[0].sprite?.x ?? ef.x;
+            const fy = ef.units[0].sprite?.y ?? ef.y;
+            let inVision = allyVisionNodes.some(node => Phaser.Math.Distance.Between(fx, fy, node.x, node.y) < 300);
+            if (!inVision) {
+                inVision = allyFleets.some(pFl => {
+                    if (pFl.units.length === 0) return false;
+                    const vr = pFl.stance === 'search' ? 450 : 250;
+                    return Phaser.Math.Distance.Between(fx, fy, pFl.units[0].sprite.x, pFl.units[0].sprite.y) < vr;
+                });
+            }
+            if (!inVision) return;
+            visibleEnemyCount++;
+            const d = Phaser.Math.Distance.Between(pFleet.x, pFleet.y, ef.x, ef.y);
+            if (d < nearestDist) { nearestDist = d; nearestEnemy = ef; }
+        });
+
+        if (visibleEnemyCount === 0) return '参谋：当前视野内无敌舰队。';
+        const formCn: Record<string, string> = { wedge: '楔形阵', line: '横阵', spindle: '纺锤阵', circle: '圆形阵', square: '方阵' };
+        // 阵型克制判断（与 update 内 beats 表保持一致）
+        const beats: Record<string, string> = { 'wedge': 'spindle', 'spindle': 'circle', 'circle': 'square', 'square': 'line', 'line': 'wedge' };
+        let formAdvice = '';
+        if (nearestEnemy) {
+            const eForm = nearestEnemy.formation;
+            if (beats[pFleet.formation] === eForm) {
+                formAdvice = `我方${formCn[pFleet.formation] || pFleet.formation}克制其${formCn[eForm] || eForm}，保持阵型！`;
+            } else if (beats[eForm] === pFleet.formation) {
+                formAdvice = `警告：敌${formCn[eForm] || eForm}克制我方${formCn[pFleet.formation] || pFleet.formation}，建议变阵！`;
+            } else {
+                formAdvice = `敌${formCn[eForm] || eForm}与我方${formCn[pFleet.formation] || pFleet.formation}互不克制。`;
+            }
+        }
+        return `参谋：敌 ${visibleEnemyCount} 队接近，最近 ${Math.round(nearestDist)}px。${formAdvice}`;
+    }
+
     /** 执行命令 */
     private executeCommandFromPanel(abilityId: string, targetFleetId: number | null) {
         if (!this.cpState) return;
@@ -1524,7 +1895,7 @@ export class BattleScene extends Phaser.Scene {
         const pFleet = this.globalFleets.find((f: any) => f.factionId === pFac?.id);
         if (!pFleet) return;
 
-        const result = executeCommand(this.cpState, abilityId, pFleet.id, targetFleetId);
+        const result = executeCommand(this.cpState, abilityId, pFleet.id, targetFleetId, pFleet.factionId);
         if (result) {
             // 可视化反馈
             this.showCommandEffect(result);
@@ -1536,6 +1907,18 @@ export class BattleScene extends Phaser.Scene {
     private showCommandEffect(effect: ActiveEffect) {
         const pFleet = this.globalFleets.find((f: any) => f.id === effect.casterFleetId);
         if (!pFleet) return;
+        // ── 瞬时效果：紧急抢修的旗舰 HP 回复（effect.value 即 shield 0.5 前的 heal 定义）──
+        if (effect.commandId === 'emergency_repair') {
+            const flagship = pFleet.units[0];
+            if (flagship) {
+                const heal = flagship.maxHp * 0.2;
+                flagship.hp = Math.min(flagship.maxHp, flagship.hp + heal);
+                this.spawnDamageNumber(flagship.sprite.x, flagship.sprite.y - 18, heal, false);
+                // 绿色维修光环
+                const ring = this.add.circle(flagship.sprite.x, flagship.sprite.y, 22, 0x10b981, 0.4).setDepth(50);
+                this.tweens.add({ targets: ring, scale: 2.5, alpha: 0, duration: 700, onComplete: () => ring.destroy() });
+            }
+        }
         const col = effect.effect.type === 'shield' || effect.effect.type === 'reflect' ? 0x10b981 :
                     effect.effect.type === 'damage_boost' ? 0xef4444 :
                     effect.effect.type === 'debuff' ? 0xa855f7 : 0x06b6d4;
@@ -1557,6 +1940,130 @@ export class BattleScene extends Phaser.Scene {
         if (commandBridge.visible && commandBridge.cpState) {
             commandBridge.cpState = this.cpState;
         }
+    }
+
+    // ==================== 指挥带宽系统（指挥链延迟机制） ====================
+
+    /** 玩家通信中枢：玩家主舰队（第一支玩家舰队）的旗舰坐标 */
+    private getCommCenter(): { x: number, y: number, fleet: any } | null {
+        const pFac = this.store.factions.find((f: any) => f.type === 'player');
+        if (!pFac) return null;
+        const mainFleet = this.globalFleets.find(fl => fl.factionId === pFac.id);
+        if (!mainFleet) return null;
+        return { x: mainFleet.x, y: mainFleet.y, fleet: mainFleet };
+    }
+
+    /**
+     * 每帧推进指挥带宽系统：
+     * 1. 直连半径随地图缩放动态刷新（旗舰损毁时收缩60%）
+     * 2. direct 区舰队自动建立频道；被歼灭舰队释放频道
+     * 3. 处理送达的中继订单（信标/变阵延迟执行）
+     * 4. 更新各玩家舰队的链路指示标记
+     */
+    private applyBandwidthEffects(dtMs: number) {
+        if (!this.bwState) return;
+        const bw = this.bwState;
+        const comm = this.getCommCenter();
+
+        // 1. 直连半径动态刷新（地图缩放 / 旗舰降级）
+        bw.relayRange = this.hexRadius * 26 * (bw.flagshipDown ? 0.6 : 1);
+
+        // 2. 链路维护 + 指示标记
+        this.globalFleets.forEach(fleet => {
+            const pFac = this.store.factions.find((f: any) => f.type === 'player');
+            if (!pFac || fleet.factionId !== pFac.id) return;
+
+            // 舰队被歼灭：释放频道与标记
+            if (fleet.units.length === 0) {
+                releaseChannel(bw, fleet.id);
+                const marker = this.commMarkers.get(fleet.id);
+                if (marker) { marker.destroy(); this.commMarkers.delete(fleet.id); }
+                return;
+            }
+
+            const dist = comm ? Phaser.Math.Distance.Between(fleet.x, fleet.y, comm.x, comm.y) : 0;
+            const status: LinkStatus = getLinkStatus(bw, dist);
+            fleet._linkStatus = status;
+            fleet._linkDist = dist;
+
+            // direct 区自动锁定频道（容量不足则排队语义：先到先得）
+            if (status === 'direct') establishChannel(bw, fleet.id);
+
+            // 指示标记：跟随舰队上方的链路状态角标
+            let marker = this.commMarkers.get(fleet.id);
+            if (!marker) {
+                marker = this.add.text(fleet.x, fleet.y - 34, '', {
+                    fontSize: '10px', fontFamily: 'monospace', fontStyle: 'bold',
+                    stroke: '#000000', strokeThickness: 2,
+                }).setOrigin(0.5).setDepth(30);
+                this.commMarkers.set(fleet.id, marker);
+            }
+            const color = `#${LINK_COLORS[status].toString(16).padStart(6, '0')}`;
+            const pending = bw.delayedOrders.filter(o => o.fleetId === fleet.id).length;
+            const hasCh = hasChannel(bw, fleet.id);
+            const chMark = hasCh ? ' ◉' : '';
+            const pendMark = pending > 0 ? ` ⇢${pending}` : '';
+            const degraded = bw.flagshipDown ? '⌁' : '';
+            marker.setText(`${LINK_CN[status]}${chMark}${pendMark}${degraded}`);
+            marker.setColor(color);
+            marker.setPosition(fleet.x, fleet.y - 34);
+            marker.setVisible(status !== 'direct' || pending > 0 || !hasCh || bw.flagshipDown);
+        });
+
+        // 孤儿标记清理（舰队列表里已不存在的）
+        const pFac2 = this.store.factions.find((f: any) => f.type === 'player');
+        const playerFleetIds = new Set(this.globalFleets.filter(fl => pFac2 && fl.factionId === pFac2.id).map(fl => fl.id));
+        this.commMarkers.forEach((marker, fid) => {
+            if (!playerFleetIds.has(fid)) { marker.destroy(); this.commMarkers.delete(fid); }
+        });
+
+        // 3. 中继订单送达执行
+        const arrived = updateBandwidthState(bw, dtMs);
+        arrived.forEach(order => this.executeRelayedOrder(order));
+
+        // 4. 同步桥接（面板显示）
+        if (commandBridge.visible) {
+            commandBridge.bwState = bw;
+        }
+    }
+
+    /** 执行送达的中继订单（延迟信标 / 延迟变阵） */
+    private executeRelayedOrder(order: PendingOrder) {
+        const fleet = this.globalFleets.find(fl => fl.id === order.fleetId);
+        if (!fleet || fleet.units.length === 0) return; // 收件人已失联，订单作废
+        const fac = this.factionMap.get(fleet.factionId);
+        if (!fac || fac.team !== 1) return;
+
+        if (order.kind === 'flare') {
+            // 抵达信标：仅当无交战时接收（交战中的舰队不会被中继命令强行拉走，保持战斗连贯）
+            if (fleet.state === 'engaging') return;
+            fleet.targetFlare = order.payload;
+            fleet.stance = 'search';
+            this.store.triggerToast(`⇢ 中继命令送达：[${fac.name || '舰队'}] 收到信标坐标，转向突进。`);
+            // 中继波纹特效：数据包到达
+            const ring = this.add.circle(fleet.x, fleet.y, 18, 0x00ccff, 0.35).setDepth(28);
+            this.tweens.add({ targets: ring, scale: 2.5, alpha: 0, duration: 600, onComplete: () => ring.destroy() });
+        } else if (order.kind === 'stance') {
+            this.applyStanceToFleet(fleet, order.payload);
+            this.store.triggerToast(`⇢ 中继命令送达：[${fac.name || '舰队'}] 变阵「${order.payload}」生效。`);
+        }
+    }
+
+    /** 姿态命令的公共执行体（即时/延迟两路共用） */
+    private applyStanceToFleet(fleet: any, payload: string) {
+        fleet.stance = payload;
+        fleet.assignedRole = payload;
+        if (payload === 'search') fleet.formation = 'spindle';
+        else if (payload === 'siege') fleet.formation = 'wedge';
+        else if (payload === 'defend') fleet.formation = 'circle';
+        else if (payload === 'fallback') fleet.formation = 'line';
+        else if (payload === 'stealth') fleet.formation = 'spindle';
+
+        const stanceNames: Record<string, string> = {
+            search: '索敌-纺锤阵', siege: '攻坚-雁行阵', fallback: '撤退-线型阵',
+            defend: '驻守-圆阵', stealth: '隐身潜行',
+        };
+        this.store.triggerToast(`舰队变阵：[${stanceNames[payload] || payload}]`);
     }
 
     /** 渲染伤害数字 */
@@ -1709,9 +2216,10 @@ export class BattleScene extends Phaser.Scene {
     private buildMapData(): any[] {
         let mapDataMatrix: any[] = [];
         if (this.store.selectedMapId === 'random') {
-          for (let q = -25; q <= 25; q++) {
-            for (let r = -25; r <= 25; r++) {
-              if (Math.abs(q + r) > 25) continue;
+          // 战场扩容（对齐 demo 大地图观感）：半径 25→32（1951→3169 格）
+          for (let q = -32; q <= 32; q++) {
+            for (let r = -32; r <= 32; r++) {
+              if (Math.abs(q + r) > 32) continue;
               let type = 'pending'; const rand = Math.random();
               if (rand < 0.04) type = 'sea';
               else if (rand < 0.07) type = 'ruined';
@@ -1725,8 +2233,9 @@ export class BattleScene extends Phaser.Scene {
              landHexes[idx].type = 'planet'; landHexes.splice(idx, 1);
           }
         } else if (this.store.selectedMapId === 'random_rect') {
-          for (let q = -20; q <= 20; q++) {
-            for (let r = -10; r <= 10; r++) {
+          // 长条地图扩容：41×21 → 53×27
+          for (let q = -26; q <= 26; q++) {
+            for (let r = -13; r <= 13; r++) {
               let type = 'pending'; const rand = Math.random();
               if (rand < 0.04) type = 'sea'; else if (rand < 0.07) type = 'ruined';
               mapDataMatrix.push({ q, r, cost: 50, type, ownerId: 0 });
@@ -1988,6 +2497,7 @@ export class BattleScene extends Phaser.Scene {
 
         // ── 指挥点系统：应用效果（CP恢复+效果倒计时+伤害/速度修正）──
         this.applyCommandEffects(delta);
+        this.applyBandwidthEffects(delta);
 
         // 构建 faction 查找缓存（O(1) Map 替代 O(N) find，每帧节省 ~16000 次线性扫描）
         this.factionMap.clear();
@@ -1996,6 +2506,16 @@ export class BattleScene extends Phaser.Scene {
         // === CRT 全息投影效果 ===
         if (this.mapStyle === 'crt') {
             this.updateCRTEffects(time);
+        } else if (this.mapStyle === 'command') {
+            // 指挥制：纯宇宙，不画六边形网格；舰队光环每帧重绘，扫描线 overlay 随相机节流重绘
+            if (this.crtFleets) {
+                drawCommandFleets(this.crtFleets, this.globalFleets, this.crtGlowTime.val, this.factionMap);
+            }
+            this.cmdScanTimer += delta;
+            if (this.crtScan && this.cmdScanTimer > 60) {
+                this.cmdScanTimer = 0;
+                drawCommandScanOverlay(this.cameras.main, this.crtScan, this.time.now);
+            }
         }
 
         const pFac = this.store.factions.find((f: any) => f.type === 'player');
@@ -2049,6 +2569,8 @@ export class BattleScene extends Phaser.Scene {
                 const shieldColor = tFac ? tFac.color : 0x06b6d4;
                 const impactAngleRad = Math.atan2(p.sprite.y - p.target.sprite.y, p.sprite.x - p.target.sprite.x);
                 const impactAngleDeg = Phaser.Math.RadToDeg(impactAngleRad);
+                // 3D 覆盖层：塔弹命中护盾涟漪事件（dir=激光传播方向=弹丸行进方向，见 battle3dFx 契约）
+                pushFx3d({ kind: 'shield', at: { x: p.target.sprite.x, y: p.target.sprite.y }, dir: { x: -Math.cos(impactAngleRad), y: -Math.sin(impactAngleRad) }, color: shieldColor });
 
                 const impactX = p.target.sprite.x + Math.cos(impactAngleRad) * 10;
                 const impactY = p.target.sprite.y + Math.sin(impactAngleRad) * 10;
@@ -2100,6 +2622,33 @@ export class BattleScene extends Phaser.Scene {
                         const crew = cls === '战列' ? 3000 : cls === '巡洋' ? 1000 : cls === '驱逐' ? 500 : cls === '突击' ? 5000 : 500;
                         this.battleLosses.pension += crew * 50;
                     }
+                    // ── 旗舰沉没叙事：特写 + 提督诀别台词 + 接任播报 ──
+                    // filter 顺序遍历，units[0] 被评估时仍是旗舰；units.length > 1 保证还有接任者（否则走下方全灭分支）
+                    if (fleet.units[0] === u && fleet.units.length > 1) {
+                        const sinkFac = this.factionMap.get(fleet.factionId);
+                        const sinkName = sinkFac?.name || '舰队';
+                        (this.store as any).triggerToast?.(`★ ${sinkName}旗舰被击沉！副舰长接任指挥权。`);
+                        // ── 指挥带宽降级：玩家旗舰沉没 → 通信阵列受损，全军频道重置 ──
+                        const pFacForBw = this.store.factions.find((f: any) => f.type === 'player');
+                        if (this.bwState && pFacForBw && fleet.factionId === pFacForBw.id && this.getCommCenter()?.fleet === fleet) {
+                            degradeForFlagshipLoss(this.bwState);
+                            this.showBattleBanner('⌁ 通信阵列受损', '旗舰中继天线损毁：指挥半径收缩，全军频道重置', '#ef4444');
+                        }
+                        if ((this.store as any).addBattleLog) {
+                            (this.store as any).addBattleLog({ text: `${sinkName}旗舰被击沉，指挥权移交`, type: 'battle' });
+                        }
+                        this.showFleetDialogue(fleet, 'defeat', true);
+                        // 特写：镜头短暂推近沉没点再拉回
+                        try {
+                            const preZoom = this.cameras.main.zoom;
+                            this.cameras.main.pan(fleet.x, fleet.y, 300, 'Sine.easeInOut');
+                            this.cameras.main.setZoom(Math.min(2.0, preZoom * 1.5));
+                            this.cameras.main.shake(400, 0.006);
+                            this.time.delayedCall(2000, () => {
+                                this.cameras.main.setZoom(preZoom);
+                            });
+                        } catch (e) { /* 镜头动画非关键路径 */ }
+                    }
                     u.sprite.destroy(); return false;
                 }
                 return true;
@@ -2123,14 +2672,16 @@ export class BattleScene extends Phaser.Scene {
             if (fleet.units.length === 0) {
                 const fac = this.factionMap.get(fleet.factionId);
                 if (fac) {
+                    // ── 舰队全灭：提督诀别台词（isDefeat=true 固定坐标气泡）──
+                    this.showFleetDialogue({ ...fleet, factionId: fleet.factionId, x: fleet.x, y: fleet.y }, 'defeat', true);
                     fac.active = false;
                     const activeAllies = this.store.factions.filter((f: any) => f.team === 1 && f.active);
                     const activeEnemies = this.store.factions.filter((f: any) => f.team === 2 && f.active);
                     if (activeAllies.length === 0) {
-                        this.store.gameOver = true; this.store.isWin = false; 
+                        this.store.gameOver = true; this.store.isWin = false;
                         this.store.winStatus = "我方联合舰队全军覆没！"; this.store.rewardGold = 45;
                     } else if (activeEnemies.length === 0) {
-                        this.store.gameOver = true; this.store.isWin = true; 
+                        this.store.gameOver = true; this.store.isWin = true;
                         this.store.winStatus = "敌对势力全数歼灭！"; this.store.rewardGold = 350;
                         // P4c 最后一击慢镜头
                         try {
@@ -2658,6 +3209,9 @@ export class BattleScene extends Phaser.Scene {
             });
 
             const fleetSupplyFactor = (fleet.units[0]?.supply > 30) ? 1.0 : 0.5;
+            // 士气衰减 → 机动下降（100→1.0，0→0.7）
+            const flMoraleSpd = (fleet.morale === undefined ? 100 : fleet.morale);
+            const moraleSpeedMult = 0.7 + 0.3 * (flMoraleSpd / 100);
             const isMeleeStance = isRetreating || fleet.stance === 'siege';
             // 渐变减速：40px内最慢(0.3) → 120px外全速(1.0)，消除速度跳变
             let congestionSlowdown = 1.0;
@@ -2665,7 +3219,9 @@ export class BattleScene extends Phaser.Scene {
                 congestionSlowdown = 0.3 + 0.7 * Math.min(1, Math.max(0, (minFleetDist - 40) / 80));
             }
             const retreatSpeedBonus = isRetreating ? 3.0 : 1.0;
-            const fleetBaseSpeed = ((0.30 + (myFac.admiralStats?.mobility || 0) * 0.003) * fleetSupplyFactor) * retreatSpeedBonus;
+            // ── 指挥点修正：速度倍率（speed_boost / 黄金狮子咆哮的移速+30%）──
+            const cpSpeedMult = this.cpState ? getSpeedMultiplier(this.cpState, fleet.id, fleet.factionId) : 1.0;
+            const fleetBaseSpeed = ((0.30 + (myFac.admiralStats?.mobility || 0) * 0.003) * fleetSupplyFactor * moraleSpeedMult) * retreatSpeedBonus * cpSpeedMult;
 
             // ── P1 地形效果：当前所在格子的移动修正 ──
             const terrainSpeedMul = this.getTerrainSpeedMul(fleet.x, fleet.y);
@@ -2814,6 +3370,9 @@ export class BattleScene extends Phaser.Scene {
                         const targetFac = this.factionMap.get(targetShip.factionId);
                         
                         const unitSupplyFactor = u.supply > 30 ? 1.0 : 0.5;
+                        // 士气衰减：士气越低伤害越低（100→1.0，0→0.6），与补给衰减叠乘
+                        const flMorale1 = (fleet.morale === undefined ? 100 : fleet.morale);
+                        const moraleDmgMult = 0.6 + 0.4 * (flMorale1 / 100);
                         const admAtk = myFac.admiralStats?.attack || 0;
                         const tgtDef = targetFac?.admiralStats?.defense || 0;
                         
@@ -2841,16 +3400,36 @@ export class BattleScene extends Phaser.Scene {
                             this.tweens.add({ targets: ambushText, y: targetShip.sprite.y - 40, alpha: 0, duration: 800 / dt, onComplete: () => ambushText.destroy() });
                         }
 
-                        // ── 指挥点修正：伤害倍率 ──
-                        const cpDmgMult = this.cpState ? getDamageMultiplier(this.cpState, fleet.id, false) : 1.0;
+                        // ── 指挥点修正：伤害倍率（isDefending=驻守姿态时激活护盾分支）──
+                        const isFleetDefending = fleet.stance === 'defend';
+                        const cpDmgMult = this.cpState ? getDamageMultiplier(this.cpState, fleet.id, isFleetDefending, fleet.factionId) : 1.0;
+                        // ── 指挥点修正：士气加成（morale_rally 等 morale 效果 → 每10点士气+3%伤害）──
+                        const cpMorale = this.cpState ? getMoraleModifier(this.cpState, fleet.id, fleet.factionId) : 0;
+                        const cpMoraleMult = 1.0 + Math.max(0, cpMorale) * 0.003;
                         // P4b 逆境宣言buff：+15%伤害
                         const adversityMult = (fleet._adversityBuffUntil && this.time.now < fleet._adversityBuffUntil) ? 1.15 : 1.0;
                         // P5 决战时刻buff：+20%伤害
                         const finalMult = fleet._finalBattle ? 1.2 : 1.0;
-                        let finalDmg = Math.max(1, baseDmg * damageMultiplier * backstabMulti * cpDmgMult * adversityMult * finalMult);
+                        let finalDmg = Math.max(1, baseDmg * damageMultiplier * backstabMulti * cpDmgMult * cpMoraleMult * adversityMult * finalMult * moraleDmgMult);
                         // 战损保底：最低造成目标 1% 最大舰数的破甲伤害
                         const minDmg = Math.max(1, Math.floor(targetShip.maxHp * 0.01));
                         finalDmg = Math.max(finalDmg, minDmg);
+
+                        // ── 指挥点修正：受击方护盾减伤 + reflect 反弹 ──
+                        // 受击舰队有活跃 shield 效果（紧急抢修/紧急回避等）或处于驻守姿态 → 减伤；
+                        // 有 reflect 效果（杨威利魔术的反击）→ 按系数反弹给攻击方
+                        const tgtFleet = closestEnemyFleet; // 受击的是敌方舰队
+                        if (this.cpState && tgtFleet) {
+                            const tgtDefending = tgtFleet.stance === 'defend';
+                            const incomingMult = getIncomingMultiplier(this.cpState, tgtFleet.id, tgtDefending);
+                            finalDmg = Math.max(1, finalDmg * incomingMult);
+                            const reflectRatio = getReflectRatio(this.cpState, tgtFleet.id);
+                            if (reflectRatio > 0) {
+                                const reflected = finalDmg * reflectRatio;
+                                u.hp -= reflected;
+                                if (reflected > 1) this.spawnDamageNumber(u.sprite.x, u.sprite.y - 10, reflected, false);
+                            }
+                        }
 
                         if (u.classType === '突击') {
                             const fighterCount = 4;
@@ -2884,6 +3463,8 @@ export class BattleScene extends Phaser.Scene {
                                 || u.classType === '驱逐' || u.classType === '巡洋';
                             if (isMissileShip) {
                                 const burstCount = u.classType === 'destroyer' || u.classType === '驱逐' ? 6 : 4;
+                                // 3D 覆盖层：导弹齐射（power>=2 标记导弹视觉）
+                                pushFx3d({ kind: 'laser', from: { x: u.sprite.x, y: u.sprite.y }, to: { x: targetShip.sprite.x, y: targetShip.sprite.y }, color: myFac.color, power: burstCount });
                                 const totalDur = Math.min(800, dist * 3.0) / dt;
                                 const perpBase = fireAngle + Math.PI / 2;
                                 const startX = u.sprite.x, startY = u.sprite.y;
@@ -2963,6 +3544,9 @@ export class BattleScene extends Phaser.Scene {
                             const shieldColor = tFac ? tFac.color : 0x06b6d4;
                             const impactAngleRad = Math.atan2(u.sprite.y - targetShip.sprite.y, u.sprite.x - targetShip.sprite.x);
                             const impactAngleDeg = Phaser.Math.RadToDeg(impactAngleRad);
+                            // 3D 覆盖层：激光 + 定向护盾涟漪事件（dir=激光传播方向=射手→目标，见 battle3dFx 契约）
+                            pushFx3d({ kind: 'laser', from: { x: u.sprite.x, y: u.sprite.y }, to: { x: targetShip.sprite.x, y: targetShip.sprite.y }, color: myFac.color });
+                            pushFx3d({ kind: 'shield', at: { x: targetShip.sprite.x, y: targetShip.sprite.y }, dir: { x: -Math.cos(impactAngleRad), y: -Math.sin(impactAngleRad) }, color: shieldColor });
 
                             const impactX = targetShip.sprite.x + Math.cos(impactAngleRad) * 10;
                             const impactY = targetShip.sprite.y + Math.sin(impactAngleRad) * 10;
@@ -3001,12 +3585,18 @@ export class BattleScene extends Phaser.Scene {
                          u.lastAtkTime = time;
                          const admAtk = myFac.admiralStats?.attack || 0;
                          const unitSupplyFactor = u.supply > 30 ? 1.0 : 0.5;
+                         // 士气衰减（同上）
+                         const flMorale2 = (fleet.morale === undefined ? 100 : fleet.morale);
+                         const moraleDmgMult = 0.6 + 0.4 * (flMorale2 / 100);
                          
                          const dist = Phaser.Math.Distance.Between(u.sprite.x, u.sprite.y, closestEnemyTile.x, closestEnemyTile.y);
                          const fireAngle = Math.atan2(closestEnemyTile.y - u.sprite.y, closestEnemyTile.x - u.sprite.x);
                          const tileLaser = this.add.rectangle(u.sprite.x, u.sprite.y, dist, 3, myFac.color).setOrigin(0, 0.5).setRotation(fireAngle).setDepth(15).setBlendMode(Phaser.BlendModes.ADD);
                          const tileCore = this.add.rectangle(u.sprite.x, u.sprite.y, dist, 1, 0xffffff).setOrigin(0, 0.5).setRotation(fireAngle).setDepth(16);
                          this.tweens.add({ targets: [tileLaser, tileCore], alpha: 0, duration: 300 / dt, ease: 'Expo.easeOut', onComplete: () => { tileLaser.destroy(); tileCore.destroy(); } });
+                         // 3D 覆盖层：对地激光 + 命中闪光
+                         pushFx3d({ kind: 'laser', from: { x: u.sprite.x, y: u.sprite.y }, to: { x: closestEnemyTile.x, y: closestEnemyTile.y }, color: myFac.color });
+                         pushFx3d({ kind: 'hit', at: { x: closestEnemyTile.x, y: closestEnemyTile.y }, color: myFac.color });
 
                          closestEnemyTile.hp -= ((u.atk + Math.floor(admAtk * 0.2)) * unitSupplyFactor);
                          
@@ -3769,10 +4359,30 @@ export class BattleScene extends Phaser.Scene {
                 this.store.gameOver = true;
                 const playerFac = this.store.factions.find((f: any) => f.type === 'player');
                 this.store.isWin = playerFac ? aliveFactions.has(playerFac.id) : false;
-                
+
                 // 如果是战败，走原有逻辑
                 if (!this.store.isWin) {
                     this.store.winStatus = 'defeat';
+                } else {
+                    // ── P3 战损结算：胜利奖励按战损率加权 ──
+                    // 战损率 = 本场玩家损失舰数 / (损失 + 存活)；完胜上浮50%，惨胜下浮30%
+                    const playerFleet = this.globalFleets.find(fl => fl.factionId === playerFac?.id);
+                    const survivingShips = playerFleet ? playerFleet.units.length : 0;
+                    const totalCommitted = survivingShips + this.battleLosses.ships;
+                    const lossRate = totalCommitted > 0 ? this.battleLosses.ships / totalCommitted : 0;
+                    const baseGold = this.store.rewardGold || 350;
+                    if (lossRate < 0.1 && this.battleLosses.ships === 0) {
+                        // 完胜：一舰未失
+                        this.store.rewardGold = Math.round(baseGold * 1.5);
+                        (this.store as any).triggerToast?.('完胜！舰队无一损失，军费奖励上浮50%。');
+                    } else if (lossRate > 0.5) {
+                        // 惨胜：过半战舰有去无回
+                        this.store.rewardGold = Math.max(10, Math.round(baseGold * 0.7));
+                        (this.store as any).triggerToast?.(`因舰队损失惨重（${this.battleLosses.ships} 艘），军费奖励削减30%。`);
+                    }
+                    if ((this.store as any).addBattleLog) {
+                        (this.store as any).addBattleLog({ text: `战损结算：损失 ${this.battleLosses.ships} 舰 · 抚恤 ₮${Math.round(this.battleLosses.pension / 10000)}万 · 战损率 ${(lossRate * 100).toFixed(0)}%`, type: 'battle' });
+                    }
                 }
             }
         }

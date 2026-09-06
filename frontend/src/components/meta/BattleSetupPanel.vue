@@ -63,8 +63,13 @@
             <select v-model="mapStyle" class="neo-select">
               <option value="hex">星域棋盘（经典六角格）</option>
               <option value="crt">全息战术投影（CRT复古）</option>
+              <option value="3d">3D 战场（全维沙盘）</option>
+              <option value="command">指挥制（纯宇宙舰队战）</option>
             </select>
           </div>
+          <button @click="showShipGallery = true" class="neo-btn btn-sm w-full mt-1" style="margin-top:6px;color:#1fd28f;border-color:rgba(31,210,143,0.4)">
+            ⬡ 舰艇模型巡览（一次性查看全部已导入战舰）
+          </button>
         </div>
         
         <div class="launch-action">
@@ -165,6 +170,9 @@
         <button class="neo-btn text-red w-full mt-4 py-2" @click="selecting = false">取消</button>
       </div>
     </div>
+
+    <!-- 舰艇模型巡览浮层（QA 工具） -->
+    <ShipGalleryOverlay v-if="showShipGallery" @close="showShipGallery = false" />
   </div>
 </template>
 
@@ -175,8 +183,12 @@ import { useSettingsStore } from '../../store/settingsStore';
 import { totalShips } from '../../types/game';
 import { diffConfig } from '../../config/gameData';
 import { TAG_META_MAP } from '../../config/tagConfig';
+import ShipGalleryOverlay from '../battle/ShipGalleryOverlay.vue';
 
 const store = useGameStore();
+
+/** 舰艇模型巡览浮层开关 */
+const showShipGallery = ref(false);
 
 // 辅助函数
 const statColor = (v: number) => v >= 85 ? 'stat-s' : v >= 70 ? 'stat-a' : v >= 50 ? 'stat-b' : 'stat-c';
@@ -201,9 +213,9 @@ const isSimMode = computed<boolean>(() => {
   return raw?.value !== undefined ? raw.value : raw;
 });
 
-const mapStyle = ref<'hex' | 'crt'>((() => {
+const mapStyle = ref<'hex' | 'crt' | '3d' | 'command'>((() => {
   const raw = (settings as any).battlefieldMode;
-  return (raw?.value !== undefined ? raw.value : raw) ?? 'hex';
+  return (raw?.value !== undefined ? raw.value : raw) ?? 'command';
 })());
 
 const safeMapsPool = computed<any[]>(() => {
@@ -297,7 +309,7 @@ const getSimFullComp = (rankName: string) => {
   }
   // 兜底算法
   const total = typeof (store as any).getShipLimit === 'function' ? (store as any).getShipLimit(rank) : 5000;
-  return { battleships: Math.floor(total * 0.25), fastBattleships: Math.floor(total * 0.1), cruisers: Math.floor(total * 0.3), destroyers: Math.floor(total * 0.25), carriers: Math.floor(total * 0.05), fighters: Math.floor(total * 0.05) };
+  return { battleships: Math.floor(total * 0.25), fastBattleships: Math.floor(total * 0.1), cruisers: Math.floor(total * 0.25), destroyers: Math.floor(total * 0.25), carriers: Math.floor(total * 0.05), fighters: Math.floor(total * 0.05), supplies: Math.max(1, Math.floor(total * 0.05)) };
 };
 const getSimShipTotal = (rankName: string) => {
   const comp = getSimFullComp(rankName);

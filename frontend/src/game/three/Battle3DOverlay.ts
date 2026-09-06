@@ -27,6 +27,8 @@ import {
   SHIP_CLASS_ALIAS, FLAGSHIP_MODEL_ALIAS,
   acquireShipModelByFiles, type ShipModelReg,
 } from './shipModels';
+import { SUPPLY_SOURCE_RADIUS, SUPPLY_AUX_RADIUS } from '../SupplyChainSystem';
+import { useSettingsStore } from '../../store/settingsStore';
 
 // ============================================================
 // 舰船 GLB 模型：注册表/加载/命名规范已抽至 shipModels.ts（与模型巡览共享）
@@ -344,6 +346,25 @@ export class Battle3DOverlay {
   private minClearance = 6;
   /** 星球/要塞中心与半径（3D 径向避让用） */
   private planetCenters: { x: number; y: number; z: number; r: number }[] = [];
+
+  // ---------- 指挥制后勤战 3D 可视化 ----------
+  /**
+   * 2D 补给链可视化（BattleScene.drawSupplyChain）画在 Phaser 层，3D 模式画布被 CSS 隐藏
+   * → 指挥制 3D 战场完全看不到后勤元素（用户实报）。这里在 Three.js 层补画：
+   * 后勤站八面体+补给圈 / 星球中继圈 / 运输舰橙锥+补给圈+母队连线 / 舰队补给状态环。
+   * 数据源（BattleScene 公开/私有字段，any 读取）：supplyInfo、auxShips、tilesList、store.factions.castlePos。
+   * 开关沿用设置项 showSupplyChain（注意：该字段在 settingsStore，gameStore 上没有——
+   * 2D 版读 gameStore 恒 undefined 导致从未真正绘制；这里读 settingsStore，无 pinia 环境默认开）。
+   */
+  private supplyGroup: THREE.Group | null = null;
+  /** 后勤站标记：factionId → 八面体 + SUPPLY_SOURCE_RADIUS 补给圈 */
+  private supCastle = new Map<number, { oct: THREE.Mesh; ring: THREE.LineLoop }>();
+  /** 星球中继圈：tile 对象 → 小圈（中立灰 / 占领后转阵营色） */
+  private supPlanets = new Map<any, THREE.LineLoop>();
+  /** 运输舰标记：unit 对象（稳定，aux 包装对象每帧重建不能当 key）→ 橙锥 + 补给圈 + 母队连线 */
+  private supAux = new Map<any, { cone: THREE.Mesh; ring: THREE.LineLoop; link: THREE.Line }>();
+  /** 舰队补给状态环：fleet 对象 → 绿环（在链）/ 红环（断链） */
+  private supFleetRings = new Map<any, THREE.LineLoop>();
 
   // 舰船
   private shipGroup = new THREE.Group();
@@ -1610,6 +1631,171 @@ export class Battle3DOverlay {
     });
   }
 
+  // ---------- 指挥制后勤战 3D 可视化 ----------
+  /** 像素地面高度：指挥制纯宇宙模式无地形，恒 0；3D 沙盘模式走 heightAtPx */
+  private groundYAt(xPix: number, yPix: number): number {
+    return this.spaceMode ? 0 : this.heightAtPx(xPix, yPix);
+  }
+
+  /** 水平圆圈（XZ 平面 LineLoop），半径以世界单位计 */
+  private makeSupplyRing(radius: number, color: number, opacity: number, segments = 72): THREE.LineLoop {
+    const pts: THREE.Vector3[] = [];
+    for (let i = 0; i < segments; i++) {
+      const a = (i / segments) * Math.PI * 2;
+      pts.push(new THREE.Vector3(Math.cos(a) * radius, 0, Math.sin(a) * radius));
+    }
+    const geo = new THREE.BufferGeometry().setFromPoints(pts);
+    const mat = new THREE.LineBasicMaterial({ color, transparent: true, opacity, depthWrite: false });
+    return new THREE.LineLoop(geo, mat);
+  }
+
+  private disposeObject(o: any) {
+    o?.geometry?.dispose?.();
+    const m = o?.material;
+    if (Array.isArray(m)) m.forEach((mm: any) => mm?.dispose?.());
+    else m?.dispose?.();
+  }
+
+  /** 每帧同步后勤可视化：后勤站 / 星球中继 / 运输舰 / 舰队补给状态环 */
+  private updateSupplyViz() {
+    // 开关：showSupplyChain 在 settingsStore；无 pinia（无头测试台）时默认开
+    let show = true;
+    try { show = (useSettingsStore() as any)?.showSupplyChain !== false; } catch { /* headless 默认开 */ }
+    if (!show || this.mapSpan <= 0) {
+      if (this.supplyGroup) this.supplyGroup.visible = false;
+      return;
+    }
+    if (!this.supplyGroup) {
+      this.supplyGroup = new THREE.Group();
+      this.supplyGroup.name = 'supplyViz';
+      this.scene.add(this.supplyGroup);
+    }
+    this.supplyGroup.visible = true;
+
+    const bs: any = this.battleScene;
+    const R = this.hexR;
+    const teamColor = (team: number | undefined) => (team === 1 ? 0x22c55e : 0xa855f7);
+
+    // ── 1) 后勤站：castlePos 处八面体 + SUPPLY_SOURCE_RADIUS 补给圈（阵营色）──
+    const facs: any[] = (this.store as any)?.factions || [];
+    const seenFac = new Set<number>();
+    facs.forEach((f: any) => {
+      if (!f?.castlePos) return;
+      const tf = this.getFac(f.id) || f;
+      const team = tf.team ?? f.team;
+      seenFac.add(f.id);
+      let m = this.supCastle.get(f.id);
+      if (!m) {
+        const col = teamColor(team);
+        const oct = new THREE.Mesh(
+          new THREE.OctahedronGeometry(R * 1.1),
+          new THREE.MeshPhongMaterial({ color: col, emissive: col, emissiveIntensity: 0.45, transparent: true, opacity: 0.92 }),
+        );
+        const ring = this.makeSupplyRing(SUPPLY_SOURCE_RADIUS, col, 0.26);
+        this.supplyGroup!.add(oct, ring);
+        m = { oct, ring };
+        this.supCastle.set(f.id, m);
+      }
+      const gy = this.groundYAt(f.castlePos.x, f.castlePos.y);
+      m.oct.position.set(f.castlePos.x, gy + R * 2.2, -f.castlePos.y);
+      ((m.oct.material as THREE.MeshPhongMaterial).color).setHex(teamColor(team));
+      m.ring.position.set(f.castlePos.x, gy + R * 0.3, -f.castlePos.y);
+      (m.ring.material as THREE.LineBasicMaterial).color.setHex(teamColor(team));
+    });
+    this.supCastle.forEach((m, id) => {
+      if (seenFac.has(id)) return;
+      this.supplyGroup!.remove(m.oct, m.ring);
+      this.disposeObject(m.oct); this.disposeObject(m.ring);
+      this.supCastle.delete(id);
+    });
+
+    // ── 2) 星球中继：小圈（中立灰 0x9ca3af；占领后转阵营色）──
+    const tiles: any[] = bs.tilesList || [];
+    const seenTiles = new Set<any>();
+    tiles.forEach((t: any) => {
+      if (t?.type !== 'planet') return;
+      seenTiles.add(t);
+      const tf = t.ownerId > 0 ? this.getFac(t.ownerId) : null;
+      const col = tf ? teamColor(tf.team) : 0x9ca3af;
+      let ring = this.supPlanets.get(t);
+      if (!ring) {
+        ring = this.makeSupplyRing(R * 1.6, col, 0.55, 48);
+        this.supplyGroup!.add(ring);
+        this.supPlanets.set(t, ring);
+      }
+      (ring.material as THREE.LineBasicMaterial).color.setHex(col);
+      ring.position.set(t.x, this.groundYAt(t.x, t.y) + R * 0.3, -t.y);
+    });
+    this.supPlanets.forEach((ring, t) => {
+      if (seenTiles.has(t)) return;
+      this.supplyGroup!.remove(ring);
+      this.disposeObject(ring);
+      this.supPlanets.delete(t);
+    });
+
+    // ── 3) 运输舰：橙色锥体 + SUPPLY_AUX_RADIUS 补给圈 + 到母队连线（表现前出/返航）──
+    const auxShips: any[] = bs.auxShips || [];
+    const seenAux = new Set<any>();
+    auxShips.forEach((aux: any) => {
+      const fl = aux?.fleet;
+      if (!fl || !fl.units || fl.units.length === 0 || !aux.unit) return;
+      const key = aux.unit;   // aux 包装对象每帧重建，unit 引用稳定
+      seenAux.add(key);
+      const ax = fl.x + (aux.ox || 0);
+      const ay = fl.y + (aux.oy || 0);
+      let m = this.supAux.get(key);
+      if (!m) {
+        const cone = new THREE.Mesh(
+          new THREE.ConeGeometry(R * 0.5, R * 1.3, 4),
+          new THREE.MeshPhongMaterial({ color: 0xfb923c, emissive: 0xfb923c, emissiveIntensity: 0.35, transparent: true, opacity: 0.95 }),
+        );
+        const ring = this.makeSupplyRing(SUPPLY_AUX_RADIUS, 0xfb923c, 0.30, 56);
+        const linkGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+        const link = new THREE.Line(linkGeo, new THREE.LineBasicMaterial({ color: 0xfb923c, transparent: true, opacity: 0.5, depthWrite: false }));
+        this.supplyGroup!.add(cone, ring, link);
+        m = { cone, ring, link };
+        this.supAux.set(key, m);
+      }
+      const gyA = this.groundYAt(ax, ay);
+      const gyF = this.groundYAt(fl.x, fl.y);
+      m.cone.position.set(ax, gyA + R * 1.6, -ay);
+      m.ring.position.set(ax, gyA + R * 0.3, -ay);
+      const pos = (m.link.geometry as THREE.BufferGeometry).getAttribute('position') as THREE.BufferAttribute;
+      pos.setXYZ(0, fl.x, gyF + R * 0.5, -fl.y);
+      pos.setXYZ(1, ax, gyA + R * 1.6, -ay);
+      pos.needsUpdate = true;
+    });
+    this.supAux.forEach((m, key) => {
+      if (seenAux.has(key)) return;
+      this.supplyGroup!.remove(m.cone, m.ring, m.link);
+      this.disposeObject(m.cone); this.disposeObject(m.ring); this.disposeObject(m.link);
+      this.supAux.delete(key);
+    });
+
+    // ── 4) 舰队补给状态环：在链绿环 / 断链红环 ──
+    const supplyInfo: Map<any, any> = bs.supplyInfo || new Map();
+    const seenFl = new Set<any>();
+    supplyInfo.forEach((info: any, fl: any) => {
+      if (!fl?.units || fl.units.length === 0) return;
+      seenFl.add(fl);
+      const col = info.inSupply ? 0x22c55e : 0xef4444;
+      let ring = this.supFleetRings.get(fl);
+      if (!ring) {
+        ring = this.makeSupplyRing(R * 1.4, col, 0.65, 48);
+        this.supplyGroup!.add(ring);
+        this.supFleetRings.set(fl, ring);
+      }
+      (ring.material as THREE.LineBasicMaterial).color.setHex(col);
+      ring.position.set(fl.x, this.groundYAt(fl.x, fl.y) + R * 0.35, -fl.y);
+    });
+    this.supFleetRings.forEach((ring, fl) => {
+      if (seenFl.has(fl)) return;
+      this.supplyGroup!.remove(ring);
+      this.disposeObject(ring);
+      this.supFleetRings.delete(fl);
+    });
+  }
+
   // ---------- 占领作战视觉 ----------
   /**
    * 星球易主时播放作战过程：参与舰船环绕 → 投放登陆艇 → 抵达触发能量罩脉冲 → 返航归队。
@@ -1951,6 +2137,8 @@ export class Battle3DOverlay {
       this.refreshTileOwners();
       this.syncShips(dt);
       this.updateBillboards();
+      // 后勤可视化仅指挥制（spaceMode）：hex/crt 路径保持零改动
+      if (this.spaceMode) this.updateSupplyViz();
       this.updateFlames(dt);
       drainFx3d().forEach(e => this.handleFx(e));
       this.updateFx(dt);
@@ -2048,6 +2236,12 @@ export class Battle3DOverlay {
     this.billboards.forEach((bb) => this.destroyBillboard(bb));
     this.billboards.clear();
     this.bbAccum.clear();
+    // 后勤可视化引用表清空（几何体/材质由下方 scene.traverse 统一释放）
+    this.supCastle.clear();
+    this.supPlanets.clear();
+    this.supAux.clear();
+    this.supFleetRings.clear();
+    this.supplyGroup = null;
     if (this.bbLayer) {
       this.bbLayer.remove();
       this.bbLayer = null;

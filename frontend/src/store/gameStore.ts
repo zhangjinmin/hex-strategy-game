@@ -11,7 +11,7 @@ import {
   getTagsByCategory,
   isPoliticalTag,
 } from '../config/tagConfig';
-import type { PersonalityTag, AbilityTag } from '../types/game';
+import type { PersonalityTag, AbilityTag, PoliticalTag } from '../types/game';
 import { classToTypeCode, REFUGEE, availableFactions, diffConfig, defaultMaps, generateInitialTroops } from '../config/gameData';
 import { admiralsData, BaseAdmiral, Admiral } from '../config/admiralsData';
 import { assignFleetByNovel } from '../config/fleetAssignment';
@@ -31,6 +31,7 @@ import {
   executeProposalEffect,
   executeProposalRejection,
   generateMonthlyProposals,
+  PROPOSAL_DEFINITIONS,
 } from '../utils/proposalEngine';
 import { INITIAL_GOLD, SHIP_MAINTENANCE, WAR_ECONOMY, FEZZAN_INITIAL_GOLD } from '../config/economy';
 import {
@@ -609,7 +610,7 @@ export const useGameStore = defineStore('game', () => {
     battleId?: string;
     attackers: any[];
     defenders: any[];
-    mapStyle?: 'hex' | 'crt';
+    mapStyle?: 'hex' | 'crt' | '3d' | 'command';
   } | null>({ mode: 'skirmish', attackers: [], defenders: [] });
 
   // ===== 战术模拟（独立小游戏模式）=====
@@ -622,12 +623,13 @@ export const useGameStore = defineStore('game', () => {
   // 按军衔生成满编舰队 composition（总舰数=getShipLimit，按比例拆分舰种）
   const generateSimFullComposition = (rank: number): FleetComposition => {
     const total = getShipLimit(rank);
-    if (rank <= 8)      return { battleships: Math.floor(total * 0.1), fastBattleships: 0, cruisers: Math.floor(total * 0.3), destroyers: Math.floor(total * 0.4), carriers: 0, fighters: Math.floor(total * 0.2) };
-    if (rank <= 9)      return { battleships: Math.floor(total * 0.2), fastBattleships: 0, cruisers: Math.floor(total * 0.3), destroyers: Math.floor(total * 0.3), carriers: Math.floor(total * 0.1), fighters: Math.floor(total * 0.1) };
-    if (rank <= 10)     return { battleships: Math.floor(total * 0.3), fastBattleships: Math.floor(total * 0.1), cruisers: Math.floor(total * 0.3), destroyers: Math.floor(total * 0.2), carriers: Math.floor(total * 0.05), fighters: Math.floor(total * 0.05) };
-    if (rank <= 11)     return { battleships: Math.floor(total * 0.4), fastBattleships: Math.floor(total * 0.1), cruisers: Math.floor(total * 0.25), destroyers: Math.floor(total * 0.15), carriers: Math.floor(total * 0.05), fighters: Math.floor(total * 0.05) };
-    if (rank <= 12)     return { battleships: Math.floor(total * 0.5), fastBattleships: Math.floor(total * 0.15), cruisers: Math.floor(total * 0.2), destroyers: Math.floor(total * 0.1), carriers: Math.floor(total * 0.03), fighters: Math.floor(total * 0.02) };
-    return { battleships: Math.floor(total * 0.55), fastBattleships: Math.floor(total * 0.2), cruisers: Math.floor(total * 0.15), destroyers: Math.floor(total * 0.05), carriers: Math.floor(total * 0.03), fighters: Math.floor(total * 0.02) };
+    if (rank <= 8)      return { battleships: Math.floor(total * 0.1), fastBattleships: 0, cruisers: Math.floor(total * 0.3), destroyers: Math.floor(total * 0.4), carriers: 0, fighters: Math.floor(total * 0.15), supplies: Math.max(1, Math.floor(total * 0.05)) };
+    if (rank <= 9)      return { battleships: Math.floor(total * 0.2), fastBattleships: 0, cruisers: Math.floor(total * 0.3), destroyers: Math.floor(total * 0.3), carriers: Math.floor(total * 0.05), fighters: Math.floor(total * 0.1), supplies: Math.max(1, Math.floor(total * 0.05)) };
+    if (rank <= 10)     return { battleships: Math.floor(total * 0.3), fastBattleships: Math.floor(total * 0.1), cruisers: Math.floor(total * 0.25), destroyers: Math.floor(total * 0.2), carriers: Math.floor(total * 0.05), fighters: Math.floor(total * 0.05), supplies: Math.max(1, Math.floor(total * 0.05)) };
+    if (rank <= 11)     return { battleships: Math.floor(total * 0.4), fastBattleships: Math.floor(total * 0.1), cruisers: Math.floor(total * 0.2), destroyers: Math.floor(total * 0.15), carriers: Math.floor(total * 0.05), fighters: Math.floor(total * 0.05), supplies: Math.max(1, Math.floor(total * 0.05)) };
+    // 保底 ≥1：rank12/13+ 此前连 supplies 字段都没有（undefined→无补给舰槽位→后勤战在高军衔档根本无法演示）
+    if (rank <= 12)     return { battleships: Math.floor(total * 0.5), fastBattleships: Math.floor(total * 0.15), cruisers: Math.floor(total * 0.2), destroyers: Math.floor(total * 0.1), carriers: Math.floor(total * 0.03), fighters: Math.floor(total * 0.02), supplies: Math.max(1, Math.floor(total * 0.05)) };
+    return { battleships: Math.floor(total * 0.55), fastBattleships: Math.floor(total * 0.2), cruisers: Math.floor(total * 0.15), destroyers: Math.floor(total * 0.05), carriers: Math.floor(total * 0.03), fighters: Math.floor(total * 0.02), supplies: Math.max(1, Math.floor(total * 0.05)) };
   };
 
   const enterSimMode = () => {
@@ -644,7 +646,7 @@ export const useGameStore = defineStore('game', () => {
   };
 
   // 战术模拟的出击启动：构建双方满编舰队 → 序列化 → 写入 tacticalState → 启动战斗
-  const launchSimBattle = (mapStyle: 'hex' | 'crt' = 'hex') => {
+  const launchSimBattle = (mapStyle: 'hex' | 'crt' | '3d' | 'command' = 'command') => {
     if (simSelectedAdmirals.value.length === 0) {
       triggerToast('必须指派至少一名提督出战');
       return;
@@ -855,14 +857,25 @@ export const useGameStore = defineStore('game', () => {
     if (!pAdm) return false;
 
     // 1. 职权权限校验（使用 roleConfig 的 canPropose）
+    // 权限不足 → 自动转 v2 上报链（呈递上司请示），而非死胡同 toast
     if (!canPropose(pAdm, type as ProposalType)) {
-      triggerToast('职级不足，无权执行此操作');
+      const def = PROPOSAL_DEFINITIONS[type as ProposalType];
+      submitEscalatedProposalV2(
+        pAdm, type,
+        def?.name || type,
+        def?.description || '（详情见军议提案）',
+        targetNodeId,
+        undefined // 批准后由 processProposalV2 的 commsMessage 通知，玩家再行处理
+      );
       return false;
     }
 
     let support = 0;
     let oppose = 0;
     let vetoed = false;
+
+    // 唱票明细：每位参与投票提督的 {姓名, 赞成/反对, 权重分}，让 calculateAIVote 的人格计算可见
+    const voteBreakdown: { name: string; support: boolean; weight: number }[] = [];
 
     const factionAdmirals = admList.filter(a => a.faction === pAdm.faction);
 
@@ -875,15 +888,21 @@ export const useGameStore = defineStore('game', () => {
 
       if (isSupport) {
         support += weight;
+        voteBreakdown.push({ name: `${adm.rankName} ${adm.name}`, support: true, weight });
       } else {
         oppose += weight;
+        voteBreakdown.push({ name: `${adm.rankName} ${adm.name}`, support: false, weight });
         if (type === 'budget' && ['military_minister', 'council'].includes(admRole)) vetoed = true;
         if (type === 'invasion' && ['high_command_chief', 'joint_ops_chief'].includes(admRole)) vetoed = true;
       }
     });
 
     // 玩家提案自带本人军阶权重赞成票
-    support += roleWeightMap[pAdm.role] || getRankWeight(pAdm.rankName);
+    const playerWeight = roleWeightMap[pAdm.role] || getRankWeight(pAdm.rankName);
+    support += playerWeight;
+    if (playerWeight > 0) {
+      voteBreakdown.unshift({ name: `${pAdm.rankName} ${pAdm.name}（提案人）`, support: true, weight: playerWeight });
+    }
 
     const isApproved = (support > oppose) && !vetoed;
 
@@ -900,6 +919,7 @@ export const useGameStore = defineStore('game', () => {
       createdAt: universeDate.value,
       resolvedDate: universeDate.value,
       vetoedBy: vetoed ? '上级职能长官' : null,
+      voteBreakdown, // 唱票明细随提案进入历史记录
     };
 
     // [T04] 提案效果执行引擎集成
@@ -942,7 +962,8 @@ export const useGameStore = defineStore('game', () => {
       oppose,
       status: isApproved ? 'approved' : 'rejected',
       date: universeDate.value,
-      vetoedBy: vetoed ? '上级职能长官' : null
+      vetoedBy: vetoed ? '上级职能长官' : null,
+      voteBreakdown, // 唱票明细
     });
 
     return isApproved;
@@ -973,6 +994,62 @@ export const useGameStore = defineStore('game', () => {
   };
 
   // ===== P1 链式指挥链提案（v2）=====
+  /**
+   * 权限不足时自动向上司呈递提案（v2 上报链）。
+   * 设计依据 proposal_refactor_design.md 2.2 铁律：权限不够 → 自动向上司提案 → 等待批复。
+   * 越级请示有额外审批惩罚（上司对越级者信任更低），体现体制的阻力而非系统的拒绝。
+   */
+  const submitEscalatedProposalV2 = (
+    pAdm: BaseAdmiral, type: string, title: string, description: string,
+    nodeId: number | undefined, onApproved?: () => void
+  ) => {
+    const admiralStore = useAdmiralStore();
+    const admList = (admiralStore.admirals as unknown as BaseAdmiral[]);
+
+    // 沿指挥链查找上司
+    let superior: BaseAdmiral | null = null;
+    if (pAdm.role === 'fleet_commander') {
+      const myFleet = strategicFleets.value.find(
+        f => f.commanderId === pAdm.id && f.factionId === (pAdm.faction === 'alliance' ? 1 : 2)
+      );
+      if (myFleet && myFleet.parentCommanderId) {
+        superior = admList.find(a => a.id === myFleet.parentCommanderId) || null;
+      }
+    }
+    if (!superior) {
+      superior = findSuperior(pAdm, admList);
+    }
+
+    if (!superior) {
+      // 指挥链尽头（如参谋/无职军官且无人可呈递）——保持明确拒绝
+      const roleName = pAdm.role === 'fleet_commander' ? '分舰队司令'
+                     : pAdm.role === 'fleet_staff' ? '参谋'
+                     : pAdm.role === 'none' ? '无职军官'
+                     : pAdm.role;
+      triggerToast(`以${roleName}的职权，无权发起此项提案，且指挥链上无上司可呈递。需更高军阶或要职方可提出。`);
+      return;
+    }
+
+    // 审批延迟 2-5 天（越级请示流程更慢）
+    const delayTicks = (2 + Math.floor(Math.random() * 4)) * TICKS_PER_DAY;
+    const proposal: ProposalV2 = {
+      id: Date.now(),
+      proposerId: pAdm.id,
+      proposerName: `${pAdm.rankName} ${pAdm.name}`,
+      superiorId: superior.id,
+      superiorName: `${superior.rankName} ${superior.name}`,
+      type,
+      title,
+      description,
+      nodeId,
+      responseDeadlineTick: totalTicks.value + delayTicks,
+      status: 'pending',
+      onApproved,
+    };
+    pendingProposalsV2.value.push(proposal);
+    triggerToast(`以${pAdm.rankName}${pAdm.name}的职权尚无权发起此项提案，已作为请示呈递至 ${proposal.superiorName}，等待批复（2-5日）。`);
+  };
+
   const submitProposalV2 = (opts: {
     type: string; title: string; description: string;
     nodeId?: number; onApproved?: () => void;
@@ -982,13 +1059,10 @@ export const useGameStore = defineStore('game', () => {
     const pAdm = admList.find(a => a.id === playerAdmiralId.value);
     if (!pAdm) return;
 
-    // v2 权限校验：低级别玩家不能提交无权发起的提案
+    // v2 权限校验：权限不足时自动转为向上司呈递的请示提案（设计铁律：
+    // 权限够→直接执行；权限不够→走审批链，而非死胡同 toast）
     if (!canPropose(pAdm, opts.type as ProposalType)) {
-      const roleName = pAdm.role === 'fleet_commander' ? '分舰队司令'
-                     : pAdm.role === 'fleet_staff' ? '参谋'
-                     : pAdm.role === 'none' ? '无职军官'
-                     : pAdm.role;
-      triggerToast(`以${roleName}的职权，无权发起此项提案。需更高军阶或要职方可提出。`);
+      submitEscalatedProposalV2(pAdm, opts.type, opts.title, opts.description, opts.nodeId, opts.onApproved);
       return;
     }
 
@@ -1069,18 +1143,37 @@ export const useGameStore = defineStore('game', () => {
     const proposer = admList.find(a => a.id === proposal.proposerId);
     if (!superior) { proposal.status = 'approved'; return; }
 
-    // AI 决策：基于标签、关系、战略环境
+    // AI 决策：基于政治倾向矩阵（POLITICAL_VOTE_COEFFICIENTS）、标签匹配、战略环境
     const supTags = superior.tags || [];
     const propTags = proposer?.tags || [];
-    let approvalChance = 0.5;
 
-    // 标签匹配度
+    // ── 主轴：上级政治标签 × 提案类型 → 倾向系数（tagConfig 7×7 矩阵）──
+    // POLITICAL_VOTE_COEFFICIENTS 语义：政治标签 tag 对提案类型 pt 的支持倾向（-0.5 ~ +0.5）
+    let politicalMod = 0;
+    {
+      let politicalSum = 0;
+      let politicalTagCount = 0;
+      for (const tag of supTags) {
+        if (isPoliticalTag(tag)) {
+          const coef = POLITICAL_VOTE_COEFFICIENTS[tag]?.[proposal.type as ProposalType];
+          if (coef !== undefined) politicalSum += coef;
+          politicalTagCount++;
+        }
+      }
+      // 取均值后 ×20 转为概率修正：和平派 vs 侵攻 = -0.4×20 = -8%；
+      // 军国派 vs 侵攻/征兵 = +0.5×20 = +10%。政治标签上限为 1，均值即原值。
+      if (politicalTagCount > 0) politicalMod = (politicalSum / politicalTagCount) * 20;
+    }
+
+    let approvalChance = 0.5 + politicalMod;
+
+    // 标签匹配度（保留但降权：原 ×0.15 → ×0.05，政治倾向为主轴）
     const sharedTags = supTags.filter(t => propTags.includes(t));
-    approvalChance += sharedTags.length * 0.15;
+    approvalChance += sharedTags.length * 0.05;
 
     // 上下级关系
     if ((superior as any).loyalty >= 70) approvalChance += 0.15;
-    if ((superior as any).ambition > 80) approvalChance -= 0.15; // 野心家不喜欢下属抢功
+    if ((superior.hiddenStats?.ambition ?? 0) > 80) approvalChance -= 0.15; // 野心家不喜欢下属抢功
 
     // 战略环境
     if (proposal.type === 'planet_op' && metaGold.value < 50000) approvalChance -= 0.2;
@@ -1089,10 +1182,9 @@ export const useGameStore = defineStore('game', () => {
     const approved = Math.random() < Math.min(0.95, Math.max(0.05, approvalChance));
     proposal.status = approved ? 'approved' : 'rejected';
 
-    // 通讯员通知
-    const factionLabel = superior.faction === 'alliance' ? '同盟' : '帝国';
+    // 通讯员通知（驳回理由按上级主导标签差异化）
     const resultText = approved ? '已批准' : '已驳回';
-    const reasonText = approved ? '' : '(上级认为当前时机不合适)';
+    const reasonText = approved ? '' : `（${getSuperiorRejectionReason(superior, proposal.type)}）`;
     commsMessage.value = {
       visible: true,
       title: `提案批复 — ${proposal.title}`,
@@ -1110,6 +1202,55 @@ export const useGameStore = defineStore('game', () => {
     if (approved && proposal.onApproved) {
       proposal.onApproved();
     }
+  };
+
+  /**
+   * 驳回理由库：按上级主导政治标签 × 提案类型返回差异化文案。
+   * 文案风格对齐 issueWarpOrder 的身份化模板：有身份、有原因、有规则。
+   * 未命中映射时回退到通用理由（保留原"时机不合适"作为兜底）。
+   */
+  const getSuperiorRejectionReason = (superior: BaseAdmiral, proposalType: string): string => {
+    const supTags = superior.tags || [];
+    const political = supTags.filter(isPoliticalTag);
+    const dominant = political[0]; // 政治标签上限为 1（TAG_LIMITS），首个即主导
+    const mil = getTagsByCategory(supTags, 'military')[0];
+
+    // 按主导政治标签给核心理由
+    const REASON_BY_POLITICAL: Partial<Record<PoliticalTag, Partial<Record<string, string>>>> = {
+      pacifist: {
+        invasion: `${superior.name}向来反对轻启战端：多一分流血，便少一分和谈的余地。`,
+        conscription: '强行征兵只会掏空民生，此事不予考虑。',
+      },
+      militarist: {
+        defense: '把兵力龟缩在要塞里成何体统？机动力才是舰队的生命。',
+        budget: '军费应当投向舰炮，而非躺在账面上。',
+      },
+      aristocrat: {
+        personnel: '官职任免自有门第法度，岂容朝令夕改。',
+        budget: '国库用度须循旧例，此例一开后患无穷。',
+      },
+      reformer: {
+        personnel: '人事若仍按旧制运作，改革便无从谈起，暂缓。',
+      },
+      royalist: {
+        invasion: '陛下未下明诏之前，任何人不得擅动刀兵。',
+      },
+      democrat: {
+        conscription: '评议会未审议征兵案，我无权批准，也无意绕开它。',
+      },
+      ambition_faction: {
+        defense: '把资源耗在守势上？成大事者从不修篱筑垒。',
+      },
+    };
+    const reason = dominant ? REASON_BY_POLITICAL[dominant]?.[proposalType] : undefined;
+    if (reason) return reason;
+
+    // 军事风格补充理由
+    if (mil === 'cautious') return `${superior.name}用兵求稳：准备不足之前，此案不宜推进。`;
+    if (mil === 'aggressive') return '这个方案太保守了——要打就打出气势来，否则免谈。';
+
+    // 兜底
+    return '上级认为当前时机不合适';
   };
 
   // ===== 阶段二：核心后勤补给线计算 (BFS 算法) =====
@@ -3389,6 +3530,8 @@ export const useGameStore = defineStore('game', () => {
         if (fleet.composition.destroyers > 0) slots.push({ x: 1, y: 1, type: 'destroyer', count: fleet.composition.destroyers });
         if (fleet.composition.carriers > 0) slots.push({ x: -1, y: -1, type: 'carrier', count: fleet.composition.carriers });
         if (fleet.composition.fighters > 0) slots.push({ x: 1, y: -1, type: 'fighter', count: fleet.composition.fighters });
+        // 补给运输舰(AUX)：后勤战核心，编入后才会出现在战场，可被击沉 → 断补给
+        if ((fleet.composition.supplies || 0) > 0) slots.push({ x: 0, y: 2, type: 'supply', count: fleet.composition.supplies });
     }
 
     const shipTemplates: Record<string, { hp: number; atk: number }> = {
@@ -3398,15 +3541,18 @@ export const useGameStore = defineStore('game', () => {
       destroyer:        { hp: 800,  atk: 120 },
       carrier:          { hp: 1500, atk: 60  },
       fighter:          { hp: 300,  atk: 110 },
+      // 补给运输舰：低血低攻，定位后勤（击沉它 = 切断该舰队补给线）
+      supply:           { hp: 900,  atk: 20  },
     };
 
     const classKeyMap: Record<string, string> = {
       battleship: '战列', fast_battleship: '高战', cruiser: '巡洋',
       destroyer: '驱逐', carrier: '空母', fighter: '舰载',
+      supply: '补给',
     };
     const baseDefMap: Record<string, number> = {
       battleship: 15, fast_battleship: 13, cruiser: 10,
-      destroyer: 5, carrier: 12, fighter: 2,
+      destroyer: 5, carrier: 12, fighter: 2, supply: 5,
     };
 
     slots.forEach((slot: any) => {
@@ -3491,6 +3637,8 @@ export const useGameStore = defineStore('game', () => {
       return {
         fleetId: fleet.id,
         factionId: fleet.factionId,
+        commanderId: admiral?.id ?? null,
+        flagshipName: (admiral as any)?.flagshipName || '',
         commanderName: admiral ? admiral.name : '未知提督',
         imageId: admiral ? admiral.imageId : '',
         formation: fleet.formation || DEFAULT_FORMATION,
@@ -3536,7 +3684,7 @@ export const useGameStore = defineStore('game', () => {
     }
 
     const settings = useSettingsStore();
-    const mapStyle: 'hex' | 'crt' = (settings.battlefieldMode as any as 'hex' | 'crt') || 'hex';
+    const mapStyle: 'hex' | 'crt' | '3d' | 'command' = (settings.battlefieldMode as any as 'hex' | 'crt' | '3d' | 'command') || 'command';
     // 战役地图改用战术模拟同款随机大地图
     selectedMapId.value = 'random';
 
