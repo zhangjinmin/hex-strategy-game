@@ -1368,6 +1368,46 @@ export class BattleScene extends Phaser.Scene {
         if (sFac) this.store.triggerToast?.(`◆ 总指挥：${sFac.name} — 你只能直接指挥其旗舰舰队，其余舰队请用军议面板下达任务`);
     }
 
+    /**
+     * 提督扮演 P0：总指挥舰队覆灭后的指挥继任（仅指挥制；hex/crt 直接返回）。
+     * 在 update 的舰队清理后每帧调用（成本：几支舰队的一次 find，现任存活即返回）。
+     *   1. 现任总指挥舰队仍存活（units.length > 0）→ 不动
+     *   2. 已亡 → 从存活己方舰队指挥官按 职位→军衔→功绩 重算（pickSupremeCommander）+ toast + 镜像 store
+     *   3. 无存活己方舰队 → supremeCommanderId = null（isDirectCommandAllowed 对 null 恒放行，
+     *      兜底全控，避免玩家完全无法操作；通常此时已 gameOver）
+     */
+    private checkSupremeSuccession() {
+        if (this.mapStyle !== 'command' || this.supremeCommanderId == null) return;
+        const team1Alive = this.globalFleets.filter((fl: any) => {
+            const fac = this.factionMap.get(fl.factionId);
+            return fac && fac.team === 1 && fl.units && fl.units.length > 0;
+        });
+        // 1. 现任仍存活 → 无需继任
+        if (team1Alive.some((fl: any) => fl.commanderId === this.supremeCommanderId)) return;
+        // 3. 无存活己方舰队 → 兜底全控
+        if (team1Alive.length === 0) {
+            this.supremeCommanderId = null;
+            (this.store as any).supremeCommanderId = null;
+            return;
+        }
+        // 2. 从存活指挥官按 职位→军衔→功绩 取最高（数据缺失者兜底 none/R0/功绩0， fac.rank 可补军衔）
+        const cands: any[] = [];
+        team1Alive.forEach((fl: any) => {
+            if (fl.commanderId == null) return;
+            const adm = (this.store.allAdmirals as any[]).find((a: any) => a.id === fl.commanderId);
+            const fac = this.factionMap.get(fl.factionId);
+            cands.push(adm || { id: fl.commanderId, role: 'none', rank: fac?.rank ?? 0, stats: { tactics: 0 } });
+        });
+        const next = pickSupremeCommander(cands);
+        if (!next) return;
+        this.supremeCommanderId = next.id;
+        (this.store as any).supremeCommanderId = next.id;
+        const nFleet = this.globalFleets.find((fl: any) => fl.commanderId === next.id);
+        const nName = nFleet ? (this.factionMap.get(nFleet.factionId)?.name || '舰队') : '舰队';
+        this.store.triggerToast?.(`◆ ${nName} 接任总指挥 — 你现在直接指挥其旗舰舰队`);
+        if ((this.store as any).addBattleLog) (this.store as any).addBattleLog({ text: `${nName} 接任总指挥`, type: 'battle' });
+    }
+
     private spawnSupplyRelayPlanets() {
         if (this.mapStyle !== 'command') return;
         let placed = 0, guard = 0;
@@ -2821,6 +2861,9 @@ export class BattleScene extends Phaser.Scene {
             }
             return true;
         });
+
+        // 提督扮演 P0：总指挥舰队覆灭 → 指挥继任（仅指挥制；函数内部自带守卫，hex/crt 零影响）
+        this.checkSupremeSuccession();
 
         this.globalFleets.forEach(fleet => {
             const myFac = this.factionMap.get(fleet.factionId);
