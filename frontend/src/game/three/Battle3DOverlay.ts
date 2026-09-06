@@ -28,6 +28,7 @@ import {
   acquireShipModelByFiles, type ShipModelReg,
 } from './shipModels';
 import { SUPPLY_SOURCE_RADIUS, SUPPLY_AUX_RADIUS } from '../SupplyChainSystem';
+import { fleetIntentText } from '../TacticalCommandSystem';
 import { useSettingsStore } from '../../store/settingsStore';
 
 // ============================================================
@@ -149,8 +150,12 @@ interface FleetBillboard {
   hpFill: HTMLDivElement | null;
   supplyFill: HTMLDivElement | null;
   stanceBtns: HTMLButtonElement[];
+  /** 意图/任务文本行（提督扮演 C：AI 意图可见） */
+  missionEl: HTMLDivElement;
   /** 上次渲染的姿态，用于 active 态 diff（避免每帧写 DOM） */
   lastStance: string;
+  /** 上次渲染的意图文本，用于 diff */
+  lastIntent: string;
   lastTeam: number;
   lastHpPct: number;
   lastSupply: number;
@@ -271,6 +276,9 @@ const BB_CSS = `
   background:rgba(15,23,42,.9);border:1px solid rgba(148,163,184,.4)}
 .b3d-bb-btn:hover{color:#0a0f1c;background:#4a9eff;border-color:#4a9eff}
 .b3d-bb-btn.active{color:#0a0f1c;background:#4a9eff;border-color:#4a9eff}
+.b3d-bb-mission{font-size:9px;font-weight:800;line-height:1.2;margin-top:2px;color:#22d3ee;
+  text-shadow:0 1px 2px #000;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.b3d-bb-mission.idle{color:#94a3b8}
 `;
 
 // ── 尾焰粒子系统（原型移植）──
@@ -365,6 +373,9 @@ export class Battle3DOverlay {
   private supAux = new Map<any, { cone: THREE.Mesh; ring: THREE.LineLoop; link: THREE.Line }>();
   /** 舰队补给状态环：fleet 对象 → 绿环（在链）/ 红环（断链） */
   private supFleetRings = new Map<any, THREE.LineLoop>();
+  /** 提督扮演 C：意图线组与句柄（我方任务=青 / 敌方接敌=红），fleet → Line */
+  private intentGroup: THREE.Group | null = null;
+  private intentLines = new Map<any, THREE.Line>();
 
   // 舰船
   private shipGroup = new THREE.Group();
@@ -1491,9 +1502,19 @@ export class Battle3DOverlay {
     spBar.appendChild(supplyFill);
     root.appendChild(spBar);
 
-    // 姿态按钮只给我方（team===1）：与 App.vue:35 的 v-if 口径一致
+    // 意图/任务文本行（提督扮演 C：每支舰队头顶显示当前任务，解决"一窝蜂"不可读）
+    const missionEl = document.createElement('div');
+    missionEl.className = 'b3d-bb-mission idle';
+    root.appendChild(missionEl);
+
+    // 姿态按钮：提督扮演下只有"总指挥旗舰"可直接实时指挥（A. 指挥权限）；
+    // 非指挥制（supremeCommanderId 未判定）保持原口径——我方（team===1）全给按钮。
+    const bsAny: any = this.battleScene;
+    const supremeId = bsAny?.supremeCommanderId;
+    const directOK = team === 1 &&
+      (supremeId === null || supremeId === undefined || fleet?.commanderId === supremeId);
     const stanceBtns: HTMLButtonElement[] = [];
-    if (team === 1) {
+    if (directOK) {
       const wrap = document.createElement('div');
       wrap.className = 'b3d-bb-stances';
       for (const stance of ['search', 'siege', 'defend'] as const) {
@@ -1519,8 +1540,8 @@ export class Battle3DOverlay {
 
     this.bbLayer!.appendChild(root);
     return {
-      root, nameEl, hpFill, supplyFill, stanceBtns,
-      lastStance: '', lastTeam: team, lastHpPct: -1, lastSupply: -1,
+      root, nameEl, hpFill, supplyFill, stanceBtns, missionEl,
+      lastStance: '', lastIntent: '', lastTeam: team, lastHpPct: -1, lastSupply: -1,
     };
   }
 
@@ -1573,10 +1594,12 @@ export class Battle3DOverlay {
       }
 
       // 文本/数值 diff 后才写 DOM
-      const name = fac.name || (team === 1 ? '我方舰队' : '敌方舰队');
+      const bsS: any = this.battleScene;
+      const supremeMark = bsS?.supremeCommanderId != null && fleet.commanderId === bsS.supremeCommanderId ? '◆' : '';
+      const name = (fac.name || (team === 1 ? '我方舰队' : '敌方舰队'));
       if (bb.lastTeam !== team) { bb.lastTeam = team; }
-      if (bb.nameEl.textContent !== `${name} ${units.length}艘`) {
-        bb.nameEl.textContent = `${name} ${units.length}艘`;
+      if (bb.nameEl.textContent !== `${supremeMark}${name} ${units.length}艘`) {
+        bb.nameEl.textContent = `${supremeMark}${name} ${units.length}艘`;
       }
       const teamColor = team === 1 ? '#4a9eff' : '#ff5544';
       if (bb.nameEl.style.color !== teamColor) bb.nameEl.style.color = teamColor;
@@ -1600,6 +1623,17 @@ export class Battle3DOverlay {
         bb.stanceBtns.forEach((b) => {
           b.classList.toggle('active', b.dataset.stance === stance);
         });
+      }
+
+      // 提督扮演 C：意图文本（任务文本优先；否则由状态机推导，敌方 AI 同口径）
+      const intent = fleetIntentText(fleet, (fid: any) => {
+        const tf = bsS?.globalFleets?.find((x: any) => x.id === fid);
+        return tf ? (this.getFac(tf.factionId)?.name || null) : null;
+      });
+      if (bb.lastIntent !== intent) {
+        bb.lastIntent = intent;
+        bb.missionEl.textContent = intent;
+        bb.missionEl.classList.toggle('idle', !fleet.mission);
       }
 
       // 2) 投影：质心抬到舰船上方（约 1.6 格）作为标签锚点
@@ -1793,6 +1827,61 @@ export class Battle3DOverlay {
       this.supplyGroup!.remove(ring);
       this.disposeObject(ring);
       this.supFleetRings.delete(fl);
+    });
+  }
+
+  // ---------- 提督扮演 C：3D 意图线 ----------
+  /**
+   * 舰队 → 当前目标的连线（解决"一窝蜂"：意图空间可见）。
+   * 我方（team 1）：有任务且已解算目的地（fleet._missionDest，由 BattleScene 任务循环写入）→ 青色线；
+   * 敌方：engaging 且有集火目标（_lastTargetFleetId）→ 红色线。
+   * 坐标映射与后勤可视同款：(pixelX, groundY + R*0.5, -pixelY)。
+   */
+  private updateIntentLines() {
+    const bs: any = this.battleScene;
+    const fleets: any[] = bs.globalFleets || [];
+    if (!this.intentGroup) {
+      this.intentGroup = new THREE.Group();
+      this.intentGroup.name = 'intentLines';
+      this.scene.add(this.intentGroup);
+    }
+    const R = this.hexR;
+    const seen = new Set<any>();
+    fleets.forEach((fl: any) => {
+      if (!fl?.units || fl.units.length === 0) return;
+      const fac = this.getFac(fl.factionId);
+      if (!fac) return;
+      let dest: any = null;
+      let col = 0x22d3ee;
+      if (fac.team === 1) {
+        if (fl.mission && fl._missionDest) { dest = fl._missionDest; col = 0x22d3ee; }
+      } else if (fl.state === 'engaging' && fl._lastTargetFleetId != null) {
+        const tgt = fleets.find((x: any) => x.id === fl._lastTargetFleetId);
+        if (tgt && tgt.units && tgt.units.length > 0) { dest = { x: tgt.x, y: tgt.y }; col = 0xef4444; }
+      }
+      if (!dest) return;
+      seen.add(fl);
+      let line = this.intentLines.get(fl);
+      if (!line) {
+        const geo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]);
+        line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.55, depthWrite: false }));
+        this.intentGroup!.add(line);
+        this.intentLines.set(fl, line);
+      }
+      (line.material as THREE.LineBasicMaterial).color.setHex(col);
+      const gyF = this.groundYAt(fl.x, fl.y);
+      const gyD = this.groundYAt(dest.x, dest.y);
+      const pos = (line.geometry as THREE.BufferGeometry).getAttribute('position') as THREE.BufferAttribute;
+      pos.setXYZ(0, fl.x, gyF + R * 0.5, -fl.y);
+      pos.setXYZ(1, dest.x, gyD + R * 0.5, -dest.y);
+      pos.needsUpdate = true;
+    });
+    // 回收：任务完成/目标消失的舰队 → 意图线撤除
+    this.intentLines.forEach((line, fl) => {
+      if (seen.has(fl)) return;
+      this.intentGroup!.remove(line);
+      this.disposeObject(line);
+      this.intentLines.delete(fl);
     });
   }
 
@@ -2139,6 +2228,8 @@ export class Battle3DOverlay {
       this.updateBillboards();
       // 后勤可视化仅指挥制（spaceMode）：hex/crt 路径保持零改动
       if (this.spaceMode) this.updateSupplyViz();
+      // 提督扮演 C：意图线同样仅指挥制（任务/意图体系只在该模式启用）
+      if (this.spaceMode) this.updateIntentLines();
       this.updateFlames(dt);
       drainFx3d().forEach(e => this.handleFx(e));
       this.updateFx(dt);
@@ -2242,6 +2333,9 @@ export class Battle3DOverlay {
     this.supAux.clear();
     this.supFleetRings.clear();
     this.supplyGroup = null;
+    // 提督扮演：意图线引用表清空
+    this.intentLines.clear();
+    this.intentGroup = null;
     if (this.bbLayer) {
       this.bbLayer.remove();
       this.bbLayer = null;

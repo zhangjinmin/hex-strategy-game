@@ -2290,6 +2290,14 @@ export const useGameStore = defineStore('game', () => {
       if (phaserCommandDispatcher) phaserCommandDispatcher(id, type, payload);
   };
 
+  // ===== 提督扮演：军议面板状态（仅指挥制使用；BattleScene 镜像写入）=====
+  /** 战前部署阶段（军议面板据此全员可派任务 + 自动展开） */
+  const battleDeployPhase = ref(false);
+  /** 总指挥提督 id（BattleScene.computeSupremeCommander 判定；null=未启用提督扮演） */
+  const supremeCommanderId = ref<number | null>(null);
+  /** 军议面板开关 */
+  const warRoomOpen = ref(false);
+
   // ===== P0 toast 队列化：避免后续通知覆盖前一条 =====
   const toastQueue = ref<string[]>([]);
   let toastActive = false;
@@ -4289,5 +4297,7 @@ export const useGameStore = defineStore('game', () => {
     strategicPaused, userPaused, pendingArrival, pendingPostBattle, pendingCaptureDecision, arrivalQueue, totalTicks, strategicMapVersion, WARP_CONSTANTS, AUTO_RESOLVE_DEFAULTS,
     calculatePower, autoResolveBattle, occupyPlanet, handleArrivalDecision, handlePostBattle,
     handleCaptureOccupy, handleCapturePillage, handleCaptureLiberate,
+    // 提督扮演：军议面板状态
+    battleDeployPhase, supremeCommanderId, warRoomOpen,
   };
 });

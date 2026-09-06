@@ -27,6 +27,8 @@ import { commandBridge } from '../../services/CommandBridge';
 // 3D 战场覆盖层特效桥：只推送事件，2D 特效代码零改动（3D 模式下 2D 层被隐藏）
 import { pushFx3d } from '../battle3dFx';
 import { updateSupplyChain, collectAuxShips, isSupplyUnit, SUPPLY_SOURCE_RADIUS, SUPPLY_AUX_RADIUS, type SupplyNode, type FleetSupplyInfo } from '../SupplyChainSystem';
+// 提督扮演：总指挥判定 / 直接命令拦截 / 任务指令（仅指挥制启用）
+import { pickSupremeCommander, isDirectCommandAllowed, DIRECT_COMMAND_TYPES, type Mission } from '../TacticalCommandSystem';
 
 
 // 贴图 key → Vite URL 映射表
@@ -84,6 +86,9 @@ export class BattleScene extends Phaser.Scene {
     // P5 战役剧本阶段
     private scriptPhase: string = 'probe';       // probe试探 / clash缠斗 / turn转折 / final决战
     private scriptReported: boolean = false;
+    /** 提督扮演：总指挥提督 id（仅指挥制判定；null=未启用，直接命令不拦截）。
+     *  public：3D overlay billboard 据此决定姿态按钮只给总指挥旗舰。 */
+    public supremeCommanderId: number | null = null;
 
     // === CRT 全息战术投影 ===
     // '3d' 走与 'hex' 完全相同的逻辑（所有 === 'crt' 判断对 '3d' 为 false）；3D 视觉由 Battle3DOverlay 叠加渲染
@@ -288,6 +293,9 @@ export class BattleScene extends Phaser.Scene {
         // （函数内部自带 mapStyle==='command' 守卫，hex/crt 零影响）
         this.spawnSupplyRelayPlanets();
 
+        // 提督扮演 A：总指挥判定（仅指挥制；内部自带守卫并镜像到 store 供军议面板）
+        this.computeSupremeCommander();
+
         this.input.on('pointermove', (pointer: Phaser.Input.Pointer) => {
             if (pointer.isDown) {
                 this.cameras.main.scrollX -= (pointer.x - pointer.prevPosition.x) / this.cameras.main.zoom;
@@ -368,6 +376,11 @@ export class BattleScene extends Phaser.Scene {
                     const fleets = this.globalFleets.filter(fl => fl.factionId === aiFac.id);
                     if (fleets.length === 0) return;
                     const fleet = fleets[0];
+                    // ── 提督扮演 B：任务指令优先于独立评估（mission 只能由指挥制军议面板写入）──
+                    if (fleet.mission) {
+                        this.executeMissionTick(fleet, aiFac);
+                        if (fleet.mission) return; // 任务仍在 → 跳过独立评估；任务完成被清空 → 落回常轨
+                    }
                     let totalHp = 0, totalMaxHp = 0;
                     fleet.units.forEach((u: any) => { totalHp += u.hp; totalMaxHp += u.maxHp; });
                     const hpPct = totalMaxHp > 0 ? totalHp / totalMaxHp : 0;
@@ -574,6 +587,9 @@ export class BattleScene extends Phaser.Scene {
 
         this.deployPhase = true;
         this.store.isPaused = true;
+        // 提督扮演：镜像部署阶段 → 军议面板（指挥制下自动展开，战前分配初始任务）
+        (this.store as any).battleDeployPhase = true;
+        if (this.mapStyle === 'command') (this.store as any).warRoomOpen = true;
         // 玩家舰队摆好初始阵型（默认楔形）
         const pFac = this.store.factions.find((f: any) => f.type === 'player');
         const pFleet = this.globalFleets.find((f: any) => f.factionId === pFac?.id);
@@ -612,6 +628,7 @@ export class BattleScene extends Phaser.Scene {
         if (!this.deployPhase) return;
         this.deployPhase = false;
         this.store.isPaused = false;
+        (this.store as any).battleDeployPhase = false;
         if (this.deployText) { this.deployText.destroy(); this.deployText = null; }
         const pFac = this.store.factions.find((f: any) => f.type === 'player');
         const pFleet = this.globalFleets.find((f: any) => f.factionId === pFac?.id);
@@ -1314,6 +1331,43 @@ export class BattleScene extends Phaser.Scene {
      *  格网覆盖得到的位置就地改类型（复用已隐藏的 sprite）；覆盖不到的位置（战役小格网 + 大 hexRadius）
      *  合成隐藏地块——sprite/text 不可见但必须存在：占领逻辑会调用 setFillStyle/setText（:1070-1086）。
      *  hex/crt 直接 return，一行不动。 */
+    /**
+     * 提督扮演 A：总指挥判定（仅指挥制；hex/crt 直接返回，supremeCommanderId 保持 null = 不拦截）。
+     *   演习/遭遇战：玩家选中的首位提督（dispatchAdmirals[0]，launchSimBattle 已写入 simSelectedAdmirals）
+     *   战役：玩家方（team 1）出场舰队指挥官中按 职位 → 军衔 → 功绩 取最高（pickSupremeCommander）
+     *   兜底：'player' 类型阵营 id（spawnInitialFleets 里 commanderId=fac.id，口径一致）
+     */
+    private computeSupremeCommander() {
+        this.supremeCommanderId = null;
+        (this.store as any).supremeCommanderId = null;
+        if (this.mapStyle !== 'command') return;
+        const state = (this.store as any).tacticalState;
+        const isCampaign = state && state.mode === 'campaign';
+        let supremeId: number | null = null;
+        if (!isCampaign) {
+            const first = (this.store.dispatchAdmirals || [])[0];
+            if (first !== undefined && first !== null) supremeId = first;
+        } else {
+            const cands: any[] = [];
+            this.globalFleets.forEach((fl: any) => {
+                const fac = this.factionMap.get(fl.factionId);
+                if (!fac || fac.team !== 1 || fl.commanderId == null) return;
+                const adm = (this.store.allAdmirals as any[]).find((a: any) => a.id === fl.commanderId);
+                if (adm) cands.push(adm);
+            });
+            const supreme = pickSupremeCommander(cands);
+            if (supreme) supremeId = supreme.id;
+        }
+        if (supremeId == null) {
+            const pFac = this.store.factions.find((f: any) => f.type === 'player');
+            if (pFac) supremeId = pFac.id;
+        }
+        this.supremeCommanderId = supremeId;
+        (this.store as any).supremeCommanderId = supremeId;
+        const sFac = this.store.factions.find((f: any) => f.id === supremeId);
+        if (sFac) this.store.triggerToast?.(`◆ 总指挥：${sFac.name} — 你只能直接指挥其旗舰舰队，其余舰队请用军议面板下达任务`);
+    }
+
     private spawnSupplyRelayPlanets() {
         if (this.mapStyle !== 'command') return;
         let placed = 0, guard = 0;
@@ -1494,14 +1548,86 @@ export class BattleScene extends Phaser.Scene {
 
 
 
+    /**
+     * 提督扮演 B：任务指令 → 姿态/目的地解算（每秒 AI 决策循环调用）。
+     * 输出：fleet.stance（复用既有状态机）+ fleet._missionDest（per-frame 探索分支的目的地牵引）。
+     * 任务完成/目标失效 → 清空 fleet.mission 与 fac.mission 镜像，落回独立评估。
+     */
+    private executeMissionTick(fleet: any, fac: any) {
+        const m = fleet.mission as Mission | null;
+        if (!m) { fleet._missionDest = null; return; }
+        const clearMission = () => { fleet.mission = null; fac.mission = null; fleet._missionDest = null; };
+        const dist = (x: number, y: number) => Phaser.Math.Distance.Between(fleet.x, fleet.y, x, y);
+
+        if (m.type === 'attack_fleet') {
+            const tgt = this.globalFleets.find((fl: any) => fl.id === m.targetId || fl.factionId === m.targetId);
+            if (!tgt || !tgt.units || tgt.units.length === 0) { clearMission(); return; } // 目标已歼灭 → 任务完成
+            fleet.stance = 'siege';
+            fleet._missionDest = { x: tgt.x, y: tgt.y };
+        } else if (m.type === 'capture_planet') {
+            let dest: any = null;
+            if (m.targetId) {
+                // 夺取指定阵营根据地：目标阵营覆灭（根据地易主）→ 任务完成
+                const tf = this.store.factions.find((f: any) => f.id === m.targetId);
+                if (!tf || !tf.active) { clearMission(); return; }
+                if (tf.castlePos) dest = { x: tf.castlePos.x, y: tf.castlePos.y };
+            } else {
+                // 夺取最近的非己方星球（含中立中继星）
+                let best = Infinity;
+                this.tilesList.forEach((t: any) => {
+                    if (t.type !== 'planet' || t.ownerId === fac.id) return;
+                    const d = dist(t.x, t.y);
+                    if (d < best) { best = d; dest = { x: t.x, y: t.y }; }
+                });
+                if (!dest) { clearMission(); return; }
+            }
+            fleet.stance = 'siege';
+            fleet._missionDest = dest;
+        } else if (m.type === 'hold_point') {
+            const hx = m.x ?? fleet.x, hy = m.y ?? fleet.y;
+            fleet._missionDest = { x: hx, y: hy };
+            fleet.stance = dist(hx, hy) < 120 ? 'defend' : 'search'; // 到位转驻守，未到先机动
+        } else if (m.type === 'support_fleet') {
+            const tgt = this.globalFleets.find((fl: any) => fl.id === m.targetId || fl.factionId === m.targetId);
+            if (!tgt || !tgt.units || tgt.units.length === 0) { clearMission(); return; }
+            fleet._missionDest = { x: tgt.x, y: tgt.y };
+            // 协同：远离时靠拢，到位后与友军同姿态作战
+            fleet.stance = dist(tgt.x, tgt.y) > 350 ? 'search' : (tgt.stance || 'search');
+        } else if (m.type === 'retreat_supply') {
+            fleet.stance = 'fallback'; // 既有撤退状态机：自动找补给点、驻留重组
+            const supply = fleet.units[0]?.supply ?? 100;
+            if (fleet.state !== 'retreating' && supply > 80) clearMission(); // 补货完成 → 归队听调
+        }
+    }
+
     // ===== 指令调度器绑定 =====
     private setupCommandDispatcher() {
         if (typeof this.store.setPhaserCommandDispatcher === 'function') {
             this.store.setPhaserCommandDispatcher((id: number, type: string, payload: any) => {
-                const fleet = this.globalFleets.find(f => f.id === id);
+                // 提督扮演：id 兼容 fleet.id（billboard）与 factionId/commanderId（军议面板只知阵营 id）
+                const fleet = this.globalFleets.find(f => f.id === id)
+                    || this.globalFleets.find(f => f.factionId === id || f.commanderId === id);
                 if (fleet && fleet.factionId) {
                     const fac = this.factionMap.get(fleet.factionId);
                     if (fac && fac.team === 1) {
+                        // ── 提督扮演 B：任务指令通道（非直接操控，任何己方舰队均可接收）──
+                        if (type === 'mission') {
+                            const m: Mission = { ...(payload || {}) };
+                            // hold_point 缺省坐标 → 舰队当前位置（"坚守当前位置"）
+                            if (m.type === 'hold_point' && (m.x === undefined || m.y === undefined)) {
+                                m.x = Math.round(fleet.x); m.y = Math.round(fleet.y);
+                            }
+                            fleet.mission = m;
+                            (fac as any).mission = m; // 镜像到 store.factions → 军议面板/billboard 显示
+                            this.store.triggerToast(`◈ 任务已下达：${fac.name} — ${m.text || m.type}`);
+                            return;
+                        }
+                        // ── 提督扮演 A：指挥权限——指挥制下只有总指挥旗舰接受直接命令 ──
+                        // （supremeCommanderId=null 表示非指挥制/未判定，isDirectCommandAllowed 恒 true，hex/crt 零影响）
+                        if (DIRECT_COMMAND_TYPES.includes(type) && !isDirectCommandAllowed(fleet, this.supremeCommanderId)) {
+                            this.store.triggerToast(`⛔ 扮演提督：你只能直接指挥总指挥旗舰。${fac.name} 请通过军议面板发布任务指令。`);
+                            return;
+                        }
                         if (type === 'stance') {
                             // ── 指挥带宽门控：变阵命令同样受链路状态约束 ──
                             if (this.bwState) {
@@ -2864,6 +2990,8 @@ export class BattleScene extends Phaser.Scene {
                         const eHpPct = ve.ef.units.reduce((s: number, u: any) => s + u.hp, 0) / Math.max(1, ve.ef.units.reduce((s: number, u: any) => s + u.maxHp, 0));
                         // 补刀残血优先 + 距离惩罚 + 威胁加成
                         let score = (1 - eHpPct) * 300 - ve.dist + ePower * 0.1;
+                        // 提督扮演：attack_fleet 任务指定目标绝对优先（mission 仅指挥制可写入）
+                        if (fleet.mission?.type === 'attack_fleet' && (ve.ef.id === fleet.mission.targetId || ve.ef.factionId === fleet.mission.targetId)) score += 100000;
                         if (score > bestScore) { bestScore = score; bestTarget = ve.ef; }
                     });
                     closestEnemyFleet = bestTarget;
@@ -3143,7 +3271,15 @@ export class BattleScene extends Phaser.Scene {
                     }
                 });
 
-                if (fleet.stance === 'search' && closestEnemyFleet) {
+                if (fleet._missionDest) {
+                    // 提督扮演：任务目的地牵引（_missionDest 仅指挥制任务循环写入，hex/crt 恒 null 走原分支）
+                    const mdD = Phaser.Math.Distance.Between(fleet.x, fleet.y, fleet._missionDest.x, fleet._missionDest.y);
+                    if (mdD > 60) {
+                        fleetTargetX = fleet._missionDest.x; fleetTargetY = fleet._missionDest.y;
+                    } else {
+                        fleetTargetX = fleet.x; fleetTargetY = fleet.y; // 已到位：驻留（hold_point 转 defend 后本就不动）
+                    }
+                } else if (fleet.stance === 'search' && closestEnemyFleet) {
                     // 索敌模式专属：只要视野里有敌人舰队，立刻放弃铺地，像疯狗一样咬上去
                     fleetTargetX = closestEnemyFleet.x; fleetTargetY = closestEnemyFleet.y;
                 } else if (fleet.stance === 'defend') {

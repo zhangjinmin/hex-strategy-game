@@ -42,6 +42,17 @@
       </div>
 
       <GameFooter />
+
+      <!-- 3D 战场视角预设（27° 侧视 / 正俯视）：3D 就绪后显示 -->
+      <div v-if="is3dBattle && battle3dReady" class="view-preset-group">
+        <button class="view-preset-btn" title="27° 侧视" @click="setViewPreset('tilt')">27°</button>
+        <button class="view-preset-btn" title="正俯视" @click="setViewPreset('top')">俯视</button>
+      </div>
+
+      <!-- 提督扮演：军议面板（仅指挥制）+ 关闭态的开启按钮 -->
+      <CouncilWarRoom v-if="isCommandBattle" />
+      <button v-if="isCommandBattle && !warRoomOpen" class="war-room-toggle" @click="setWarRoomOpen(true)">军议</button>
+
       <SettlementModal v-if="gameOver" />
     </div>
 
@@ -98,7 +109,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, computed, nextTick } from 'vue';
 import { useGameStore, getPortrait } from './store/gameStore';
-import { mountGame, unmountGame } from './game/GameInstance';
+import { mountGame, unmountGame, getGameInstance } from './game/GameInstance';
 
 import GameHeader from './components/battle/GameHeader.vue';
 import GameFooter from './components/battle/GameFooter.vue';
@@ -116,10 +127,12 @@ import ConfirmDialog from './components/meta/ConfirmDialog.vue';
 import OpeningBriefing from './components/meta/OpeningBriefing.vue';
 import { useSettingsStore } from './store/settingsStore';
 import CommandPanel from './components/battle/CommandPanel.vue';
+import CouncilWarRoom from './components/battle/CouncilWarRoom.vue';
 import BattleLogPanel from './components/battle/BattleLogPanel.vue';
 import ForcePassDialog from './components/meta/ForcePassDialog.vue';
 import { commandBridge } from './services/CommandBridge';
 import { initMusic, unlockAudio, setEnabled, setVolume } from './services/MusicManager';
+import { Battle3DOverlay } from './game/three/Battle3DOverlay';
 
 const store = useGameStore();
 const settings = useSettingsStore();
@@ -181,6 +194,92 @@ const showCRTBorder = computed<boolean>(() => {
   return gameState.value === 'game' && ts?.mapStyle === 'crt';
 });
 
+// ===== 3D 战场覆盖层 =====
+// mapStyle === '3d' 时：创建 Three.js 覆盖层（BattleScene 逻辑引擎照常运行）。
+// 关键时序：**收到 overlay.onReady（3D 地形真正建成）后才加 battle3d-mode 隐藏 2D 画布**；
+// 若 3D 一直没就绪（第二局 Phaser 重建慢/场景字段缺失等），8 秒后降级销毁 overlay，
+// 2D 画布保持可见 —— 任何情况下都不会出现"两块画布都不可见"的黑屏。
+const is3dBattle = computed<boolean>(() => {
+  const ts = (store.tacticalState as any)?.value ?? (store.tacticalState as any);
+  // 3D 模式与指挥制都走 Three.js 覆盖层：
+  //   '3d'      = 六棱柱地形沙盘；
+  //   'command' = 纯 3D 宇宙空间（Tron 式网格平面 + 星域，相机自由旋转，见 Battle3DOverlay spaceMode）。
+  return gameState.value === 'game' && (ts?.mapStyle === '3d' || ts?.mapStyle === 'command');
+});
+// 提督扮演：军议面板仅指挥制挂载
+const isCommandBattle = computed<boolean>(() => {
+  const ts = (store.tacticalState as any)?.value ?? (store.tacticalState as any);
+  return gameState.value === 'game' && ts?.mapStyle === 'command';
+});
+// store 体量过大导致 pinia ref 解包类型推断在个别属性上失效，沿用既有防御式读取口径
+const warRoomOpen = computed<boolean>(() => (store.warRoomOpen as any).value ?? store.warRoomOpen);
+const setWarRoomOpen = (v: boolean) => { (store as any).warRoomOpen = v; };
+const battle3dReady = ref(false);
+let battle3dOverlay: Battle3DOverlay | null = null;
+let battle3dReadyTimer: number | null = null;
+
+const setViewPreset = (p: 'tilt' | 'top') => battle3dOverlay?.setViewPreset(p);
+
+const clear3dReadyTimer = () => {
+  if (battle3dReadyTimer !== null) {
+    clearTimeout(battle3dReadyTimer);
+    battle3dReadyTimer = null;
+  }
+};
+
+const destroyBattle3dOverlay = () => {
+  clear3dReadyTimer();
+  battle3dReady.value = false;
+  if (battle3dOverlay) {
+    battle3dOverlay.destroy();
+    battle3dOverlay = null;
+  }
+  document.body.classList.remove('battle3d-mode');
+};
+
+const tryCreate3dOverlay = (attempt: number) => {
+  if (!is3dBattle.value) return;
+  const container = document.getElementById('phaser-canvas-container');
+  if (!container || !getGameInstance()) {
+    if (attempt < 10) setTimeout(() => tryCreate3dOverlay(attempt + 1), 100);
+    return;
+  }
+  const bs = getGameInstance()!.scene.getScene('BattleScene');
+  if (!bs) {
+    if (attempt < 10) setTimeout(() => tryCreate3dOverlay(attempt + 1), 100);
+    return;
+  }
+  destroyBattle3dOverlay();
+  const ov = new Battle3DOverlay(container, bs, store, {
+    onReady: () => {
+      // 3D 已确认渲染出地形：现在才隐藏 2D 画布
+      if (battle3dOverlay === ov) {
+        clear3dReadyTimer();
+        battle3dReady.value = true;
+        document.body.classList.add('battle3d-mode');
+      }
+    },
+  });
+  battle3dOverlay = ov;
+  // 降级兜底：8 秒内 3D 没就绪 → 销毁 overlay，回退 2D 渲染
+  battle3dReadyTimer = window.setTimeout(() => {
+    if (battle3dOverlay === ov && is3dBattle.value) {
+      console.warn('[App.vue] 3D overlay not ready in 8s, falling back to 2D');
+      destroyBattle3dOverlay();
+    }
+  }, 8000);
+};
+
+// mapStyle 切到 3d 时挂 overlay；离开 game / 切回其他模式时销毁
+watch(is3dBattle, (on) => {
+  if (on) {
+    // 等 mountGame 完成（watch(gameState) 里 Phaser 挂载有 100ms 重试）
+    setTimeout(() => tryCreate3dOverlay(1), 300);
+  } else {
+    destroyBattle3dOverlay();
+  }
+});
+
 // 全局 Toast：Pinia 自动解包后直接读
 const toastMessage = computed<string>(() => {
   const r = (store as any).toastMessage;
@@ -227,9 +326,12 @@ const handleKeyDown = (e: KeyboardEvent) => {
   }
 };
 
+const handleResize = () => { battle3dOverlay?.resize(); };
+
 onMounted(async () => {
   await store.initLoadData();
   window.addEventListener('keydown', handleKeyDown);
+  window.addEventListener('resize', handleResize);
 
   // 音乐：先构建随机队列但不播放（等用户交互解锁 autoplay 限制）
   initMusic();
@@ -248,6 +350,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeyDown);
+  window.removeEventListener('resize', handleResize);
+  destroyBattle3dOverlay();
 });
 
 // 监听设置变化 → 同步到音乐播放器
@@ -485,6 +589,20 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100vh; overflow: hidden
 .btn-speed.active { color: var(--color-cyan); text-shadow: 0 0 8px rgba(6, 182, 212, 0.5); }
 
 #phaser-canvas-container { display: block; width: 100%; height: 100vh; position: absolute; top: 0; left: 0; z-index: 0; }
+
+/* 3D 视角预设按钮组（右下角，3D 就绪后显示） */
+.view-preset-group { position: absolute; right: 16px; bottom: 70px; display: flex; flex-direction: column; gap: 8px; z-index: 20; }
+.view-preset-btn { padding: 8px 12px; font-size: 12px; font-weight: 800; color: var(--color-cyan); background: var(--overlay-surface, rgba(10,16,28,0.75)); border: 1px solid var(--color-border); border-radius: 8px; cursor: pointer; backdrop-filter: blur(4px); transition: all 0.2s; }
+.view-preset-btn:hover { background: var(--color-cyan); color: var(--neo-surface, #0a0f1c); }
+/* 提督扮演：军议面板关闭态的开启按钮（指挥制） */
+.war-room-toggle { position: absolute; right: 16px; top: 96px; z-index: 20; padding: 8px 14px; font-size: 12px; font-weight: 900; letter-spacing: 2px; color: #22d3ee; background: rgba(10,16,28,0.8); border: 1px solid rgba(34,211,238,0.5); border-radius: 8px; cursor: pointer; backdrop-filter: blur(4px); }
+.war-room-toggle:hover { background: #22d3ee; color: #0a0f1c; }
+
+/* ===== 3D 战场模式：隐藏 Phaser 画布与依赖 2D 坐标的跟随层 =====
+   逻辑引擎（BattleScene）照常运行，仅隐藏 2D 呈现；GameHeader 读 store 数据不受影响 */
+body.battle3d-mode #phaser-canvas-container canvas { visibility: hidden; }
+body.battle3d-mode .fleet-ui-layer { display: none; }
+body.battle3d-mode .crt-monitor-border { display: none; }
 
 .map-legend {
   position: absolute; bottom: 80px; left: 20px; top: auto; display: flex; flex-direction: column; gap: 8px;
