@@ -2260,7 +2260,8 @@ export class Battle3DOverlay {
         const sm = o.material as THREE.SpriteMaterial;
         sm.map?.dispose();
         sm.dispose();
-      } else if (o instanceof THREE.LineSegments) {
+      } else if (o instanceof THREE.Line) {
+        // THREE.Line 覆盖 LineLoop（补给圈）与 Line（运输舰连线）；LineSegments 是其子类，原行为不变
         o.geometry.dispose();
         (o.material as THREE.Material).dispose();
       } else if (o instanceof THREE.Points) {
