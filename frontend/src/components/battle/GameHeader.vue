@@ -1,7 +1,7 @@
 <template>
   <div class="ui-header">
     <div class="faction-infos">
-      <div v-for="f in factionsList" :key="f.id" class="side-info neo-card" :class="{'inactive': !f.active}" v-show="f.type === 'player' || f.inVision">
+      <div v-for="f in factionsList" :key="f.id" class="side-info neo-card" :class="{'inactive': !f.active}" v-show="f.type === 'player' || f.team === 1 || f.inVision">
         <img :src="getPortrait(f.imageId)" class="mini-portrait" @error="handleImgError" />
         <div class="info-content">
           <div class="faction-name" :class="{'text-player': f.type === 'player', 'text-ally': f.type === 'ai' && f.team === 1, 'text-red': f.team === 2}">
@@ -60,8 +60,16 @@ const handleImgError = (e: Event) => {
 </script>
 
 <style scoped>
-.ui-header { position: absolute; top: 15px; left: 50%; transform: translateX(-50%); width: 96%; display: flex; justify-content: space-between; align-items: flex-start; z-index: 10; pointer-events: none; }
-.faction-infos { display: flex; gap: 10px; flex-wrap: wrap; pointer-events: auto; max-width: 70%; }
+/* 完全独立锚定：faction-infos 绝对定位贴左、GameControls 绝对定位贴右，
+   二者不在同一 flex 流里，舰队卡再多/换行也不会把右侧按钮推出视口（实报 bug 根治） */
+.ui-header { position: absolute; top: 15px; left: 0; right: 0; z-index: 10; pointer-events: none; }
+/* 舰队卡贴左，纵向弹性上限 132px（约两行卡），超出裁剪。
+   横向预留 580px 给右侧控制区：实测 GameControls 宽 434px（演习）/ 549px（战役），
+   旧的 380px 预留不足，卡片排满时最右侧卡片会钻到按钮底下（1920 下重叠 84px，战役 199px）。 */
+.faction-infos { position: absolute; top: 0; left: 15px; display: flex; gap: 10px; flex-wrap: wrap; pointer-events: auto; max-width: calc(100% - 580px); max-height: 132px; overflow: hidden; }
+/* 控制区贴右：绝对锚定，不受左侧内容宽度影响 */
+.ui-header > :deep(.game-controls),
+.game-controls { position: absolute; top: 0; right: 15px; flex: 0 0 auto; }
 .side-info { display: flex; gap: 10px; padding: 6px; align-items: center; background: var(--overlay-surface); backdrop-filter: blur(4px); transition: opacity 0.3s; }
 .side-info.inactive { opacity: 0.4; filter: grayscale(1); }
 .mini-portrait { width: 36px; height: 48px; object-fit: cover; border-radius: 4px; border: 1px solid rgba(255,255,255,0.2); flex-shrink: 0; }
@@ -82,10 +90,13 @@ const handleImgError = (e: Event) => {
 .dialog-text { font-size: 13px; color: var(--color-text-primary); font-weight: 800; line-height: 1.4; }
 
 @media (max-width: 768px) {
-  .ui-header { flex-direction: column; gap: 10px; }
-  .faction-infos { max-width: 100%; width: 100%; }
-  .side-info { width: calc(50% - 5px); }
+  .faction-infos { max-width: calc(100% - 30px); }  .side-info { width: calc(50% - 5px); }
   .info-content { width: 100%; }
+  /* 回归修复：flex-direction:column 在独立锚定后已失效（两者都是 absolute，不在同一流里），
+     旧版靠它把控制区挤到卡片下方。窄屏必须显式下移，否则控制区与卡片同排重叠整条宽度。
+     142px = 卡片区上限 132px + 10px 间距。 */
+  .ui-header > :deep(.game-controls),
+  .game-controls { top: 142px; }
   .battle-dialog-overlay { top: auto; bottom: 80px; right: -100%; flex-direction: row-reverse; }
   .battle-dialog-overlay.show { right: 10px; }
 }
