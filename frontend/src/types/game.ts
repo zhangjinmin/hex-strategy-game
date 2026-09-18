@@ -119,6 +119,8 @@ export interface Unit {
   atkInterval: number; speed: number; tier: string; lastAtkTime: number; 
   state: 'moving' | 'fighting' | 'garrison';
   supply: number;
+  /** v6.5 导弹弹药（仅驱逐/巡洋有意义）：每轮齐射扣 1，耗尽后只打主炮激光；<=999 视为无限 */
+  missileAmmo?: number;
 }
 
 export interface Fleet {
@@ -139,7 +141,10 @@ export interface Projectile {
 import type { FormationType } from '../config/formations';
 export type { FormationType } from '../config/formations';
 
-export type ShipType = 'battleship' | 'fast_battleship' | 'cruiser' | 'destroyer' | 'carrier' | 'fighter';
+export type ShipType = 'battleship' | 'fast_battleship' | 'cruiser' | 'destroyer'
+| 'carrier' | 'fighter' | 'supply';
+// 注：'supply'（AUX）即运输/后勤舰，不再单列 transport；
+//    电子战不作为舰种（当前无电子战机制），日后若做则以机制形式实现而非新增舰种。
 
 // ===== 阶段六：Warp 移动系统 — 枚举定义 =====
 
@@ -230,6 +235,8 @@ export const SHIP_TYPES: { type: ShipType; name: string; cost: number; atk: numb
   { type: 'destroyer', name: '驱逐舰', cost: 80, atk: 20, def: 15, speed: 1.0 },
   { type: 'carrier', name: '标准空母', cost: 600, atk: 30, def: 35, speed: 0.45 },
   { type: 'fighter', name: '舰载机', cost: 30, atk: 60, def: 5, speed: 1.5 },
+  // 补给舰(AUX)：即运输/后勤舰，承担补给运力，可被击沉 → 断补给（后勤战核心）
+  { type: 'supply', name: '补给运输舰', cost: 150, atk: 5, def: 18, speed: 0.6 },
 ];
 
 /** P2修复：战术HP独立表（每艘舰的战术层HP基准）——原用 cost×10 当 HP，
@@ -242,6 +249,7 @@ export const SHIP_TACTICAL_HP: Record<string, number> = {
   destroyer: 1200,
   carrier: 3000,   // 空母：造价高（载机成本）但生存力低于战舰
   fighter: 300,
+  supply: 1800,   // 补给运输舰：皮薄（后勤舰），但比舰载机耐打
 };
 
 export interface FleetComposition {
@@ -251,21 +259,26 @@ export interface FleetComposition {
   destroyers: number;
   carriers: number;
   fighters: number;
+  /** 补给运输舰(AUX)：后勤战核心。可编成、可进战斗、可被击沉 → 断补给 */
+  supplies?: number;
 }
 
 /** 计算编制总舰数（自动汇总所有舰种） */
 export function totalShips(comp: FleetComposition): number {
-  return comp.battleships + comp.fastBattleships + comp.cruisers + comp.destroyers + comp.carriers + comp.fighters;
+  return comp.battleships + comp.fastBattleships + comp.cruisers + comp.destroyers
+    + comp.carriers + comp.fighters + (comp.supplies || 0);
 }
 
 /** 计算编制加权战力值（用于自动裁决等场景的快速战力估算） */
 export function totalPowerWeight(comp: FleetComposition): number {
-  return comp.battleships * 2 + comp.fastBattleships * 1.8 + comp.cruisers * 1 + comp.destroyers * 0.5 + comp.carriers * 1.2 + comp.fighters * 0.3;
+  return comp.battleships * 2 + comp.fastBattleships * 1.8 + comp.cruisers * 1
+    + comp.destroyers * 0.5 + comp.carriers * 1.2 + comp.fighters * 0.3
+    + (comp.supplies || 0) * 0.2; // 补给舰几乎不贡献直接战力，但影响后勤续航
 }
 
 /** 空编制常量 */
 export const EMPTY_COMPOSITION: FleetComposition = {
-  battleships: 0, fastBattleships: 0, cruisers: 0, destroyers: 0, carriers: 0, fighters: 0,
+  battleships: 0, fastBattleships: 0, cruisers: 0, destroyers: 0, carriers: 0, fighters: 0, supplies: 0,
 };
 
 export interface StrategicFleet {

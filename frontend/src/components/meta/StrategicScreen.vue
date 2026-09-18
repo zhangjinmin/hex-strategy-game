@@ -75,6 +75,7 @@
           <button @click="showNetwork = true" class="holo-icon" title="提督关系网"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="3" r="2"/><circle cx="3" cy="12" r="2"/><circle cx="13" cy="12" r="2"/><line x1="8" y1="5" x2="3" y2="10"/><line x1="8" y1="5" x2="13" y2="10"/><line x1="5" y1="12" x2="11" y2="12"/></svg></button>
           <button @click="$emit('open-save')" class="holo-icon" title="存档"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 15H3a1 1 0 01-1-1V2a1 1 0 011-1h8l3 3v10a1 1 0 01-1 1z"/><path d="M5 1v4h5V1"/><rect x="5" y="9" width="6" height="4" rx="0.5"/></svg></button>
           <button @click="openSimMode" class="holo-icon" title="战术演训"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 13l4-4"/><path d="M7 3l6 6-4 4-6-6 4-4z"/><path d="M9 5l2 2"/></svg></button>
+          <button @click="showBrowser = true" class="holo-icon" title="银河百科"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3.5C6.5 2.3 4.5 2 2 2v10c2.5 0 4.5.3 6 1.5 1.5-1.2 3.5-1.5 6-1.5V2c-2.5 0-4.5.3-6 1.5z"/><line x1="8" y1="3.5" x2="8" y2="13.5"/></svg></button>
         </div>
       </div>
 
@@ -157,6 +158,7 @@
             <button @click="showRoster = true" class="holo-icon" title="提督名册"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="4" r="3"/><path d="M2 14c0-3.3 2.7-6 6-6s6 2.7 6 6"/></svg></button>
             <button @click="showNetwork = true" class="holo-icon" title="提督关系网"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="3" r="2"/><circle cx="3" cy="12" r="2"/><circle cx="13" cy="12" r="2"/><line x1="8" y1="5" x2="3" y2="10"/><line x1="8" y1="5" x2="13" y2="10"/><line x1="5" y1="12" x2="11" y2="12"/></svg></button>
             <button @click="$emit('open-save')" class="holo-icon" title="存档"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M13 15H3a1 1 0 01-1-1V2a1 1 0 011-1h8l3 3v10a1 1 0 01-1 1z"/><path d="M5 1v4h5V1"/><rect x="5" y="9" width="6" height="4" rx="0.5"/></svg></button>
+            <button @click="showBrowser = true" class="holo-icon" title="银河百科"><svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M8 3.5C6.5 2.3 4.5 2 2 2v10c2.5 0 4.5.3 6 1.5 1.5-1.2 3.5-1.5 6-1.5V2c-2.5 0-4.5.3-6 1.5z"/><line x1="8" y1="3.5" x2="8" y2="13.5"/></svg></button>
           </div>
         </div>
       </div>
@@ -234,6 +236,9 @@
     <!-- 提督名册浮层 -->
     <AdmiralRosterModal v-if="showRoster" @close="showRoster = false" />
 
+    <!-- 银河百科浮层（全 242 条词条） -->
+    <WikiBrowserModal v-if="showBrowser" @close="showBrowser = false" />
+
   </div>
 </template>
 
@@ -251,11 +256,13 @@ import CommsPanel from './CommsPanel.vue';
 import EventDialog from './EventDialog.vue';
 import AdmiralNetworkPanel from './AdmiralNetworkPanel.vue';
 import AdmiralRosterModal from './AdmiralRosterModal.vue';
+import WikiBrowserModal from '../wiki/WikiBrowserModal.vue';
 import { formatGold } from '../../utils/format';
 const store = useGameStore();
 const settings = useSettingsStore() as any;
 const showNetwork = ref(false);
 const showRoster = ref(false);
+const showBrowser = ref(false);
 // 兜底用的板屏幕坐标（板由引擎锚点投影驱动 left/top，这里存每帧回传的屏幕坐标与朝向）
 // 新增 z（深度，离相机近值大 → 用于 3D 遮挡排序 zIndex）与 scale（随距离缩放比，用于放大保底可读）
 const holoBoards = ref<Record<string, { x: number; y: number; rotX: number; rotY: number; visible: boolean; z?: number; scale?: number }>>({
@@ -564,12 +571,13 @@ const phaseLabel = computed(() => {
 </script>
 
 <style scoped>
-.strategic-screen { 
-  position: relative; width: 100%; height: 100vh; overflow: hidden; 
-  background: var(--neo-body); display: flex; flex-direction: column; 
+.strategic-screen {
+  position: relative; width: 100%; height: 100vh; overflow: hidden;
+  background: var(--neo-body); display: flex; flex-direction: column;
   /* 顶部常驻条高度：随显示模式变化。面板内容区据此向下让位，避免被置顶菜单遮挡。
      默认 .nav-bar（单行，holo 等模式）≈52px；.universe-topbar（两行）≈104px。 */
   --topbar-h: 56px;
+  text-align: center; /* v3：html 级居中已移除，此处补回顶栏/资源条的原有居中观感 */
 }
 /* 宇宙模式：顶部条为两行（交互行 + 数值行），更高 */
 .strategic-screen.mode-universe { --topbar-h: 108px; }

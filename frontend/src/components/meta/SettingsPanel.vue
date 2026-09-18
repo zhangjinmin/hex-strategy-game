@@ -57,6 +57,11 @@
       <div class="setting-row">
         <span class="setting-label">默认战场模式</span>
         <div class="mode-switch-group">
+          <button class="mode-btn" :class="{ active: bfMode === 'command' }" @click="setBfMode('command')">
+            <span class="mode-icon"><svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="2"/><path d="M8 2v2"/><path d="M8 12v2"/><path d="M2 8h2"/><path d="M12 8h2"/><circle cx="8" cy="8" r="6" stroke-dasharray="2 2"/></svg></span>
+            <span class="mode-label">指挥模式</span>
+            <span class="mode-desc">纯宇宙扫描投影 · 指挥链作战（默认）</span>
+          </button>
           <button class="mode-btn" :class="{ active: bfMode === 'hex' }" @click="setBfMode('hex')">
             <span class="mode-icon"><svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.3"><polygon points="8,1 14,5 14,11 8,15 2,11 2,5"/></svg></span>
             <span class="mode-label">星域棋盘</span>
@@ -67,11 +72,59 @@
             <span class="mode-label">全息战术投影</span>
             <span class="mode-desc">CRT复古显示器风格</span>
           </button>
+          <button class="mode-btn" :class="{ active: bfMode === '3d' }" @click="setBfMode('3d')">
+            <span class="mode-icon"><svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1.5 4.5L8 1l6.5 3.5v7L8 15l-6.5-3.5z"/><path d="M1.5 4.5L8 8l6.5-3.5"/><path d="M8 8v7"/></svg></span>
+            <span class="mode-label">3D 战场</span>
+            <span class="mode-desc">Three.js 全维战术沙盘</span>
+          </button>
         </div>
       </div>
+      <div class="setting-row">
+        <span class="setting-label">舰船模型精细度</span>
+        <select class="neo-select" :value="shipDetail" @change="onShipDetailChange">
+          <option value="high">高（原始 ~5 万面）</option>
+          <option value="medium">中（LOD1 ≈20% 三角数）</option>
+          <option value="low">低（LOD2 ≈5% 三角数）</option>
+        </select>
+      </div>
+      <div class="setting-hint">降低舰船模型面数可提升帧率（尤其核显）。轮廓线框各档位均保留 —— 它是 CRT 扫描线风格的主要来源；各档差别只在折角密度（中档只留硬折角）。下一场战斗生效。</div>
     </div>
 
-    <!-- 战略星图显示模式 -->
+    <!-- 3D 战场性能 -->
+    <div class="settings-section">
+      <div class="section-title">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" style="vertical-align:-1px;margin-right:5px;"><path d="M1.5 13.5V9"/><path d="M6 13.5V6"/><path d="M10.5 13.5V9.5"/><path d="M15 13.5V4"/></svg>
+        3D 战场性能
+      </div>
+      <div class="setting-row">
+        <span class="setting-label">画质档</span>
+        <select class="neo-select" :value="b3dQuality" @change="onB3dQualityChange">
+          <option value="high">高（原始分辨率 + 抗锯齿）</option>
+          <option value="medium">中（1.5× 分辨率 + 轻抗锯齿）</option>
+          <option value="low">低（1× 分辨率 + 无抗锯齿）</option>
+        </select>
+      </div>
+      <div class="setting-row">
+        <span class="setting-label">帧率保护</span>
+        <label class="toggle-switch">
+          <input type="checkbox" v-model="settings.battle3dPerfGuard" />
+          <span class="toggle-slider"></span>
+        </label>
+        <span class="setting-value">{{ settings.battle3dPerfGuard ? 'ON' : 'OFF' }}</span>
+      </div>
+      <div class="setting-row">
+        <span class="setting-label">显示帧率</span>
+        <label class="toggle-switch">
+          <input type="checkbox" v-model="settings.battle3dShowFps" />
+          <span class="toggle-slider"></span>
+        </label>
+        <span class="setting-value">{{ settings.battle3dShowFps ? 'ON' : 'OFF' }}</span>
+      </div>
+      <div class="setting-hint">核显卡顿时优先调低画质档（中/低会降低 3D 渲染分辨率与抗锯齿）。</div>
+      <div class="setting-hint">帧率保护：低于约 45fps 时自动把多余实体退回光点层；跑得动时完全不生效。</div>
+      <div class="setting-hint">显示帧率：3D 战场右下角显示实时帧率，用于对比调档前后。画质档下一场战斗生效。</div>
+    </div>
+
     <div class="settings-section">
       <div class="section-title">
         <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" style="vertical-align:-1px;margin-right:5px;"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="2"/><line x1="8" y1="0" x2="8" y2="3"/><line x1="8" y1="13" x2="8" y2="16"/><line x1="0" y1="8" x2="3" y2="8"/><line x1="13" y1="8" x2="16" y2="8"/></svg>
@@ -163,11 +216,32 @@ import { getState, addListener, removeListener, skipToNext, playTrack, getTrackE
 
 const settings = useSettingsStore() as any;
 
-const bfMode = computed<'hex' | 'crt'>({
+const bfMode = computed<'hex' | 'crt' | '3d' | 'command'>({
   get: () => settings.battlefieldMode,
   set: (v) => { settings.battlefieldMode = v; },
 });
-function setBfMode(v: 'hex' | 'crt') { bfMode.value = v; }
+function setBfMode(v: 'hex' | 'crt' | '3d' | 'command') { bfMode.value = v; }
+
+// 舰船模型精细度（high 原始 / medium LOD1 / low LOD2）——由战斗 3D 层在创建时读取生效
+const shipDetail = computed<'high' | 'medium' | 'low'>({
+  get: () => settings.shipModelDetail ?? 'high',
+  set: (v) => { settings.shipModelDetail = v; },
+});
+function onShipDetailChange(e: Event) {
+  const v = (e.target as HTMLSelectElement).value;
+  if (v === 'high' || v === 'medium' || v === 'low') shipDetail.value = v;
+}
+
+// 3D 战场画质档（high/medium/low）——由战斗 3D 层在创建时读取生效（下一场战斗生效）。
+// 帧率保护 / 显示帧率两项直接用 v-model 绑 settings（同为 3D 层创建时读取）。
+const b3dQuality = computed<'high' | 'medium' | 'low'>({
+  get: () => settings.battle3dQuality ?? 'high',
+  set: (v) => { settings.battle3dQuality = v; },
+});
+function onB3dQualityChange(e: Event) {
+  const v = (e.target as HTMLSelectElement).value;
+  if (v === 'high' || v === 'medium' || v === 'low') b3dQuality.value = v;
+}
 
 // 战略星图显示模式（宇宙 / 悬浮板）
 const starmapMode = computed<'universe' | 'holo'>({
@@ -293,7 +367,8 @@ function onTrackSelect(e: Event) {
 }
 .skip-btn:hover { border-color: var(--color-cyan); color: var(--color-cyan); }
 
-.mode-switch-group { flex: 1; display: flex; gap: 10px; }
+.mode-switch-group { flex: 1; display: flex; gap: 10px; flex-wrap: wrap; }
+.mode-switch-group .mode-btn { min-width: 110px; }
 .mode-btn {
   flex: 1; padding: 12px; display: flex; flex-direction: column; align-items: center; gap: 4px;
   background: var(--overlay-surface); border: 2px solid var(--overlay-hover);

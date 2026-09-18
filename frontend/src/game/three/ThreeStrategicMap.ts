@@ -206,6 +206,7 @@ function makeNebulaTex(seed: number, hue: [number, number, number]): THREE.Canva
 
 // 势力配色方案（可切换，费沙保持琥珀金不变）
 import { FACTION_SCHEMES, type FactionSchemeKey } from '../../config/factionThemes';
+import { acquirePlanetModel, buildPlanetMesh } from './planetModels';
 
 // 阵营配色（可变，根据 settingsStore 的方案切换；费沙 = 琥珀金不变）
 const FAC_COLOR: Record<number, { main: number; glow: string; cont: [number, number, number] }> = {
@@ -266,7 +267,7 @@ export class ThreeStrategicMap {
   private nodeMeshes = new Map<number, THREE.Object3D>();
   private nodeGlows = new Map<number, THREE.Sprite>();
   private nodeLabels = new Map<number, CSS2DObject>();
-  // 阿凡达全息沙盘：每个星系一根从桌面升起的发光光柱（挂 scene，避免随星球自转）
+  // 全息光柱：每个星系一根（从桌面 TABLE_Y 升到星球底部），挂 scene 避免随星球自转
   private holoPillars = new Map<number, THREE.Mesh>();
   private orbiters = new Map<number, { sat: THREE.Object3D; r: number; incX: number; incZ: number; phase0: number; speed: number }[]>();
   private stationShips = new Map<number, { group: THREE.Group; shipColor: number; engineColor: number; orbitR: number; seed: number; ships: any[]; rnd: () => number; shared: any }>();
@@ -1145,7 +1146,6 @@ export class ThreeStrategicMap {
               float a = (1.0 - h) * 0.3 + 0.05;                 // 底部更亮，向上渐隐但始终可见
               float glow = smoothstep(0.0, 0.3, h) * (1.0 - smoothstep(0.7, 1.0, h));
               a += glow * 0.18;
-              // 横向羽化（圆柱面无填充 → 用 UV 隐藏背面？这里用 alpha 做柔和柱体）
               a = clamp(a, 0.0, 1.0);
               gl_FragColor = vec4(uColor, a);
             }
@@ -1166,9 +1166,21 @@ export class ThreeStrategicMap {
         side: THREE.DoubleSide, depthWrite: false,
         blending: THREE.AdditiveBlending, shininess: 0,
       });
-      const contSphere = new THREE.Mesh(new THREE.IcosahedronGeometry(radius * 0.995, 3), contMat);
-      this.applySphereUV(contSphere, radius);
-      g.add(contSphere);
+      // 星球/要塞模型：若该节点登记了 GLB（见 planetModels.ts 的 PLANET_MODEL_MAP），
+      // 用模型替代程序化球体；模型未就绪或加载失败 → 自动回退到程序化球体（保证不空场）。
+      // 模型 Mesh 挂在 g 之下，因此自动继承 g.userData.axis/spin 自转，与其他星球一致。
+      const planetReg = acquirePlanetModel(n.id, radius);
+      const planetMesh = planetReg ? buildPlanetMesh(planetReg, radius, pal) : null;
+      // contSphere 需在两种路径下都可用：程序化路径为球体，模型路径为 null
+      // （后续地球/伊谢尔伦特化会改它的材质 —— 用了模型时应跳过，避免覆盖模型阵营色）
+      let contSphere: THREE.Mesh | null = null;
+      if (planetMesh) {
+        g.add(planetMesh);
+      } else {
+        contSphere = new THREE.Mesh(new THREE.IcosahedronGeometry(radius * 0.995, 3), contMat);
+        this.applySphereUV(contSphere, radius);
+        g.add(contSphere);
+      }
 
       // 云层（部分星球）
       if (seed % 3 !== 0) {
@@ -1239,7 +1251,7 @@ export class ThreeStrategicMap {
         shell.material.color.setHex(0xfff2cc);
         (shell.material as THREE.MeshBasicMaterial).opacity = 0.2;
         const sunTex = makeContinentalTex(seed, [255, 200, 110]);
-        contSphere.material = new THREE.MeshPhongMaterial({
+        if (contSphere) contSphere.material = new THREE.MeshPhongMaterial({
           map: sunTex, transparent: true, opacity: 0.9,
           emissive: 0xffcc77, emissiveIntensity: 0.6, emissiveMap: sunTex,
           side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending, shininess: 0,
@@ -1266,7 +1278,7 @@ export class ThreeStrategicMap {
         shell.material.color.setHex(0xbbddff);
         (shell.material as THREE.MeshBasicMaterial).opacity = 0.2;
         const starTex = makeContinentalTex(seed, [140, 190, 255]);
-        contSphere.material = new THREE.MeshPhongMaterial({
+        if (contSphere) contSphere.material = new THREE.MeshPhongMaterial({
           map: starTex, transparent: true, opacity: 0.9,
           emissive: 0xaaddff, emissiveIntensity: 0.6, emissiveMap: starTex,
           side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending, shininess: 0,

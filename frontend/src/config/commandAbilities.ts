@@ -24,6 +24,8 @@ export interface CommandAbility {
   targetType: 'enemy' | 'self' | 'ally' | 'none' | 'enemy_fleet' | 'self_fleet';
   admiralId?: number;         // 专属命令 → 绑定提督ID，undefined = 通用
   requireAllyAdmiralId?: number; // 齐格飞→需要莱因哈特同场
+  implemented?: boolean;      // false = 效果层尚未实现，UI 应置灰禁用（默认 undefined = 已实现）
+  partialNote?: string;       // 半生效说明：命令可用，但部分效果未实现，在描述下方提示
   effect: CommandEffect;
 }
 
@@ -49,6 +51,7 @@ const GENERIC_COMMANDS: CommandAbility[] = [
     requiresTarget: false,
     targetType: 'self_fleet',
     effect: { type: 'shield', value: 0.5, durationMs: 5000 },
+    // 瞬时 heal 在 showCommandEffect 落地；护盾经 getIncomingMultiplier 生效（不再要求驻守）
   },
   {
     id: 'ecm_jam',
@@ -69,6 +72,7 @@ const GENERIC_COMMANDS: CommandAbility[] = [
     requiresTarget: false,
     targetType: 'self_fleet',
     effect: { type: 'shield', value: 1.0, durationMs: 2000 },
+    // shield=1.0 → getIncomingMultiplier 下限 0.05，近似无敌帧
   },
   {
     id: 'morale_rally',
@@ -79,6 +83,7 @@ const GENERIC_COMMANDS: CommandAbility[] = [
     requiresTarget: false,
     targetType: 'none',
     effect: { type: 'morale', value: 30, durationMs: 15000 },
+    // getMoraleModifier 已接入伤害乘区（每10点士气+3%伤害）
   },
   {
     id: 'formation_charge',
@@ -89,6 +94,8 @@ const GENERIC_COMMANDS: CommandAbility[] = [
     requiresTarget: true,
     targetType: 'enemy_fleet',
     effect: { type: 'speed_boost', value: 1.0, durationMs: 3000 },
+    partialNote: '速度×2 已生效；自动冲锋到目标身后由玩家自行走位',
+    // getSpeedMultiplier 已接入 fleetBaseSpeed 乘区
   },
 ];
 
@@ -105,6 +112,8 @@ const ADMIRAL_COMMANDS: CommandAbility[] = [
     targetType: 'self_fleet',
     admiralId: 156, // 杨威利
     effect: { type: 'reflect', value: 0.5, durationMs: 5000 },
+    partialNote: '反弹50%+减伤50% 已生效；结束后士气+50 由后续版本跟进',
+    // reflect 经 getReflectRatio（反弹）+ getIncomingMultiplier（减伤）双通道落地
   },
   {
     id: 'reinhard_roar',
@@ -116,6 +125,7 @@ const ADMIRAL_COMMANDS: CommandAbility[] = [
     targetType: 'none',
     admiralId: 81, // 莱因哈特
     effect: { type: 'damage_boost', value: 0.5, durationMs: 20000 },
+    // getDamageMultiplier（伤害）+ getSpeedMultiplier 内 reinhard_roar 专属 ×1.3（移速）双通道生效
   },
   {
     id: 'kirscheis_guardian',
@@ -128,6 +138,8 @@ const ADMIRAL_COMMANDS: CommandAbility[] = [
     admiralId: 15, // 吉尔菲艾斯(齐格飞)
     requireAllyAdmiralId: 81, // 需要莱因哈特同场
     effect: { type: 'shield', value: 1.0, durationMs: 15000 },
+    partialNote: '护盾全减伤已生效（近似替代承伤）；伤害转移机制由后续版本跟进',
+    // shield=1.0 → getIncomingMultiplier 下限 0.05，近似"替代承伤"
   },
   {
     id: 'bucock_bastion',
@@ -139,6 +151,8 @@ const ADMIRAL_COMMANDS: CommandAbility[] = [
     targetType: 'self_fleet',
     admiralId: 136, // 比克古
     effect: { type: 'shield', value: 0.5, durationMs: 30000 },
+    partialNote: '防御+50%（护盾减伤）已生效；速度归零请手动切换驻守姿态实现',
+    // 护盾减伤经 getIncomingMultiplier 生效；速度归零=玩家切 defend 姿态（引擎内 defend 不移动）
   },
   {
     id: 'reuenthal_blitz',
@@ -150,6 +164,7 @@ const ADMIRAL_COMMANDS: CommandAbility[] = [
     targetType: 'enemy_fleet',
     admiralId: 98, // 罗严塔尔
     effect: { type: 'teleport', value: 3.0, durationMs: 0 },
+    implemented: false, // 需要底层瞬间位移系统（teleport 无 handler），UI 已置灰并给出说明
   },
 ];
 

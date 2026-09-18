@@ -45,6 +45,15 @@
           <span class="btn-desc">会战推演 · 无需开局</span>
         </button>
 
+        <button class="title-btn" @click="showBrowser = true">
+          <span class="btn-icon">
+            <svg viewBox="0 0 16 16" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M8 3.5C6.5 2.3 4.5 2 2 2v10c2.5 0 4.5.3 6 1.5 1.5-1.2 3.5-1.5 6-1.5V2c-2.5 0-4.5.3-6 1.5z"/><line x1="8" y1="3.5" x2="8" y2="13.5"/></svg>
+          </span>
+          <span class="btn-label">银河百科</span>
+          <span class="btn-rule"></span>
+          <span class="btn-desc">人物 · 组织 · 事件 · 科技</span>
+        </button>
+
         <button class="title-btn" @click="openModal('settings')">
           <span class="btn-icon">
             <svg viewBox="0 0 16 16" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1" y="4" width="14" height="9" rx="1"/><line x1="1" y1="7" x2="15" y2="7"/><circle cx="4" cy="10.5" r="0.8" fill="currentColor" stroke="none"/></svg>
@@ -68,6 +77,9 @@
     <!-- 统一入口：存档 / 系统设置都走「战术电脑」（SaveManagerModal），由 initial-tab 定位 -->
     <SaveManagerModal v-if="showModal" :initial-tab="modalTab" @close="showModal = false" />
 
+    <!-- 银河百科（全 242 条词条，无需开局即可查阅） -->
+    <WikiBrowserModal v-if="showBrowser" @close="showBrowser = false" />
+
     <!-- 剧本选择 -->
     <ScenarioSelectModal v-if="showScenarioSelect" @confirm="onScenarioConfirm" @cancel="onScenarioCancel" />
   </div>
@@ -78,11 +90,13 @@ import { ref } from 'vue';
 import { useGameStore } from '../../store/gameStore';
 import ScenarioSelectModal from './ScenarioSelectModal.vue';
 import SaveManagerModal from './SaveManagerModal.vue';
+import WikiBrowserModal from '../wiki/WikiBrowserModal.vue';
 
 const store = useGameStore() as any;
 const showModal = ref(false);
 const modalTab = ref<'new' | 'continue' | 'manage' | 'settings'>('continue');
 const showScenarioSelect = ref(false);
+const showBrowser = ref(false);
 
 const startNewGame = () => { showScenarioSelect.value = true; };
 const onScenarioConfirm = (id: string) => { showScenarioSelect.value = false; (store as any).selectedScenarioId = id; store.showAdmiralSelect = true; store.gameState = 'title'; };
@@ -107,7 +121,7 @@ const exitGame = () => { window.close(); };
 }
 @keyframes twinkle { from { opacity: 0.2; } to { opacity: 0.8; } }
 
-.title-container { display: flex; flex-direction: column; align-items: center; gap: 12px; z-index: 1; }
+.title-container { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 12px; z-index: 1; }
 .title-logo { height: 64px; width: auto; margin-bottom: 8px; }
 .title-subtitle { font-size: 16px; color: var(--color-text-disabled); letter-spacing: 3px; margin-bottom: 28px; }
 

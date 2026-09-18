@@ -6,9 +6,12 @@
           <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" style="vertical-align:-2px;margin-right:6px;"><circle cx="8" cy="4" r="3"/><path d="M2 14c0-3.3 2.7-6 6-6s6 2.7 6 6"/></svg>
           提督名册 · 只读
         </h3>
-        <button class="neo-btn text-slate-400 px-2" @click="$emit('close')">
-          <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><line x1="2" y1="2" x2="14" y2="14"/><line x1="14" y1="2" x2="2" y2="14"/></svg>
-        </button>
+        <div class="header-actions">
+          <button class="neo-btn btn-xs" title="查阅全部词条" @click="showBrowser = true">银河百科</button>
+          <button class="neo-btn text-slate-400 px-2" @click="$emit('close')">
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><line x1="2" y1="2" x2="14" y2="14"/><line x1="14" y1="2" x2="2" y2="14"/></svg>
+          </button>
+        </div>
       </div>
 
       <div class="roster-layout">
@@ -16,6 +19,11 @@
         <div class="faction-tabs">
           <button @click="currentFaction = 'empire'; selectedAdmiral = null" class="neo-btn tab-btn" :class="{active: currentFaction === 'empire'}">银河帝国</button>
           <button @click="currentFaction = 'alliance'; selectedAdmiral = null" class="neo-btn tab-btn" :class="{active: currentFaction === 'alliance'}">自由同盟</button>
+          <div class="wiki-coverage" title="该阵营已收录人物志的提督数">
+            <span class="wc-num">{{ coveredCount }}</span>
+            <span class="wc-den">/{{ factionAdmirals.length }}</span>
+            <span class="wc-label">人物志</span>
+          </div>
         </div>
 
         <!-- 左：全人物表格 -->
@@ -83,10 +91,26 @@
               <div v-if="fleetOfAdmiral" class="detail-line">第{{ fleetOfAdmiral.fleetNumber || fleetOfAdmiral.id }}舰队 · {{ formationName(fleetOfAdmiral.formation) }}</div>
               <div v-else class="detail-line muted">未编入舰队</div>
             </div>
+
+            <!-- 人物志：由百科词条折合而来 -->
+            <div class="mt-3 wiki-block">
+              <div class="sub-title wiki-block-head">
+                <span>人物志</span>
+                <button v-if="wikiKey" class="wiki-full-btn" @click="fullWikiKey = wikiKey">全屏阅读</button>
+              </div>
+              <WikiEntryView v-if="wikiKey" :entry-key="wikiKey" mode="compact" open-mode="none" @open-entry="fullWikiKey = $event" />
+              <div v-else class="detail-line muted">
+                暂无独立词条 · 可在<button class="wiki-inline-link" @click="showBrowser = true">银河百科</button>检索
+              </div>
+            </div>
           </div>
         </div>
         <div class="admiral-detail empty-detail" v-else>← 点击左侧将领查看详情</div>
       </div>
+
+      <!-- 词条浮层（层级高于名册本体） -->
+      <WikiEntryModal v-if="fullWikiKey" :entry-key="fullWikiKey" @close="fullWikiKey = ''" />
+      <WikiBrowserModal v-if="showBrowser" @close="showBrowser = false" />
     </div>
   </div>
 </template>
@@ -97,6 +121,10 @@ import { useGameStore, RANK_NAMES, getPortrait } from '../../store/gameStore';
 import { TAG_META_MAP } from '../../config/tagConfig';
 import { FORMATIONS } from '../../config/formations';
 import type { AdmiralTag } from '../../types/game';
+import WikiEntryView from '../wiki/WikiEntryView.vue';
+import WikiEntryModal from '../wiki/WikiEntryModal.vue';
+import WikiBrowserModal from '../wiki/WikiBrowserModal.vue';
+import { hasWikiForAdmiral, getWikiKeyForAdmiral } from '../../config/loghWiki';
 
 const emit = defineEmits<{ close: [] }>();
 const store = useGameStore() as any;
@@ -112,6 +140,8 @@ const handleImgError = (e: Event) => {
 
 const currentFaction = ref<'empire' | 'alliance'>('empire');
 const selectedAdmiral = ref<any>(null);
+const showBrowser = ref(false);
+const fullWikiKey = ref('');
 
 const sortKey = ref('rank');
 const sortAsc = ref(false);
@@ -139,6 +169,15 @@ const statLabels: Record<string, string> = {
 };
 
 const factionAdmirals = computed(() => safeAllAdmirals.value.filter((a: any) => a.faction === currentFaction.value));
+
+/** 当前阵营中已收录人物志的提督数 */
+const coveredCount = computed(() => factionAdmirals.value.filter((a: any) => hasWikiForAdmiral(a.id)).length);
+
+/** 当前选中提督对应的词条键（无则空串） */
+const wikiKey = computed(() => {
+  const id = selectedAdmiral.value?.id;
+  return id != null && hasWikiForAdmiral(id) ? getWikiKeyForAdmiral(id) || '' : '';
+});
 const detailStats = computed<Record<string, number>>(() => {
   if (typeof store.getEffectiveStats === 'function') return store.getEffectiveStats(selectedAdmiral.value?.id) || selectedAdmiral.value?.stats || {};
   return selectedAdmiral.value?.stats || {};
@@ -211,4 +250,28 @@ const formationName = (fid: string): string => FORMATIONS[fid as keyof typeof FO
 .sub-title { font-size: 11px; font-weight: 700; color: var(--color-text-disabled); margin-bottom: 4px; }
 .tag-wrap { display: flex; flex-wrap: wrap; gap: 4px; }
 .tag-chip { font-size: 10px; padding: 2px 6px; background: rgba(245,158,11,0.1); color: #f59e0b; border-radius: 8px; }
+
+/* ---------- 词条整合 ---------- */
+.header-actions { display: flex; align-items: center; gap: 6px; }
+.wiki-coverage {
+  margin-top: 8px; display: flex; align-items: baseline; justify-content: center;
+  gap: 2px; font-family: var(--dmc-font-mono);
+}
+.wc-num { font-size: 15px; font-weight: 800; color: var(--dmc-gold); }
+.wc-den { font-size: 10px; color: var(--color-text-disabled); }
+.wc-label { font-size: 9px; color: var(--color-text-disabled); letter-spacing: 0.06em; margin-left: 4px; }
+.wiki-block { border-top: 1px solid var(--color-border); padding-top: 10px; }
+.wiki-block-head { display: flex; align-items: center; justify-content: space-between; }
+.wiki-full-btn {
+  background: transparent; border: 1px solid var(--color-border); border-radius: 3px;
+  color: var(--color-text-secondary); font-size: 10px; padding: 1px 7px; cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+}
+.wiki-full-btn:hover { color: var(--color-cyan); border-color: var(--color-cyan); }
+.wiki-inline-link {
+  background: transparent; border: none; color: var(--color-cyan); font-size: inherit;
+  cursor: pointer; padding: 0 2px; border-bottom: 1px dashed rgba(52,152,219,0.45);
+  font-family: inherit;
+}
+.wiki-inline-link:hover { color: var(--color-text-primary); }
 </style>

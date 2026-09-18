@@ -23,6 +23,7 @@ export interface ActiveEffect {
   effect: CommandEffect;
   targetFleetId: number | null;     // 作用目标舰队ID（null=全局/自身）
   casterFleetId: number;
+  casterFactionId?: number;         // 施法方阵营（"全军"类命令按阵营归属判定，防止误益敌方）
   remainingMs: number;              // 剩余时间 ms
   startedAt: number;                // 生效时间戳
 }
@@ -60,7 +61,8 @@ export function executeCommand(
   state: CPState,
   abilityId: string,
   casterFleetId: number,
-  targetFleetId: number | null
+  targetFleetId: number | null,
+  casterFactionId?: number
 ): ActiveEffect | null {
   const ability = getAbilityById(abilityId);
   if (!ability || !canExecute(state, abilityId)) return null;
@@ -74,6 +76,7 @@ export function executeCommand(
     effect: { ...ability.effect },
     targetFleetId,
     casterFleetId,
+    casterFactionId,
     remainingMs: ability.effect.durationMs,
     startedAt: Date.now(),
   };
@@ -113,36 +116,72 @@ export function getActiveEffects(state: CPState, fleetId: number): ActiveEffect[
   );
 }
 
-/** 获取作用于特定舰队的伤害倍率修正（叠加所有活跃效果） */
-export function getDamageMultiplier(state: CPState, fleetId: number, isDefending: boolean): number {
+/** 获取特定舰队的伤害倍率修正（叠加所有活跃效果）
+ *  isDefending=true（驻守姿态）时抑制自身 damage_boost（防御时不输出强化）
+ *  护盾减伤见 getIncomingMultiplier —— 出手/受伤两条链路分离，避免护盾误伤己方输出
+ *  factionId：查询舰队所属阵营，用于"全军"类命令（如莱因哈特咆哮）的归属判定
+ */
+export function getDamageMultiplier(state: CPState, fleetId: number, isDefending: boolean, factionId?: number): number {
   let mult = 1.0;
   for (const e of state.effects) {
-    // 自身有 damage_boost → 提升攻击
-    if (e.casterFleetId === fleetId && !isDefending) {
+    // 自身有 damage_boost → 提升攻击（驻守时抑制；reinhard_roar 走下方阵营分支，避免重复加成）
+    if (e.casterFleetId === fleetId && !isDefending && e.commandId !== 'reinhard_roar') {
       if (e.effect.type === 'damage_boost') mult *= (1 + e.effect.value);
     }
-    // 自身有 shield → 降低受伤
-    if ((e.targetFleetId === fleetId || e.casterFleetId === fleetId) && isDefending) {
-      if (e.effect.type === 'shield') mult *= (1 - e.effect.value);
+    // 全军型咆哮：同阵营所有舰队共享伤害加成（修复旧版只加成施法旗舰的问题）
+    if (e.commandId === 'reinhard_roar' && !isDefending && factionId !== undefined && e.casterFactionId === factionId) {
+      mult *= (1 + e.effect.value);
     }
     // 敌方的 debuff 作用在自己身上 → 降低攻击
     if (e.targetFleetId === fleetId && !isDefending) {
       if (e.effect.type === 'debuff') mult *= (1 - e.effect.value);
     }
-    // reflect → 反弹给造成伤害者
   }
   return Math.max(0.1, mult);
 }
 
+/** 获取特定舰队受到伤害的减免倍率（护盾分支）
+ *  激活条件：舰队处于驻守姿态（isDefending）或持有活跃 shield 效果（紧急抢修/紧急回避等主动护盾不要求驻守）
+ */
+export function getIncomingMultiplier(state: CPState, fleetId: number, isDefending: boolean): number {
+  let mult = 1.0;
+  for (const e of state.effects) {
+    // 自身有 shield → 降低受伤
+    if ((e.targetFleetId === fleetId || e.casterFleetId === fleetId) && e.effect.type === 'shield') {
+      mult *= (1 - e.effect.value);
+    }
+    // reflect（魔术师的反击）→ 反弹的同时减伤 50%（以反击姿态偏转来袭火力）
+    if ((e.targetFleetId === fleetId || e.casterFleetId === fleetId) && e.effect.type === 'reflect') {
+      mult *= (1 - e.effect.value);
+    }
+  }
+  if (isDefending) {
+    // 驻守姿态常驻减伤 20%（与护盾效果叠加）
+    mult *= 0.8;
+  }
+  return Math.max(0.05, mult);
+}
+
+/** 获取特定舰队的 reflect 反弹系数（取最大值；0 = 无反弹） */
+export function getReflectRatio(state: CPState, fleetId: number): number {
+  let ratio = 0;
+  for (const e of state.effects) {
+    if ((e.targetFleetId === fleetId || e.casterFleetId === fleetId) && e.effect.type === 'reflect') {
+      ratio = Math.max(ratio, e.effect.value);
+    }
+  }
+  return ratio;
+}
+
 /** 获取作用于特定舰队的速度倍率修正 */
-export function getSpeedMultiplier(state: CPState, fleetId: number): number {
+export function getSpeedMultiplier(state: CPState, fleetId: number, factionId?: number): number {
   let mult = 1.0;
   for (const e of state.effects) {
     if (e.casterFleetId === fleetId && e.effect.type === 'speed_boost') {
       mult *= (1 + e.effect.value);
     }
-    // 莱因哈特咆哮也加速
-    if (e.commandId === 'reinhard_roar') {
+    // 莱因哈特咆哮 +30% 移速：仅同阵营舰队（修复旧版无归属判定、敌我同时加速）
+    if (e.commandId === 'reinhard_roar' && factionId !== undefined && e.casterFactionId === factionId) {
       mult *= 1.3;
     }
   }
@@ -150,10 +189,12 @@ export function getSpeedMultiplier(state: CPState, fleetId: number): number {
 }
 
 /** 获取作用于特定舰队的士气修正 */
-export function getMoraleModifier(state: CPState, fleetId: number): number {
+export function getMoraleModifier(state: CPState, fleetId: number, factionId?: number): number {
   let mod = 0;
   for (const e of state.effects) {
-    if ((e.casterFleetId === fleetId || e.targetFleetId === null) && e.effect.type === 'morale') {
+    // 自身施法，或"全军"型（targetFleetId=null）且同阵营
+    const friendlyGlobal = e.targetFleetId === null && factionId !== undefined && e.casterFactionId === factionId;
+    if ((e.casterFleetId === fleetId || friendlyGlobal) && e.effect.type === 'morale') {
       mod += e.effect.value;
     }
   }

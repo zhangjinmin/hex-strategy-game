@@ -3,19 +3,14 @@ import { ref, computed } from 'vue';
 import type { FleetComposition, ShipType, ShipConstruction } from '../types/game';
 import { SHIP_TYPES, SHIP_TACTICAL_HP, totalShips } from '../types/game';
 import { SHIP_COST } from '../config/economy';
+import { SHIP_TO_COMP_KEY } from '../config/shipScaling';
 import { useNodeStore } from './nodeStore';
 import { useGameStore } from './gameStore';
 import { useAdminStore } from './adminStore';
 
 // ShipType (单数) → FleetComposition key (复数)
-export const shipTypeToCompKey: Record<ShipType, keyof FleetComposition> = {
-  battleship: 'battleships',
-  fast_battleship: 'fastBattleships',
-  cruiser: 'cruisers',
-  destroyer: 'destroyers',
-  carrier: 'carriers',
-  fighter: 'fighters',
-};
+// ⚠ 单一真源在 config/shipScaling.ts（战术层折算也要用同一张表），此处只重导出，禁止再写一份字面量。
+export const shipTypeToCompKey = SHIP_TO_COMP_KEY as Record<ShipType, keyof FleetComposition>;
 
 export const useFleetStore = defineStore('fleet', () => {
   const constructionQueue = ref<ShipConstruction[]>([]);
@@ -55,6 +50,7 @@ export const useFleetStore = defineStore('fleet', () => {
     destroyer: 'destroyer',
     carrier: 'carrier',
     fighter: 'fighter',
+    supply: 'supply',
   };
 
   function getShipCost(shipType: ShipType): number {
@@ -223,7 +219,7 @@ export const useFleetStore = defineStore('fleet', () => {
         if (s.type === 'empty') return null;
 
         const shipType = s.type as ShipType;
-        const totalAvailable = comp[shipTypeToCompKey[shipType]];
+        const totalAvailable = comp[shipTypeToCompKey[shipType]] ?? 0;
         const assignedCount = Math.floor(totalAvailable / Math.max(1, slotCounts[shipType]));
 
         // 如果该舰种池子为空，槽位直接轮空失效

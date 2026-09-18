@@ -73,6 +73,7 @@
             </div>
             <h4 class="proposal-title">{{ getProposalDef(prop.type)?.name }}</h4>
             <p class="proposal-desc">{{ getProposalDef(prop.type)?.description }}</p>
+            <p v-if="prop.dialogue" class="proposal-dialogue">{{ prop.dialogue }}</p>
             <span class="proposal-risk">⚠ {{ getProposalDef(prop.type)?.risk }}</span>
           </div>
           <div v-if="filteredProposals.length === 0" class="empty-state">
@@ -93,9 +94,24 @@
           >
             <span class="history-name">{{ getProposalName(item.type) }}</span>
             <span class="history-status" :class="item.status">
-              {{ item.status === 'approved' ? '通过' : '否决' }}
+              {{ item.status === 'approved' ? '通过' : item.status === 'player_rejected' ? '否决' : '否决' }}
             </span>
             <span class="history-date">{{ item.resolvedDate || '—' }}</span>
+          </div>
+          <!-- 唱票明细（最近一次表决的提督分票） -->
+          <div v-if="latestVoteBreakdown.length > 0" class="vote-breakdown">
+            <div class="section-label" style="margin-top: 6px;">唱票明细</div>
+            <div
+              v-for="(vb, vIdx) in latestVoteBreakdown"
+              :key="vIdx"
+              class="vote-row"
+            >
+              <span class="vote-name" :class="{ 'vote-name-self': vb.isProposer }">{{ vb.name }}</span>
+              <span class="vote-stance" :class="vb.support ? 'vote-yes' : 'vote-no'">
+                {{ vb.support ? '赞成' : '反对' }}
+              </span>
+              <span class="vote-weight">{{ vb.weight }}分</span>
+            </div>
           </div>
           <div v-if="councilHistory.length === 0" class="empty-state">
             — 暂无历史记录 —
@@ -115,6 +131,7 @@
         </div>
         <h3 class="detail-title">{{ getProposalDef(selectedProposal.type)?.name }}</h3>
         <p class="detail-desc">{{ getProposalDef(selectedProposal.type)?.description }}</p>
+        <p v-if="selectedProposal.dialogue" class="proposal-dialogue">{{ selectedProposal.dialogue }}</p>
 
         <div class="detail-row">
           <span class="detail-label">效果:</span>
@@ -171,6 +188,18 @@ const filteredHistory = computed(() => {
   const mode = councilMode.value;
   const filter = mode === 'military' ? MILITARY_TYPES : POLITICAL_TYPES;
   return councilHistory.value.filter((h: any) => filter.includes(h.type));
+});
+
+// 唱票明细：最近一条带 voteBreakdown 的历史决议（当前分流下）
+const latestVoteBreakdown = computed<{ name: string; support: boolean; weight: number; isProposer: boolean }[]>(() => {
+  const latest = filteredHistory.value.find((h: any) => Array.isArray(h.voteBreakdown) && h.voteBreakdown.length > 0);
+  if (!latest) return [];
+  return (latest.voteBreakdown as any[]).map((vb: any) => ({
+    name: String(vb.name || ''),
+    support: !!vb.support,
+    weight: Number(vb.weight || 0),
+    isProposer: String(vb.name || '').includes('提案人'),
+  }));
 });
 
 const panelTitle = computed(() => {
@@ -577,6 +606,66 @@ const closePanel = () => {
   color: var(--color-empire);
   font-weight: 600;
   margin-top: 2px;
+}
+
+/* 提案人角色化台词 */
+.proposal-dialogue {
+  font-size: 11px;
+  color: var(--color-cyan);
+  font-style: italic;
+  line-height: 1.4;
+  margin: 0;
+  padding-left: 8px;
+  border-left: 2px solid var(--color-cyan-muted);
+}
+
+/* ===== 唱票明细 ===== */
+.vote-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.vote-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  padding: 3px 8px;
+  background: var(--color-overlay-pressed);
+  border-radius: 3px;
+}
+
+.vote-name {
+  color: var(--color-text-primary);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.vote-name-self {
+  font-weight: 800;
+}
+
+.vote-stance {
+  font-weight: 800;
+  font-size: 10px;
+  flex-shrink: 0;
+  width: 34px;
+  text-align: center;
+}
+
+.vote-yes { color: var(--color-green); }
+.vote-no { color: var(--color-empire); }
+
+.vote-weight {
+  color: var(--color-text-disabled);
+  font-family: monospace;
+  font-size: 10px;
+  flex-shrink: 0;
+  width: 34px;
+  text-align: right;
 }
 
 /* ===== 历史决议 ===== */

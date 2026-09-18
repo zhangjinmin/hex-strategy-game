@@ -1,18 +1,29 @@
 <template>
-  <div class="war-room" v-if="visible">
+  <div class="war-room" v-if="visible" @mouseenter="setCountdownPaused(true)" @mouseleave="setCountdownPaused(false)">
     <div class="wr-header">
       <span class="wr-title">◤ 军议 · 作战会议 ◢</span>
       <button class="wr-close" @click="setWarRoomOpen(false)">×</button>
     </div>
 
-    <!-- 总指挥 -->
-    <div class="wr-supreme" v-if="supremeFac">
+    <!-- 总指挥确认卡（V18-A · P1）：部署阶段可[确认]/[换人]（本场一次性覆盖，不进存档） -->
+    <div class="wr-supreme" v-if="supremeCand">
       <div class="wr-supreme-badge">◆ 总指挥</div>
-      <div class="wr-supreme-name">{{ supremeFac.name }}</div>
-      <div class="wr-supreme-sub">军衔 R{{ supremeFac.rank ?? '?' }} · 旗舰直属 — 可实时指挥（移动/攻击/姿态）</div>
+      <div class="wr-supreme-name">{{ supremeCand.name }}</div>
+      <div class="wr-supreme-sub">{{ supremeBasis }}</div>
+      <div class="wr-supreme-actions" v-if="deployPhase">
+        <select v-model.number="pickId" class="wr-select">
+          <option v-for="c in candidates" :key="c.id" :value="c.id" :disabled="c.disabled">
+            {{ c.name }}{{ c.disabled ? '（无指挥官）' : '' }}
+          </option>
+        </select>
+        <button class="wr-issue" @click="confirmSupreme">确认</button>
+        <button class="wr-issue" @click="swapSupreme">换人</button>
+      </div>
+      <div class="wr-supreme-sub" v-else>旗舰直属 — 可实时指挥（移动/攻击/姿态）</div>
+      <div class="wr-supreme-warn" v-if="swapWarn">{{ swapWarn }}</div>
     </div>
 
-    <div class="wr-hint" v-if="deployPhase">战前军议：为各舰队分配初始任务，回车开战</div>
+    <div class="wr-hint" v-if="deployPhase">{{ deployHint }}</div>
     <div class="wr-hint" v-else>你只能直接指挥总指挥旗舰；其余舰队在此下达任务指令</div>
 
     <!-- 舰队任务列表 -->
@@ -48,7 +59,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, watch } from 'vue';
+import { computed, reactive, ref, watch } from 'vue';
 import { useGameStore } from '../../store/gameStore';
 import { MISSION_TYPES, buildMission, canReassignMission, type MissionType, type MissionTargetKind } from '../../game/TacticalCommandSystem';
 
@@ -64,6 +75,15 @@ const deployPhase = computed<boolean>(() => unwrap<boolean>(store.battleDeployPh
 const supremeId = computed<number | null>(() => unwrap<number | null>(store.supremeCommanderId));
 const visible = computed(() => warRoomOpen.value && (store.tacticalState as any)?.mapStyle === 'command');
 const setWarRoomOpen = (v: boolean) => { (store as any).warRoomOpen = v; };
+// [#74 · A2] 部署倒计时（单一数据源 store.deployCountdownSec）：悬停本面板时暂停计时
+const setCountdownPaused = (v: boolean) => { (store as any).deployCountdownPaused = v; };
+const cdSec = computed<number>(() => unwrap<number>(store.deployCountdownSec));
+const cdPaused = computed<boolean>(() => unwrap<boolean>(store.deployCountdownPaused));
+const deployHint = computed<string>(() => {
+  const base = '战前军议：为各舰队分配初始任务 · 回车开战';
+  if (cdSec.value < 0) return base;   // 战役：无倒计时
+  return `${base}（${cdPaused.value ? '已暂停计时' : `${cdSec.value} 秒后自动开战`}）`;
+});
 
 const ownFactions = computed(() =>
   ((store as any).factions as any[]).filter((f: any) => f.team === 1 && f.active),
@@ -71,9 +91,43 @@ const ownFactions = computed(() =>
 const enemyFactions = computed(() =>
   ((store as any).factions as any[]).filter((f: any) => f.team !== 1 && f.active),
 );
-const supremeFac = computed(() =>
-  ((store as any).factions as any[]).find((f: any) => f.id === supremeId.value) || null,
+// [V18-A · P1] 总指挥确认卡：候选/依据由 BattleScene.publishSupremeCommanderPanel 镜像到 store
+const candidates = computed<any[]>(() => unwrap<any[]>(store.supremeCommanderCandidates) || []);
+const supremeCand = computed<any>(() =>
+  candidates.value.find((c: any) => c.id === supremeId.value) || null,
 );
+const supremeBasis = computed<string>(() => {
+  const c = supremeCand.value;
+  if (!c) return '';
+  return `职位 ${c.roleLabel || '—'} · 军衔 R${c.rank ?? '?'} · 战术 ${c.tactics ?? '?'}`;
+});
+const pickId = ref<number | null>(null);
+watch(supremeId, (v) => { pickId.value = v; }, { immediate: true });
+watch(candidates, (list) => {
+  const has = (id: any) => list.some((c: any) => c.id === id);
+  if ((pickId.value == null || !has(pickId.value)) && list.length) {
+    pickId.value = (supremeId.value != null && has(supremeId.value))
+      ? supremeId.value
+      : (list.find((c: any) => !c.disabled)?.id ?? list[0].id);
+  }
+}, { immediate: true });
+const swapWarn = ref('');
+const confirmSupreme = () => {
+  (store as any).supremeCommanderOverrideId = supremeId.value; // 认可当前总指挥（本场一次性）
+  swapWarn.value = '';
+};
+const swapSupreme = () => {
+  const cur = supremeCand.value;
+  const next = candidates.value.find((c: any) => c.id === pickId.value);
+  if (!next || next.disabled) { swapWarn.value = '该候选不可用（无指挥官）'; return; }
+  if (cur && (next.rank ?? 0) < (cur.rank ?? 0)) {
+    swapWarn.value = `⚠ 已指定军衔更低的 ${next.name} 为总指挥（本场一次性覆盖）`;
+  } else {
+    swapWarn.value = '';
+  }
+  (store as any).supremeCommanderOverrideId = next.id;
+  (store as any).supremeCommanderId = next.id;
+};
 
 /** 每舰队一行的表单状态（任务类型 + 目标） */
 const form = reactive<Record<number, { type: MissionType; targetId: number }>>({});
@@ -127,7 +181,9 @@ const issue = (fac: any) => {
 
 <style scoped>
 .war-room {
-  position: absolute; right: 12px; top: 96px; width: 292px; max-height: calc(100% - 180px);
+  position: absolute; right: 12px; top: 170px; width: 292px; max-height: calc(100% - 200px);
+  /* v3 防溢出：容器异常时面板也不得超出视口右缘/下缘 */
+  max-width: calc(100% - 24px);
   overflow-y: auto; z-index: 30; pointer-events: auto;
   background: rgba(8, 14, 26, 0.92); border: 1px solid rgba(34, 211, 238, 0.35);
   border-radius: 8px; padding: 10px 12px; color: #e2e8f0;
@@ -147,6 +203,9 @@ const issue = (fac: any) => {
 .wr-supreme-badge { color: #facc15; font-weight: 900; font-size: 11px; }
 .wr-supreme-name { font-weight: 900; font-size: 13px; margin: 2px 0; }
 .wr-supreme-sub { color: var(--color-text-secondary, #94a3b8); font-size: 10px; }
+.wr-supreme-actions { display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap; }
+.wr-supreme-actions .wr-select { flex: 1; min-width: 92px; }
+.wr-supreme-warn { color: #fbbf24; font-size: 10px; margin-top: 4px; line-height: 1.35; }
 .wr-hint { color: var(--color-text-secondary, #94a3b8); font-size: 10px; margin-bottom: 8px; line-height: 1.4; }
 .wr-fleet {
   border: 1px solid rgba(148, 163, 184, 0.25); border-radius: 6px;

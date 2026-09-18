@@ -1,6 +1,7 @@
 html {
     background-color: var(--color-background-body);
-    text-align: center;
+    /* v3：html 级 text-align:center 会泄漏进战场 UI（顶栏/军议面板等 absolute 容器内的
+       内联内容全部居中），仅在 #app 层保留居中供菜单类界面使用 */
     color: var(--color-text-primary);
     transition: background-color 0.3s ease, color 0.3s ease;
 }
@@ -26,6 +27,7 @@ body, .neo-card, .neo-btn, .neo-inset, .modal-content, .selection-modal,
 }
 
 #app {
-    height: 100vh;
-    text-align: center;
+    height: 100%;
+    /* v3：html 级居中已移除；菜单类界面各自在容器上声明 text-align:center，
+       战场顶栏/军议面板等 absolute UI 需要默认左对齐 */
 }

@@ -84,6 +84,14 @@ const toggleBomb = () => {
 };
 
 const togglePause = () => {
+  // 【A1 修复】战前部署阶段：暂停按钮不得解除部署暂停（否则部署菜单还开着，舰队却已开战机动）。
+  // 部署期唯一正确的"开战"入口是回车键 / startBattleAfterDeploy。
+  if ((store as any).battleDeployPhase) {
+    if (typeof (store as any).triggerToast === 'function') {
+      (store as any).triggerToast('战前部署中：按 [回车] 立即开战');
+    }
+    return;
+  }
   if (typeof (store as any).togglePause === 'function') {
     (store as any).togglePause();
   } else {

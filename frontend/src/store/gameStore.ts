@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia';
 import { ref, computed, shallowRef } from 'vue';
-import type { Faction, HexTile, StarNode, StrategicFleet, FleetComposition, NationalRole, AutoResolveParams, AutoResolveResult, ArrivalContext, PostBattleContext, ProposalType, AdminOperationType, LocalOperationType, EnemyOpType } from '../types/game';
+import type { Faction, HexTile, StarNode, StrategicFleet, FleetComposition, ShipType, NationalRole, AutoResolveParams, AutoResolveResult, ArrivalContext, PostBattleContext, ProposalType, AdminOperationType, LocalOperationType, EnemyOpType } from '../types/game';
 import { BattleOutcome, ArrivalDecisionType, PostBattleActionType, FACTION_ALLIANCE_ID, FACTION_EMPIRE_ID, totalShips, totalPowerWeight, EMPTY_COMPOSITION } from '../types/game';
 import {
   POLITICAL_VOTE_COEFFICIENTS,
@@ -26,6 +26,11 @@ import { useAdmiralStore } from './admiralStore';
 import { useNodeStore } from './nodeStore';
 import { useSettingsStore } from './settingsStore';
 import { useFleetStore, shipTypeToCompKey } from './fleetStore';
+import {
+  SHIP_TYPE_CN, resolveShipType, fleetVisualCount, allocateVisualCounts,
+  totalsOfComposition, scaledSlotsForComposition, applyStatsToSlots,
+  type TroopLike, type ShipStatMods, type ScaledSlot,
+} from '../config/shipScaling';
 import { useAdminStore } from './adminStore';
 import {
   executeProposalEffect,
@@ -680,6 +685,7 @@ export const useGameStore = defineStore('game', () => {
         status: 'idle' as const,
         moveProgress: 0,
         composition: comp,
+        rank,                    // [T-002] 军衔携带到战术层：演习路径按 rank 折算兵力
         tacticalSlots: [],
         morale: 100,
         supply: 100,
@@ -2293,8 +2299,16 @@ export const useGameStore = defineStore('game', () => {
   // ===== 提督扮演：军议面板状态（仅指挥制使用；BattleScene 镜像写入）=====
   /** 战前部署阶段（军议面板据此全员可派任务 + 自动展开） */
   const battleDeployPhase = ref(false);
+  /** [#74 · A2] 演习战前部署倒计时剩余秒数（-1 = 未激活；战役恒 -1）。单一数据源：中央菜单与军议 hint 同读此值 */
+  const deployCountdownSec = ref<number>(-1);
+  /** [#74 · A2] 部署倒计时暂停（鼠标悬停军议面板时 true，计时不减秒） */
+  const deployCountdownPaused = ref<boolean>(false);
   /** 总指挥提督 id（BattleScene.computeSupremeCommander 判定；null=未启用提督扮演） */
   const supremeCommanderId = ref<number | null>(null);
+  /** [V18-A · P1] 本场总指挥覆盖（部署军议面板[换人]写入；一次性、不进存档；优先级 override > 自动） */
+  const supremeCommanderOverrideId = ref<number | null>(null);
+  /** [V18-A · P1] 总指挥确认卡候选（BattleScene 镜像；含 职位/军衔/战术值/置灰标记） */
+  const supremeCommanderCandidates = ref<any[]>([]);
   /** 军议面板开关 */
   const warRoomOpen = ref(false);
 
@@ -3502,8 +3516,30 @@ export const useGameStore = defineStore('game', () => {
     }
   }
 
+  /**
+   * [兵力折算] 编制 → 槽位清单。**唯一折算入口是 config/shipScaling.ts 的 scaledSlotsForComposition**，
+   * 本函数只是战役路径的薄封装 —— 禁止在此再写一遍实体数/舰种摊派逻辑（T-3D-GRANDFLEET-002）。
+   * 有兵的舰种至少 1 个实体，保证 Σcount = 该舰队总兵力、不丢兵。
+   * coordSource（持久化 tacticalSlots）**只复用坐标**，且仅当条数与重算实体数相等时复用。
+   */
+  const buildScaledSlots = (comp: FleetComposition, visualCount: number, coordSource?: any[]): ScaledSlot[] =>
+    scaledSlotsForComposition(totalsOfComposition(comp as any), visualCount, coordSource);
+
+  /** 手点布阵/旧存档的原始槽位 → ScaledSlot（过滤空槽、归一舰种），供唯一数值入口消费 */
+  const normalizeRawSlots = (raw: any[]): ScaledSlot[] => {
+    const out: ScaledSlot[] = [];
+    for (const s of raw || []) {
+      if (!s || !s.type || s.type === 'empty') continue;
+      const st = resolveShipType(s.type);
+      if (!st) continue;
+      out.push({ type: st, count: Number(s.count) || 0, x: s.x ?? 0, y: s.y ?? 0 });
+    }
+    return out;
+  };
+
   // 将宏观舰队数据转化为 Phaser BattleScene 可接收的阵地兵力阵列
-  const serializeTacticalFleet = (strategicFleetId: number): any[] => {
+  // visualCount：本舰队可渲染实体预算（由 launchTacticalBattle 按全场 N_MAX 分摊后传入）
+  const serializeTacticalFleet = (strategicFleetId: number, visualCount?: number): any[] => {
     const fleet = strategicFleets.value.find(f => f.id === strategicFleetId);
     if (!fleet) return [];
 
@@ -3528,70 +3564,35 @@ export const useGameStore = defineStore('game', () => {
     const techArmorMod = techState ? 1 + (techState.armorLevel - 1) * 0.05 : 1;
     const techEngineMod = techState ? 1 + (techState.engineLevel - 1) * 0.03 : 1;
 
-    const tacticalUnits: any[] = [];
-    const slots = JSON.parse(JSON.stringify(fleet.tacticalSlots || []));
-    
-    if (slots.length === 0) {
-        if (fleet.composition.battleships > 0) slots.push({ x: 0, y: 0, type: 'battleship', count: fleet.composition.battleships });
-        if (fleet.composition.fastBattleships > 0) slots.push({ x: 1, y: 0, type: 'fast_battleship', count: fleet.composition.fastBattleships });
-        if (fleet.composition.cruisers > 0) slots.push({ x: -1, y: 1, type: 'cruiser', count: fleet.composition.cruisers });
-        if (fleet.composition.destroyers > 0) slots.push({ x: 1, y: 1, type: 'destroyer', count: fleet.composition.destroyers });
-        if (fleet.composition.carriers > 0) slots.push({ x: -1, y: -1, type: 'carrier', count: fleet.composition.carriers });
-        if (fleet.composition.fighters > 0) slots.push({ x: 1, y: -1, type: 'fighter', count: fleet.composition.fighters });
-        // 补给运输舰(AUX)：后勤战核心，编入后才会出现在战场，可被击沉 → 断补给
-        if ((fleet.composition.supplies || 0) > 0) slots.push({ x: 0, y: 2, type: 'supply', count: fleet.composition.supplies });
+    // ★ 倍率只有这 4 个标量；HP/ATK 公式与守恒余数补偿**都在 shipScaling.applyStatsToSlots**（唯一真源）
+    const mods: ShipStatMods = {
+      hpMul: defMultiplier * supplyFactor * techArmorMod,
+      atkMul: atkMultiplier * moraleFactor * techWeaponMod,
+      defMul: defMultiplier,
+      engineMul: techEngineMod,
+    };
+
+    const persistedSlots = JSON.parse(JSON.stringify(fleet.tacticalSlots || []));
+    const strength = totalShips(fleet.composition);
+
+    let slots: ScaledSlot[];
+    if (visualCount !== undefined && strength > 0) {
+      // [兵力折算·修复1] 战役路径：**每次会战都按当前兵力重算实体数**，
+      // 不让持久化的 tacticalSlots 决定实体个数。persistedSlots 仅作坐标来源（条数不等自动重排）。
+      slots = buildScaledSlots(fleet.composition, Math.max(1, visualCount), persistedSlots);
+    } else if (persistedSlots.length > 0) {
+      // 非战役路径（演习/旧调用，未传 visualCount）：保持原行为，直接用手点布阵的槽
+      slots = normalizeRawSlots(persistedSlots);
+    } else {
+      slots = buildScaledSlots(fleet.composition, fleetVisualCount(strength));
     }
 
-    const shipTemplates: Record<string, { hp: number; atk: number }> = {
-      battleship:       { hp: 2000, atk: 150 },
-      fast_battleship:  { hp: 1700, atk: 140 },
-      cruiser:          { hp: 1200, atk: 90  },
-      destroyer:        { hp: 800,  atk: 120 },
-      carrier:          { hp: 1500, atk: 60  },
-      fighter:          { hp: 300,  atk: 110 },
-      // 补给运输舰：低血低攻，定位后勤（击沉它 = 切断该舰队补给线）
-      supply:           { hp: 900,  atk: 20  },
-    };
+    const factionKey = admiral.faction;
+    const troopOf = (type: ShipType): TroopLike | undefined =>
+      getTroopById(`${factionKey}_${SHIP_TYPE_CN[type]}_1`) as TroopLike | undefined;
 
-    const classKeyMap: Record<string, string> = {
-      battleship: '战列', fast_battleship: '高战', cruiser: '巡洋',
-      destroyer: '驱逐', carrier: '空母', fighter: '舰载',
-      supply: '补给',
-    };
-    const baseDefMap: Record<string, number> = {
-      battleship: 15, fast_battleship: 13, cruiser: 10,
-      destroyer: 5, carrier: 12, fighter: 2, supply: 5,
-    };
-
-    slots.forEach((slot: any) => {
-      if (!slot.type || slot.type === 'empty') return;
-      const tmpl = shipTemplates[slot.type];
-      if (!tmpl) return;
-
-      const factionKey = admiral.faction;
-      const classKey = classKeyMap[slot.type] || '驱逐';
-      const troopId = `${factionKey}_${classKey}_1`;
-      const classObj = getTroopById(troopId);
-      const baseDef = baseDefMap[slot.type] || 5;
-      
-      const scaleCount = Math.max(1, slot.count / 500); 
-
-      tacticalUnits.push({
-        gridX: slot.x,
-        gridY: slot.y,
-        type: slot.type,
-        classType: classObj?.cls || classKey,
-        hp: Math.floor(tmpl.hp * defMultiplier * supplyFactor * scaleCount * techArmorMod),
-        maxHp: Math.floor(tmpl.hp * defMultiplier * supplyFactor * scaleCount * techArmorMod),
-        atk: Math.floor(tmpl.atk * atkMultiplier * moraleFactor * scaleCount * techWeaponMod),
-        def: Math.floor((classObj?.def || baseDef) * defMultiplier),
-        speed: (classObj?.speed || 0.5) * techEngineMod,
-        range: classObj?.range || 150,
-        interval: classObj?.interval || 3000,
-      });
-    });
-
-    return tacticalUnits; // 返回純淨數組
+    // ★ 唯一数值入口：逐实体 hp/atk/… + 按舰种守恒余数补偿（ΣHP 只取决于兵力，与实体数无关）
+    return applyStatsToSlots(slots, mods, troopOf);
   };
 
   // ===== 阶段四：战略→战术层联动入口 =====
@@ -3608,6 +3609,15 @@ export const useGameStore = defineStore('game', () => {
       return;
     }
 
+    // [兵力折算] 全场（攻守双方全部舰队）实体预算：按各舰队兵力占比分摊，Σ ≤ N_MAX。
+    const allFleetIds = [...uniqueAttackerIds, ...uniqueDefenderIds];
+    const strengths = allFleetIds.map(id => {
+      const f = strategicFleets.value.find(x => x.id === id);
+      return f ? totalShips(f.composition) : 0;
+    });
+    const budget = allocateVisualCounts(strengths);
+    const visualById = new Map<number, number>(allFleetIds.map((id, i) => [id, budget[i]]));
+
     const serializeOne = (fleetId: number) => {
       const fleet = strategicFleets.value.find(f => f.id === fleetId);
       if (!fleet) {
@@ -3615,32 +3625,62 @@ export const useGameStore = defineStore('game', () => {
         return null;
       }
       const admiral = allAdmirals.value.find(a => a.id === fleet.commanderId);
+      const visualCount = visualById.get(fleetId);
       let units: any[] = [];
       try {
-        units = serializeTacticalFleet(fleetId);
+        units = serializeTacticalFleet(fleetId, visualCount);
       } catch (err) {
         console.error(`[launchTacticalBattle] serializeTacticalFleet(${fleetId}) crashed:`, err);
         units = [];
       }
       if (units.length === 0) {
         console.warn(`[launchTacticalBattle] Fleet ${fleetId} (admiral: ${admiral?.name}) serialized to 0 units. Falling back to composition-derived slots.`);
-        // 兜底：直接从 composition 构造最小可用 slot
         const comp = fleet.composition || { ...EMPTY_COMPOSITION };
-        const fallbackSlots: any[] = [];
-        if (comp.battleships > 0) fallbackSlots.push({ type: 'battleship', count: comp.battleships, hp: 2000, maxHp: 2000, atk: 150 });
-        if (comp.fastBattleships > 0) fallbackSlots.push({ type: 'fast_battleship', count: comp.fastBattleships, hp: 1700, maxHp: 1700, atk: 140 });
-        if (comp.cruisers > 0) fallbackSlots.push({ type: 'cruiser', count: comp.cruisers, hp: 1200, maxHp: 1200, atk: 90 });
-        if (comp.destroyers > 0) fallbackSlots.push({ type: 'destroyer', count: comp.destroyers, hp: 800, maxHp: 800, atk: 120 });
-        if (comp.carriers > 0) fallbackSlots.push({ type: 'carrier', count: comp.carriers, hp: 1500, maxHp: 1500, atk: 60 });
-        if (comp.fighters > 0) fallbackSlots.push({ type: 'fighter', count: comp.fighters, hp: 300, maxHp: 300, atk: 110 });
-        return {
-          fleetId: fleet.id,
-          factionId: fleet.factionId,
-          commanderName: admiral ? admiral.name : '未知提督',
-          imageId: admiral ? admiral.imageId : '',
-          formation: fleet.formation || DEFAULT_FORMATION,
-          slots: fallbackSlots
-        };
+        // [FIX-齐射秒队] 兜底必须走**同一套兵力折算**（buildScaledSlots + applyStatsToSlots）。
+        //   旧实现每个舰种只塞 1 个固定数值实体（战列 hp2000/atk150，且与船数无关）⇒
+        //   一支 3 倍大舰队塌缩成 6~7 个实体，聚合 hp/atk 与船数完全不成比例，
+        //   被正确折算的守方一轮齐射秒掉（用户实报：杨威利兵力占优仍被瞬灭）。
+        //   折算后 ΣHP/ΣATK 严格 ∝ 船数（守恒 + 余数补偿都在 applyStatsToSlots 里），
+        //   与正常路径产出**完全相同的 slot 形状**，BattleScene 无需特判。
+        const strength = totalShips(comp as any);
+        const vc = (typeof visualCount === 'number' && visualCount > 0)
+          ? visualCount : Math.max(1, fleetVisualCount(strength));
+        const neutralMods: ShipStatMods = { hpMul: 1, atkMul: 1, defMul: 1, engineMul: 1 };
+        const factionKey = (admiral as any)?.faction;
+        const troopOfFallback = (type: ShipType): TroopLike | undefined =>
+          factionKey ? (getTroopById(`${factionKey}_${SHIP_TYPE_CN[type]}_1`) as TroopLike | undefined) : undefined;
+        let scaledUnits: any[] = [];
+        try {
+          scaledUnits = applyStatsToSlots(buildScaledSlots(comp as any, vc), neutralMods, troopOfFallback);
+        } catch (err) {
+          console.error(`[launchTacticalBattle] 兜底折算异常 fleet=${fleetId}:`, err);
+          scaledUnits = [];
+        }
+        // 退化兜底：仅当折算仍为空（理论上编制全 0）时，退回旧的固定最小实体，保证不产生空舰队。
+        if (scaledUnits.length === 0) {
+          const fallbackSlots: any[] = [];
+          const pushFixed = (type: string, n: number, hp: number, atk: number) => {
+            if (n > 0) fallbackSlots.push({ type, count: n, shipCount: n, hp, maxHp: hp, atk });
+          };
+          pushFixed('battleship', comp.battleships, 2000, 150);
+          pushFixed('fast_battleship', comp.fastBattleships, 1700, 140);
+          pushFixed('cruiser', comp.cruisers, 1200, 90);
+          pushFixed('destroyer', comp.destroyers, 800, 120);
+          pushFixed('carrier', comp.carriers, 1500, 60);
+          pushFixed('fighter', comp.fighters, 300, 110);
+          pushFixed('supply', comp.supplies || 0, 900, 20);
+          return {
+            fleetId: fleet.id,
+            factionId: fleet.factionId,
+            commanderId: admiral?.id ?? null,
+            flagshipName: (admiral as any)?.flagshipName || '',
+            commanderName: admiral ? admiral.name : '未知提督',
+            imageId: admiral ? admiral.imageId : '',
+            formation: fleet.formation || DEFAULT_FORMATION,
+            slots: fallbackSlots
+          };
+        }
+        units = scaledUnits; // 落到下方统一 return（与正常路径同形状产出 slots）
       }
       return {
         fleetId: fleet.id,
@@ -3653,6 +3693,7 @@ export const useGameStore = defineStore('game', () => {
         slots: units.map((u: any) => ({
           type: u.type,
           count: Math.floor(u.maxHp / 100),
+          shipCount: u.count, // [兵力折算] 精确摊派兵力，反向回写不再从 HP 反推
           hp: u.hp,
           maxHp: u.maxHp,
           atk: u.atk,
@@ -4126,6 +4167,10 @@ export const useGameStore = defineStore('game', () => {
 
   const returnToMetaMenu = () => {
     console.trace('[returnToMetaMenu] called from:');
+    // 【A2 修复】离开战斗统一复位部署阶段标志，避免撤退时残留 true 污染下一场判定
+    battleDeployPhase.value = false;
+    deployCountdownSec.value = -1;
+    deployCountdownPaused.value = false;
     if (simMode.value) {
       gameState.value = 'sim';
       return;
@@ -4298,6 +4343,7 @@ export const useGameStore = defineStore('game', () => {
     calculatePower, autoResolveBattle, occupyPlanet, handleArrivalDecision, handlePostBattle,
     handleCaptureOccupy, handleCapturePillage, handleCaptureLiberate,
     // 提督扮演：军议面板状态
-    battleDeployPhase, supremeCommanderId, warRoomOpen,
+    battleDeployPhase, supremeCommanderId, supremeCommanderOverrideId, supremeCommanderCandidates, warRoomOpen,
+    deployCountdownSec, deployCountdownPaused,
   };
 });

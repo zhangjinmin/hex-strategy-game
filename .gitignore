@@ -3,6 +3,12 @@ build/bin/
 build/*.exe
 build/HexFront_Saves.json
 frontend/dist*
+# 根目录 wails build 产物（149MB，可重新编译，禁止入库）
+/*.exe
+/*.msi
+# 临时输出/诊断文件
+/_out.txt
+/diffcheck.txt
 
 # --- Dependencies ---
 node_modules/
@@ -22,3 +28,8 @@ Thumbs.db
 
 # --- WorkBuddy project metadata (not game source) ---
 .workbuddy/
+
+# --- Agent 会话草稿与 QA 截图（2026-09-18 清理后追加，防复发）---
+/_*
+/frontend/_*
+/docs/qa/shots-*/

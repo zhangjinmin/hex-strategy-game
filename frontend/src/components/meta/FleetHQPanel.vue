@@ -52,7 +52,7 @@
         <!-- 舰种配置（+ = 造船订单·消耗国库，− = 退役裁撤） -->
         <div class="section">
           <div class="section-label">舰船配置 <span class="build-hint">+ 建造(花钱) / − 退役</span></div>
-          <div v-for="st in shipTypes" :key="st.key" class="ship-row">
+          <div v-for="st in availableShipTypes" :key="st.key" class="ship-row">
             <span class="ship-label">{{ st.label }}</span>
             <div class="ship-ctrl">
               <button @click="adjustShips(st.key, -st.step)" class="btn-qty" :disabled="!canEdit" title="退役裁撤">-</button>
@@ -60,7 +60,9 @@
               <button @click="adjustShips(st.key, st.step)" class="btn-qty btn-build" :disabled="!canEdit" title="下造船订单（需停靠首都/要塞，消耗国库）">+</button>
             </div>
           </div>
-          <div class="ship-total">总舰数：{{ totalShips }}</div>
+          <div class="ship-total">
+            兵力 {{ totalShips.toLocaleString() }}
+          </div>
           <!-- 在建订单 -->
           <div v-if="fleetConstruction.length" class="build-queue">
             <div class="bq-title">在建订单</div>
@@ -91,7 +93,7 @@
             </div>
           </div>
           <div class="ship-pool">
-            <button v-for="st in shipTypes" :key="'p'+st.key" class="pool-btn"
+            <button v-for="st in availableShipTypes" :key="'p'+st.key" class="pool-btn"
                     :class="{ active: poolSelected === st.key }"
                     @click="poolSelected = poolSelected === st.key ? null : st.key" :disabled="!canEdit">
               {{ st.label }}
@@ -144,6 +146,8 @@ import { useFleetStore } from '../../store/fleetStore';
 import { FORMATIONS, DEFAULT_FORMATION, layoutFormationSlots, type FormationType } from '../../config/formations';
 import { canEditFleet } from '../../config/roleConfig';
 import type { ShipType } from '../../types/game';
+import { isShipAllowedForFaction, getFighterName } from '../../config/gameData';
+// [v12.1] 原 [兵力折算] 的 fleetVisualCount / K_VISUAL_DEFAULT import 已随「显示 N 艘（1∶K）」一并移除。
 
 const store = useGameStore() as any;
 const fleetStore = useFleetStore();
@@ -156,6 +160,7 @@ const compKeyToShipType: Record<string, ShipType> = {
   destroyers: 'destroyer',
   carriers: 'carrier',
   fighters: 'fighter',
+  supplies: 'supply',
 };
 
 const selectedFleetId = ref<number | null>(null);
@@ -170,14 +175,17 @@ const boardCells = Array.from({ length: 49 }, (_, i) => ({ x: i % 7, y: Math.flo
 const formationList = Object.entries(FORMATIONS).map(([id, f]) => ({ id, name: f.name, desc: f.description, icon: f.icon }));
 const formationMap = Object.fromEntries(formationList.map(f => [f.id, f]));
 
-const shipTypes = [
-  { key: 'battleships', label: '战列舰', step: 1000 },
-  { key: 'fastBattleships', label: '高速战列舰', step: 500 },
-  { key: 'cruisers', label: '巡洋舰', step: 1000 },
-  { key: 'destroyers', label: '驱逐舰', step: 2000 },
-  { key: 'carriers', label: '航母', step: 500 },
-  { key: 'fighters', label: '战斗机', step: 2000 },
+const ALL_SHIP_TYPES = [
+  { key: 'battleships', label: '战列舰', step: 1000, shipType: 'battleship' },
+  { key: 'fastBattleships', label: '高速战列舰', step: 500, shipType: 'fast_battleship' },
+  { key: 'cruisers', label: '巡洋舰', step: 1000, shipType: 'cruiser' },
+  { key: 'destroyers', label: '驱逐舰', step: 2000, shipType: 'destroyer' },
+  { key: 'carriers', label: '航母', step: 500, shipType: 'carrier' },
+  { key: 'fighters', label: '战斗机', step: 2000, shipType: 'fighter' },
+  { key: 'supplies', label: '补给运输舰', step: 500, shipType: 'supply' },
 ];
+
+// 注：阵营过滤在下方 availableShipTypes（playerAdm 定义之后）
 
 // 只显示玩家阵营的舰队（修复：同盟看不到帝国舰队）
 const fleetList = computed(() => {
@@ -190,6 +198,14 @@ const fleetList = computed(() => {
 const selFleet = computed(() => fleetList.value.find((f: any) => f.id === selectedFleetId.value) || null);
 const selAdm = computed(() => selFleet.value ? (store.allAdmirals || []).find((a: any) => a.id === selFleet.value.commanderId) : null);
 const playerAdm = computed(() => (store.allAdmirals || []).find((a: any) => a.id === store.playerAdmiralId));
+
+/** 按玩家阵营过滤后的可用舰种（同盟无高速战列舰）。
+ *  模板中所有原 shipTypes 引用改为 availableShipTypes 即可生效。 */
+const availableShipTypes = computed(() => {
+  const fac = playerAdm.value?.faction || '';
+  return ALL_SHIP_TYPES.filter((st: any) => isShipAllowedForFaction(fac, st.shipType));
+});
+
 
 const canEdit = computed(() => {
   if (!selFleet.value || !playerAdm.value) return false;
@@ -232,6 +248,8 @@ const totalShips = computed(() => {
   const c = selFleet.value?.composition;
   return c ? Object.values(c).reduce((s: number, v: any) => s + (v || 0), 0) : 0;
 });
+// [v12.1] 删除「显示 N 艘（1∶K）」：早期测试用，用户判定不需要。
+// 随之移除 visualShips / visualRatio 两个 computed（全文件已无其他引用）。
 
 // 当前舰队的在建订单（直接过滤建造队列，规避 pinia getter 解包类型差异）
 const fleetConstruction = computed(() => {
@@ -240,9 +258,13 @@ const fleetConstruction = computed(() => {
   return queue.filter((c: any) => c.fleetId === selFleet.value.id);
 });
 function shipTypeName(t: string): string {
+  // 舰载机按阵营命名：帝国=王尔古雷、同盟=斯巴达尼恩（FIGHTER_NAMES，gameData.ts）
+  if (t === 'fighter') return getFighterName(playerAdm.value?.faction || '');
   const m: Record<string, string> = {
     battleship: '标准战舰', fast_battleship: '高速战舰', cruiser: '巡航舰',
-    destroyer: '驱逐舰', carrier: '标准空母', fighter: '舰载机',
+    destroyer: '驱逐舰', carrier: '标准空母',
+    fighter: '舰载机',
+    supply: '补给运输舰',
   };
   return m[t] || t;
 }
@@ -262,7 +284,7 @@ function handleCell(x: number, y: number) {
   (selFleet.value as any).tacticalSlots = slots;
 }
 function shipShort(t: string): string {
-  const m: Record<string, string> = { battleships: '战', fastBattleships: '高战', cruisers: '巡', destroyers: '驱', carriers: '航', fighters: '战斗机' };
+  const m: Record<string, string> = { battleships: '战', fastBattleships: '高战', cruisers: '巡', destroyers: '驱', carriers: '航', fighters: '战斗机', supplies: '补' };
   return m[t] || '?';
 }
 
@@ -400,6 +422,8 @@ function save() {
 .ship-cruisers { background: rgba(245,158,11,0.18); color: #f59e0b; }
 .ship-destroyers { background: rgba(6,182,212,0.18); color: #06b6d4; }
 .ship-carriers { background: rgba(34,197,94,0.18); color: #22c55e; }
+/* 补给运输舰(AUX)：后勤单位，用橙色系与作战舰种（蓝/绿/红）区分 */
+.ship-supplies { background: rgba(249,115,22,0.18); color: #fb923c; }
 .ship-fighters { background: rgba(148,163,184,0.2); color: #94a3b8; }
 
 .ship-pool { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }

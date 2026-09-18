@@ -4,7 +4,7 @@
     <MainMenu v-if="gameState === 'menu'" />
     <SimScreen v-if="gameState === 'sim'" />
 
-    <div v-if="gameState === 'game'" class="game-screen" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 999;">
+    <div v-if="gameState === 'game'" class="game-screen" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; width: 100%; height: 100%; z-index: 999;">
       <GameHeader />
       <div id="phaser-canvas-container" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;"></div>
 
@@ -49,9 +49,9 @@
         <button class="view-preset-btn" title="正俯视" @click="setViewPreset('top')">俯视</button>
       </div>
 
-      <!-- 提督扮演：军议面板（仅指挥制）+ 关闭态的开启按钮 -->
+      <!-- 提督扮演：军议面板（仅指挥制）+ 关闭态的开启按钮（显著化：任务指令唯一入口） -->
       <CouncilWarRoom v-if="isCommandBattle" />
-      <button v-if="isCommandBattle && !warRoomOpen" class="war-room-toggle" @click="setWarRoomOpen(true)">军议</button>
+      <button v-if="isCommandBattle && !warRoomOpen" class="war-room-toggle" @click="setWarRoomOpen(true)">⚔ 军议 · 任务指令</button>
 
       <SettlementModal v-if="gameOver" />
     </div>
@@ -79,7 +79,9 @@
       :cp-state="commandBridge.cpState"
       :fleet-admiral-id="commandBridge.fleetAdmiralId"
       :battle-admiral-ids="commandBridge.battleAdmiralIds"
-      @close="handleCommandClose"
+      @execute="handleCommandExecute"
+      @cancel="handleCommandCancel"
+      @cancel-target="handleCommandCancelTarget"
       @select-target="handleCommandSelectTarget"
     />
 
@@ -143,16 +145,49 @@ const battleLogRef = ref<InstanceType<typeof BattleLogPanel> | null>(null);
 // 指挥面板状态（由 BattleScene 通过 commandBridge 控制）
 const showCommandPanel = computed(() => commandBridge.visible);
 
-function handleCommandClose() {
+// [2a] Vue → BattleScene 通道：优先直接取场景实例（与 setBattleSceneVisible / tryCreate3dOverlay 同口径）。
+// BattleScene 的指挥链路方法经此调用；未就绪（headless / 未挂载）时返回 null，由调用方兜底。
+function battleSceneApi(): any {
+  try { return getGameInstance()?.scene?.getScene('BattleScene'); } catch { return null; }
+}
+
+// ① 非目标命令 → 执行（pendingCallback 内层 if(selectedAbilityId) 现为真）然后关面板
+function handleCommandExecute() {
+  // [2a-2] BUG-1 契约层双保险（根因修复在 BattleScene.executeCommandFromPanel）：
+  //   本路径不经 closeCommandPanel，若不清退态，残留的 cpCommandMode/targetCandidates
+  //   会让随后的战场点击触发幽灵执行。exitTargetSelect 幂等，可放心前置。
+  battleSceneApi()?.exitTargetSelect?.('execute-other');
   if (commandBridge.pendingCallback) {
     commandBridge.pendingCallback(null);
   }
   commandBridge.visible = false;
 }
 
+// ② 取消（✕ / 列表态 Esc / 再次点选中卡片）→ 丢弃 callback，关面板，退选目标态，恢复实时。
+//    **绝不执行、绝不扣 CP**（07 §5.3：CP 只在 executeCommand 内扣除）。
+function handleCommandCancel() {
+  commandBridge.pendingCallback = null;
+  const bs = battleSceneApi();
+  if (bs?.closeCommandPanel) {
+    bs.closeCommandPanel();
+  } else {
+    // 兜底（场景未就绪）：只清桥 + 恢复实时
+    commandBridge.visible = false;
+    commandBridge.selectedAbilityId = null;
+    (store as any).isPaused = false;
+  }
+}
+
+// ③ 目标命令 → 进入选目标态（面板保持打开，暂停不解除，不扣 CP）
 function handleCommandSelectTarget(abilityId: string) {
   commandBridge.selectedAbilityId = abilityId;
-  // 目标选择由 BattleScene 的 pointer 事件处理
+  battleSceneApi()?.enterTargetSelect?.(abilityId);
+}
+
+// ④ 退选目标态回列表（面板不关、暂停不解除）
+function handleCommandCancelTarget() {
+  commandBridge.selectedAbilityId = null;
+  battleSceneApi()?.exitTargetSelect?.('cancel-target');
 }
 
 // 提督选择弹窗状态
@@ -227,6 +262,19 @@ const clear3dReadyTimer = () => {
   }
 };
 
+// [v12 P2] 3D 模式下让 Phaser 的 BattleScene **停止 2D 渲染但逻辑照跑**：
+//   · SceneManager.render() 只在 sys.settings.visible 为真时渲染该场景（本仓 node_modules 源码 :596）；
+//   · SceneManager.update()/sys.step() **不看 visible**（:558-579）⇒ 逻辑/物理/事件照常推进。
+//   CSS 只把 2D 画布 visibility:hidden，Phaser 仍每帧完整渲染那块隐藏画布 = 白烧 GPU；
+//   置 visible=false 即跳过该场景渲染（本轮性能优化的最大单项）。
+//   注：安装版 Phaser 的 SceneManager **没有** setVisible（只有 isVisible），必须走 scene.sys.setVisible()。
+const setBattleSceneVisible = (visible: boolean) => {
+  try {
+    const bs = getGameInstance()?.scene.getScene('BattleScene');
+    bs?.sys?.setVisible(visible);
+  } catch { /* 未就绪 / headless 时忽略 */ }
+};
+
 const destroyBattle3dOverlay = () => {
   clear3dReadyTimer();
   battle3dReady.value = false;
@@ -235,6 +283,11 @@ const destroyBattle3dOverlay = () => {
     battle3dOverlay = null;
   }
   document.body.classList.remove('battle3d-mode');
+  // 恢复 BattleScene 的 2D 渲染（降级回退 / 离开 3D 战斗时必须还原，否则 2D 画布会空）
+  setBattleSceneVisible(true);
+  // QA 只读调试口句柄，destroy 后必须清空——否则台架/调试脚本读到已销毁实例的闭包，
+  // 会误判 overlay 仍存活（QA-2 §6.4）。
+  (window as any).__b3dOverlay = null;
 };
 
 const tryCreate3dOverlay = (attempt: number) => {
@@ -257,10 +310,16 @@ const tryCreate3dOverlay = (attempt: number) => {
         clear3dReadyTimer();
         battle3dReady.value = true;
         document.body.classList.add('battle3d-mode');
+        // [v12 P2] 同步让 Phaser 停画 BattleScene（逻辑照跑，见 setBattleSceneVisible 注释）
+        setBattleSceneVisible(false);
       }
     },
   });
   battle3dOverlay = ov;
+  // [QA 只读调试口 v6] 独立验证用：暴露 overlay 实例（纯读取，不参与渲染逻辑）。
+  // 供 _v6_dot_lattice_probe.cjs 逐档隔离光点层/标记层、读 drawRange/相机距离做像素级证据。
+  // （destroy 时置 null，见 destroyBattle3dOverlay）
+  (window as any).__b3dOverlay = ov;
   // 降级兜底：8 秒内 3D 没就绪 → 销毁 overlay，回退 2D 渲染
   battle3dReadyTimer = window.setTimeout(() => {
     if (battle3dOverlay === ov && is3dBattle.value) {
@@ -311,6 +370,8 @@ const handleKeyDown = (e: KeyboardEvent) => {
     }
   }
   else if (e.code === 'Escape') {
+    // [2a] 命令面板/选目标态下，Esc 归命令系统处理（取消/退选），**不退出战斗**
+    if (commandBridge.visible) return;
     store.returnToMetaMenu();
   }
   else if (['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5'].includes(e.code)) {
@@ -359,11 +420,19 @@ watch(() => (settings as any).musicEnabled, (v: boolean) => setEnabled(v));
 watch(() => (settings as any).musicVolume,  (v: number) => setVolume(v));
 
 // UI 缩放因子：统一放大全局字体/按钮/菜单，解决"整体文字太小"问题
-// 用 html 根级 CSS zoom：px 与 rem 控件同步放大、指针坐标比值不变（raycast/OrbitControls 不受影响）
+// v3 修复（军议面板/全屏容器溢出）：原方案在 html 根级设 CSS zoom。
+//   zoom 会缩放像素值，但 100vw/100vh 视口单位**不参与 zoom 折算**：
+//   width:100vw 的元素实际渲染宽度 = zoom × 视口宽 → 整体向右溢出 (zoom-1)×视宽，
+//   锚定在该容器 right:12px 的军议面板随之超出屏幕（窗口越小溢出越明显，实报截图吻合）。
+//   改为把 zoom 作用在 #game-container（其宽度 100% 跟随已缩放后的父级布局，
+//   不用 vw 单位），并对 body 显式锁 zoom:1 兜底；全屏容器一律改用
+//   fixed + inset:0 或 100%（百分比受 zoom 影响一致，不会溢出）。
 const applyUiScale = (n: number) => {
   const root = document.documentElement;
+  const container = document.getElementById('game-container');
   const factor = Math.max(0.8, Math.min(1.4, n / 100));
-  (root.style as any).zoom = factor.toFixed(3);
+  (root.style as any).zoom = '1';
+  if (container) (container.style as any).zoom = factor.toFixed(3);
   root.style.setProperty('--ui-scale', factor.toFixed(3));
 };
 // 初始化 + 监听变化
@@ -427,13 +496,15 @@ watch(gameState, (newState, oldState) => {
 
 *, *::before, *::after { box-sizing: border-box; font-family: 'Inter', sans-serif; }
 
-html, body { margin: 0; padding: 0; width: 100%; height: 100vh; overflow: hidden; }
+html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
 
-#game-container { 
-  display: block; width: 100%; height: 100vh; margin: 0; padding: 0; overflow: hidden; 
-  background: var(--color-background-body); color: var(--color-text-primary); 
+#game-container {
+  display: block; width: 100%; height: 100vh; margin: 0; padding: 0; overflow: hidden;
+  background: var(--color-background-body); color: var(--color-text-primary);
   font-family: var(--font-family);
 }
+/* v3：UI 缩放 zoom 作用于本容器（见 applyUiScale 注释），高度用 fixed 视口锁定避免 vh/zoom 溢出 */
+#game-container:has(.game-screen) { height: 100%; }
 
 /* neo-* 样式由 theme/tokens.css 统一定义 */
 
@@ -454,7 +525,7 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100vh; overflow: hidden
 .toast-fade-leave-active { transition: all 0.3s ease; }
 .toast-fade-leave-to { opacity: 0; transform: translateX(-50%) translateY(-20px); }
 
-.menu-screen { display: flex; width: 100vw; height: 100vh; overflow: hidden; }
+.menu-screen { display: flex; width: 100%; height: 100vh; overflow: hidden; text-align: center; }
 .menu-sidebar { 
   width: 200px; padding: 30px 15px; display: flex; flex-direction: column; gap: 24px; position: fixed;
   height: 100vh; left: 0; top: 0; z-index: 100; background: var(--neo-body); border-right: 2px solid var(--neo-surface);
@@ -557,7 +628,7 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100vh; overflow: hidden
 .box-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 15px; }
 .box-card { padding: 20px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px; width: 100%; }
 
-.editor-screen { display: flex; flex-direction: column; width: 100vw; height: 100vh; overflow: hidden; }
+.editor-screen { display: flex; flex-direction: column; width: 100%; height: 100vh; overflow: hidden; }
 .editor-top-bar { padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
 .editor-title { font-weight: 800; font-size: 14px; color: var(--color-text-primary); }
 .editor-actions { display: flex; gap: 8px; align-items: center; }
@@ -570,32 +641,23 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100vh; overflow: hidden
 .brush-btn { padding: 12px; display: flex; align-items: center; gap: 10px; font-size: 13px; height: auto; flex-shrink: 0; }
 .brush-color { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
 
-.game-screen { display: block; width: 100vw; height: 100vh; position: relative; }
-.ui-header { 
-  position: absolute; top: 15px; left: 50%; transform: translateX(-50%); width: 96%;
-  padding: 10px 15px; display: flex; justify-content: space-between; align-items: center;
-  z-index: 10;
-}
-.faction-infos { display: flex; gap: 10px; flex-wrap: wrap; }
-.side-info { font-size: 12px; font-weight: 800; padding: 6px 12px; color: var(--color-text-primary); }
-.mini-gold { color: var(--color-warning); font-size: 11px; margin-top: 2px; }
-
-.ui-controls { display: flex; gap: 10px; align-items: center; }
-.btn-ctrl { padding: 8px 16px; font-size: 12px; }
+.game-screen { display: block; width: 100%; height: 100%; position: relative; }
+/* v3 修复（顶栏位置全错）：此处的 .ui-header/.faction-infos/.side-info/.ui-controls/
+   .btn-ctrl/.speed-gear-container/.btn-speed 全局旧规则已删除——GameHeader/GameControls
+   均有 scoped 版本，而旧全局规则里的 transform:translateX(-50%) + width:96% 未被覆盖，
+   会把整个顶栏左移半个自身宽度（倍速按钮跑到屏幕中央、左上舰队卡被裁掉一半，实报截图吻合）。
+   保留 .active-bomb（GameControls 依赖其 !important 覆盖 neo-btn 底样式）。 */
 .active-bomb { color: var(--color-empire) !important; border-color: var(--color-empire) !important; box-shadow: inset 3px 3px 6px rgba(239, 68, 68, 0.2), inset -3px -3px 6px var(--neo-surface-inset) !important; }
 
-.speed-gear-container { padding: 4px; display: flex; gap: 4px; }
-.btn-speed { background: transparent; border: none; color: var(--color-text-disabled); font-size: 11px; font-weight: 600; padding: 4px 10px; cursor: pointer; border-radius: 8px; transition: color 0.2s; }
-.btn-speed.active { color: var(--color-cyan); text-shadow: 0 0 8px rgba(6, 182, 212, 0.5); }
-
-#phaser-canvas-container { display: block; width: 100%; height: 100vh; position: absolute; top: 0; left: 0; z-index: 0; }
+#phaser-canvas-container { display: block; width: 100%; height: 100%; position: absolute; top: 0; left: 0; z-index: 0; }
 
 /* 3D 视角预设按钮组（右下角，3D 就绪后显示） */
 .view-preset-group { position: absolute; right: 16px; bottom: 70px; display: flex; flex-direction: column; gap: 8px; z-index: 20; }
 .view-preset-btn { padding: 8px 12px; font-size: 12px; font-weight: 800; color: var(--color-cyan); background: var(--overlay-surface, rgba(10,16,28,0.75)); border: 1px solid var(--color-border); border-radius: 8px; cursor: pointer; backdrop-filter: blur(4px); transition: all 0.2s; }
 .view-preset-btn:hover { background: var(--color-cyan); color: var(--neo-surface, #0a0f1c); }
-/* 提督扮演：军议面板关闭态的开启按钮（指挥制） */
-.war-room-toggle { position: absolute; right: 16px; top: 96px; z-index: 20; padding: 8px 14px; font-size: 12px; font-weight: 900; letter-spacing: 2px; color: #22d3ee; background: rgba(10,16,28,0.8); border: 1px solid rgba(34,211,238,0.5); border-radius: 8px; cursor: pointer; backdrop-filter: blur(4px); }
+/* 提督扮演：军议面板关闭态的开启按钮（指挥制）。top 与 CouncilWarRoom 面板对齐（170px） */
+.war-room-toggle { position: absolute; right: 16px; top: 170px; z-index: 20; padding: 10px 16px; font-size: 13px; font-weight: 900; letter-spacing: 1px; color: #22d3ee; background: rgba(10,16,28,0.85); border: 2px solid rgba(34,211,238,0.65); border-radius: 8px; cursor: pointer; backdrop-filter: blur(4px); box-shadow: 0 0 12px rgba(34,211,238,0.25); animation: war-room-pulse 2.2s ease-in-out infinite; }
+@keyframes war-room-pulse { 0%, 100% { box-shadow: 0 0 8px rgba(34,211,238,0.2); } 50% { box-shadow: 0 0 18px rgba(34,211,238,0.5); } }
 .war-room-toggle:hover { background: #22d3ee; color: #0a0f1c; }
 
 /* ===== 3D 战场模式：隐藏 Phaser 画布与依赖 2D 坐标的跟随层 =====
@@ -617,7 +679,7 @@ body.battle3d-mode .crt-monitor-border { display: none; }
   padding: 10px 24px; border-radius: 99px; font-size: 12px; color: var(--color-text-secondary); z-index: 10; font-weight: 800;
 }
 
-.modal-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(11, 12, 16, 0.8); backdrop-filter: blur(8px); display: flex; justify-content: center; align-items: center; z-index: 999; }
+.modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(11, 12, 16, 0.8); backdrop-filter: blur(8px); display: flex; justify-content: center; align-items: center; z-index: 999; }
 .modal-content { padding: 40px; max-width: 400px; width: 90%; text-align: center; }
 .modal-title { font-size: 24px; font-weight: 800; margin-bottom: 10px; color: var(--color-text-primary); }
 .modal-desc { color: var(--color-text-secondary); font-weight: 600; margin-bottom: 20px; }
@@ -675,13 +737,9 @@ body.battle3d-mode .crt-monitor-border { display: none; }
   .synergy-list { display: flex; flex-wrap: wrap; gap: 6px; }
   .synergy-item { width: calc(50% - 3px); flex: none; }
 
-  .ui-header { top: 5px; width: 98%; padding: 8px; flex-direction: column; gap: 8px; border-radius: 12px; }
-  .faction-infos { width: 100%; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-  .side-info { padding: 6px; font-size: 11px; }
-  .faction-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .ui-controls { width: 100%; justify-content: space-between; gap: 6px; }
-  .btn-ctrl { flex: 1; padding: 8px 0; text-align: center; font-size: 11px; }
-  
+  /* v3：顶栏全局旧规则已删（见上方 .active-bomb 注释），移动端残留一并移除；
+     GameHeader.vue scoped 内有自己的 @media 规则 */
+
   .ui-footer { bottom: 5px; padding: 8px 12px; font-size: 10px; width: 95%; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   
   .editor-top-bar { flex-wrap: wrap; justify-content: center; gap: 5px; padding: 5px; }

@@ -261,6 +261,39 @@ export function executeProposalRejection(proposal: any, ctx: ProposalContext): v
 // ==================================================
 // (d) generateMonthlyProposals: 月度自动生成3-5条提案
 // ==================================================
+
+/** 提案类型 → 提案人标签偏好（按军议常识选「该提案的天然发起者」） */
+const PROPOSER_TAG_PREFERENCE: Record<string, string[]> = {
+  budget:        ['administrator', 'logistics_focus', 'realist'],          // 军费 → 后勤/财政向
+  morale_boost:  ['high_charisma', 'high_eq', 'idealist'],                 // 鼓舞 → 魅力/人格向
+  invasion:      ['militarist', 'aggressive', 'frontal_assault'],          // 侵攻 → 主战向
+  defense:       ['counter_defense', 'cautious', 'royalist'],              // 防卫 → 保守向
+  fortify:       ['counter_defense', 'cautious', 'logistics_focus'],       // 要塞 → 稳健向
+  conscription:  ['militarist', 'ruthless', 'realist'],                    // 征兵 → 强硬向
+  personnel:     ['politician', 'administrator', 'high_iq'],               // 人事 → 政务向
+};
+
+/** 按提案类型在阵营内选出标签最匹配的任职提督；无匹配时回退阵营首位 */
+function pickProposer(allAdms: any[], factionId: number, type: string): any | null {
+  const faction = factionId === 1 ? 'alliance' : 'empire';
+  const candidates = allAdms.filter((a: any) => a.faction === faction && a.role !== 'none');
+  if (candidates.length === 0) return null;
+
+  const prefs = PROPOSER_TAG_PREFERENCE[type] || [];
+  let best: { adm: any; score: number } | null = null;
+  for (const adm of candidates) {
+    const tags: string[] = adm.tags || [];
+    let score = 0;
+    for (let i = 0; i < prefs.length; i++) {
+      if (tags.includes(prefs[i])) score += (prefs.length - i) * 10; // 前置标签权重更高
+    }
+    // 任职提督优先（有 role），军衔越高略微加权
+    score += (adm.role !== 'none' ? 5 : 0);
+    if (!best || score > best.score) best = { adm, score };
+  }
+  return best?.adm || candidates[0];
+}
+
 export function generateMonthlyProposals(ctx: ProposalContext): any[] {
   const { gameStore, playerFactionId } = ctx;
   const gs = gameStore as any;
@@ -278,40 +311,54 @@ export function generateMonthlyProposals(ctx: ProposalContext): any[] {
 
   const currentDate: string = gs.universeDate || '';
 
+  // 提案人名单（具名化：每条提案由标签匹配的真实提督发起，而非系统幽灵）
+  const admStore = (ctx as any).admiralStore || ctx.gameStore;
+  const allAdms = ((admStore as any).allAdmirals?.value || (admStore as any).allAdmirals
+    || gs.allAdmirals?.value || gs.allAdmirals || []) as any[];
+
   // 根据局势智能生成提案（v3：删除 logistics 生成逻辑，低补给由行政院后勤改革处理）
   // 国库低于 ₮200万（约3日收入）时自动提请特别军费
   if (gold < 2000000) {
+    const proposer = pickProposer(allAdms, playerFactionId, 'budget');
     proposals.push({
       type: 'budget' as ProposalType,
       generatedDate: currentDate,
-      proposerId: -1, // 系统生成
+      proposerId: proposer?.id ?? -1,
+      proposerName: proposer ? `${proposer.rankName || ''} ${proposer.name}`.trim() : undefined,
       factionId: playerFactionId,
     });
   }
   if (avgMorale < 50) {
+    const proposer = pickProposer(allAdms, playerFactionId, 'morale_boost');
     proposals.push({
       type: 'morale_boost' as ProposalType,
       generatedDate: currentDate,
-      proposerId: -1,
+      proposerId: proposer?.id ?? -1,
+      proposerName: proposer ? `${proposer.rankName || ''} ${proposer.name}`.trim() : undefined,
       factionId: playerFactionId,
     });
   }
   // 始终提供侵攻和防卫选项
-  proposals.push({
-    type: 'invasion' as ProposalType,
-    generatedDate: currentDate,
-    proposerId: -1,
-    factionId: playerFactionId,
-  });
-  proposals.push({
-    type: 'defense' as ProposalType,
-    generatedDate: currentDate,
-    proposerId: -1,
-    factionId: playerFactionId,
-  });
+  {
+    const invProposer = pickProposer(allAdms, playerFactionId, 'invasion');
+    proposals.push({
+      type: 'invasion' as ProposalType,
+      generatedDate: currentDate,
+      proposerId: invProposer?.id ?? -1,
+      proposerName: invProposer ? `${invProposer.rankName || ''} ${invProposer.name}`.trim() : undefined,
+      factionId: playerFactionId,
+    });
+    const defProposer = pickProposer(allAdms, playerFactionId, 'defense');
+    proposals.push({
+      type: 'defense' as ProposalType,
+      generatedDate: currentDate,
+      proposerId: defProposer?.id ?? -1,
+      proposerName: defProposer ? `${defProposer.rankName || ''} ${defProposer.name}`.trim() : undefined,
+      factionId: playerFactionId,
+    });
+  }
 
   // 过滤掉玩家无权处理的提案，避免"职级不足"提示
-  const allAdms = (gs.allAdmirals?.value || gs.allAdmirals || []) as any[];
   const playerAdm = allAdms.find((a: any) => a.id === gs.playerAdmiralId);
   if (playerAdm && proposals.length > 0) {
     const filtered = proposals.filter(p => canPropose(playerAdm, p.type));
@@ -320,52 +367,54 @@ export function generateMonthlyProposals(ctx: ProposalContext): any[] {
       const firstAllowed = proposals.find(p => canPropose(playerAdm, p.type));
       if (firstAllowed) filtered.push(firstAllowed);
     }
-    return filtered.slice(0, 5);
+    return enrichWithDialogue(filtered, allAdms);
   }
 
-  // ── 角色化发言 ──
-  const CHARACTER_QUOTES: Record<string, Record<string, string[]>> = {
-    tax: {
-      aggressive: ['必须增加军费预算，战争需要资金。', '税率太低，我们在养闲人吗？'],
-      righteous: ['人民已经负担很重了，再加税会失去民心。', '财政应该节约开支，而非增加税负。'],
-      realist: ['根据当前国库情况，税率调整是必要的。', '建议维持现税率，稳定经济为先。'],
-      default: ['关于税率的提案，需要议会审议。'],
-    },
-    invasion: {
-      aggressive: ['现在是进攻的最佳时机！敌人防线脆弱。', '不进攻就是等死——我们必须先发制人。'],
-      cautious: ['贸然进攻会付出惨重代价，我们需要更多准备。', '建议先集结兵力，再考虑进攻。'],
-      default: ['关于远征的提案提交议会审议。'],
-    },
-    budget: {
-      default: ['财政预算需要重新分配，请议会审议。', '当前国库状况需要调整经费。'],
-    },
-    planet_op: {
-      default: ['建议对行星进行开发投资，提升本地经济。', '防御设施不足，需要追加投入。'],
-    },
-    personnel: {
-      default: ['人事调整提案，请议会表决。', '提督任命需要议会确认。'],
-    },
-    default: {
-      default: ['请议会审议以下提案。'],
-    },
-  };
+  // 限制 3-5 条
+  return enrichWithDialogue(proposals, allAdms).slice(0, 5);
+}
 
-  function getDialogue(proposal: any, proposerAdm: any): string {
-    const tag = (proposerAdm?.tags || []).find((t: string) => ['aggressive','righteous','cautious','realist','militarist'].includes(t));
-    const typeQuotes = CHARACTER_QUOTES[proposal.type] || CHARACTER_QUOTES.default;
-    const styleQuotes = typeQuotes[tag || 'default'] || typeQuotes.default || ['请议会审议。'];
-    return `${proposerAdm?.name || '某提督'}：「${styleQuotes[Math.floor(Math.random() * styleQuotes.length)]}」`;
-  }
+// ── 角色化发言 ──
+const CHARACTER_QUOTES: Record<string, Record<string, string[]>> = {
+  tax: {
+    aggressive: ['必须增加军费预算，战争需要资金。', '税率太低，我们在养闲人吗？'],
+    righteous: ['人民已经负担很重了，再加税会失去民心。', '财政应该节约开支，而非增加税负。'],
+    realist: ['根据当前国库情况，税率调整是必要的。', '建议维持现税率，稳定经济为先。'],
+    default: ['关于税率的提案，需要议会审议。'],
+  },
+  invasion: {
+    aggressive: ['现在是进攻的最佳时机！敌人防线脆弱。', '不进攻就是等死——我们必须先发制人。'],
+    cautious: ['贸然进攻会付出惨重代价，我们需要更多准备。', '建议先集结兵力，再考虑进攻。'],
+    default: ['关于远征的提案提交议会审议。'],
+  },
+  budget: {
+    default: ['财政预算需要重新分配，请议会审议。', '当前国库状况需要调整经费。'],
+  },
+  planet_op: {
+    default: ['建议对行星进行开发投资，提升本地经济。', '防御设施不足，需要追加投入。'],
+  },
+  personnel: {
+    default: ['人事调整提案，请议会表决。', '提督任命需要议会确认。'],
+  },
+  default: {
+    default: ['请议会审议以下提案。'],
+  },
+};
 
-  // 丰富提案（添加角色发言）
-  const enriched = proposals.map(p => {
-    const admStore = (ctx as any).admiralStore || ctx.gameStore;
-    const allAdms = (admStore as any).allAdmirals?.value || (admStore as any).allAdmirals || [];
-    const proposer = allAdms.find((a: any) => a.faction === (ctx.playerFactionId === 1 ? 'alliance' : 'empire'));
+function getDialogue(proposal: any, proposerAdm: any): string {
+  const tag = (proposerAdm?.tags || []).find((t: string) => ['aggressive','righteous','cautious','realist','militarist'].includes(t));
+  const typeQuotes = CHARACTER_QUOTES[proposal.type] || CHARACTER_QUOTES.default;
+  const styleQuotes = typeQuotes[tag || 'default'] || typeQuotes.default || ['请议会审议。'];
+  return `${proposerAdm?.name || '某提督'}：「${styleQuotes[Math.floor(Math.random() * styleQuotes.length)]}」`;
+}
+
+/** 按提案的 proposerId 找到真实提案人并附上角色化台词（dialogue 字段供 CouncilPanel 渲染） */
+function enrichWithDialogue(proposals: any[], allAdms: any[]): any[] {
+  return proposals.map(p => {
+    const proposer = (p.proposerId != null && p.proposerId >= 0)
+      ? allAdms.find((a: any) => a.id === p.proposerId)
+      : null;
     const dialogue = getDialogue(p, proposer);
     return { ...p, dialogue };
   });
-
-  // 限制 3-5 条
-  return enriched.slice(0, 5);
 }

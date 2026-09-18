@@ -19,7 +19,7 @@ const store = useGameStore();
 </script>
 
 <style scoped>
-.modal-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: var(--overlay-scrim); z-index: 999; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
+.modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: var(--overlay-scrim); z-index: 999; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
 .modal-content { width: 400px; padding: 30px; text-align: center; border: 1px solid var(--overlay-border); }
 h2 { margin: 0 0 10px 0; font-size: 28px; font-weight: 900; }
 .status-text { color: var(--color-text-secondary); font-size: 14px; margin-bottom: 20px; font-weight: 600; }

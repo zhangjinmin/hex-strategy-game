@@ -511,7 +511,7 @@ const launchBattle = () => {
 .slot-remove { position: absolute; top: 2px; right: 4px; color: var(--color-empire); font-weight: 800; font-size: 16px; display: none; }
 .dispatch-slot:hover .slot-remove { display: block; }
 
-.selection-modal { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: var(--overlay-scrim); z-index: 1000; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
+.selection-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: var(--overlay-scrim); z-index: 1000; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
 .modal-content { width: 560px; max-height: 80vh; display: flex; flex-direction: column; padding: 25px; }
 
 .sortable { cursor: pointer; transition: color 0.2s; user-select: none; }

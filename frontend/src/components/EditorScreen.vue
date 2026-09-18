@@ -267,7 +267,7 @@ const exitEditor = () => {
 </script>
 
 <style scoped>
-.editor-screen { position: relative; width: 100vw; height: 100vh; overflow: hidden; background: var(--neo-body); }
+.editor-screen { position: relative; width: 100%; height: 100vh; overflow: hidden; background: var(--neo-body); }
 .canvas-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
 
 .editor-ui { 

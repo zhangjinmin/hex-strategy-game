@@ -27,7 +27,7 @@ const menuTab = computed({
 
 <style scoped>
 .main-menu-container {
-  width: 100vw;
+  width: 100%;
   height: 100vh;
   display: flex;
   background: var(--neo-body);

@@ -41,6 +41,7 @@ export const SHIP_COST = {
   destroyer: 120,
   carrier: 1200,
   fighter: 30,
+  supply: 300,      // 补给运输舰(AUX)：后勤战核心，造价适中（低于战舰，高于驱逐）
   default: 250,
 } as const;
 
@@ -52,6 +53,7 @@ export const SHIP_MAINTENANCE = {
   destroyer: 1,
   carrier: 7,
   fighter: 0.1,
+  supply: 1.5,      // 补给运输舰维护低（民用底盘）
 } as const;
 
 /** 每舰船员数（抚恤金基数） */
@@ -62,6 +64,7 @@ export const SHIP_CREW = {
   destroyer: 500,
   carrier: 5000,
   fighter: 50,
+  supply: 200,      // 补给运输舰：少量船员（自动化货运）
 } as const;
 
 /** 抚恤金 = 船员数 × 此系数（金/人） */

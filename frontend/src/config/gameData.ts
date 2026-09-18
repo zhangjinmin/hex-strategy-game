@@ -65,25 +65,50 @@ export const troopNames: Record<string, Record<string, string[]>> = {
   }
 };
 
+/** 舰载机阵营命名：航母舰载机不占独立编队槽，随母舰出战，仅显示名不同。
+ *  帝国 = 王尔古雷（Walküre，游戏内译"女武神"）；同盟 = 斯巴达尼恩（Spartanian）。 */
+export const FIGHTER_NAMES: Record<string, { name: string; codeName: string }> = {
+  empire:   { name: '王尔古雷', codeName: 'WK-Ⅱ 女武神' },
+  alliance: { name: '斯巴达尼恩', codeName: 'SP-Ⅲ 斯巴达尼恩' },
+  nobles:   { name: '贵族护卫机', codeName: 'NB-Ⅰ 私兵战机' },
+  rebels:   { name: '亡命突击机', codeName: 'RB-Ⅰ 破袭战机' },
+};
+
+/** 按阵营取舰载机显示名（faction 字段为 'empire' / 'alliance' 等） */
+export function getFighterName(faction: string): string {
+  return FIGHTER_NAMES[faction]?.name || '舰载机';
+}
+
+/** 阵营可用舰种限制：同盟无高速战列舰（原著设定：同盟舰队以标准战列舰为主力）。
+ *  未列出的阵营 = 全部舰种可用。 */
+export const FACTION_SHIP_RESTRICTION: Record<string, string[]> = {
+  // 同盟禁用高速战列舰
+  alliance: ['fast_battleship'],
+};
+
+/** 判断某阵营是否可用某舰种 */
+export function isShipAllowedForFaction(faction: string, shipType: string): boolean {
+  const banned = FACTION_SHIP_RESTRICTION[faction];
+  return !banned || !banned.includes(shipType);
+}
+
+
 export const baseStats: Record<string, any> = {
-  '战列': { hp: 1200, atk: 45, def: 15, range: 180, interval: 3500, speed: 0.4 },
-  '高战': { hp: 1050, atk: 42, def: 13, range: 170, interval: 3200, speed: 0.55 },
-  '巡洋': { hp: 800, atk: 28, def: 10, range: 150, interval: 2500, speed: 0.5 },
-  '驱逐': { hp: 450, atk: 18, def: 5,  range: 120, interval: 1800, speed: 0.7 },
-  '空母': { hp: 900, atk: 15, def: 12, range: 200, interval: 4000, speed: 0.35 },
-  '舰载': { hp: 150, atk: 35, def: 2,  range: 250, interval: 1500, speed: 1.2 },
-  '突击': { hp: 250, atk: 35, def: 2,  range: 90,  interval: 1200, speed: 0.9 },
-  '电子': { hp: 350, atk: 8,  def: 8,  range: 220, interval: 4000, speed: 0.6 },
-  '补给': { hp: 500, atk: 5,  def: 5,  range: 80,  interval: 5000, speed: 0.5 }
+  // v5 超视距射程分层：激光（战列/高战/空母/电子）远程 / 导弹（巡洋）中程 / 舰载机（驱逐/突击/舰载）近程
+  '战列': { hp: 1200, atk: 45, def: 15, range: 880, interval: 3500, speed: 0.4 },
+  '高战': { hp: 1050, atk: 42, def: 13, range: 840, interval: 3200, speed: 0.55 },
+  '巡洋': { hp: 800, atk: 28, def: 10, range: 720, interval: 2500, speed: 0.5 },
+  '驱逐': { hp: 450, atk: 18, def: 5,  range: 580, interval: 1800, speed: 0.7 },
+  '空母': { hp: 900, atk: 15, def: 12, range: 880, interval: 4000, speed: 0.35 },
+  '舰载': { hp: 150, atk: 35, def: 2,  range: 640, interval: 1500, speed: 1.2 },
+  '突击': { hp: 250, atk: 35, def: 2,  range: 560, interval: 1200, speed: 0.9 },
+  '电子': { hp: 350, atk: 8,  def: 8,  range: 760, interval: 4000, speed: 0.6 },
+  '补给': { hp: 500, atk: 5,  def: 5,  range: 300, interval: 5000, speed: 0.5 },
 };
 
 export const defaultMaps = [
   { id: 'random', name: '随机演算星域', size: '动态', desc: '系统随机生成未知宇宙与核心资源点。' },
-  { id: 'random_rect', name: '边境对峙战场', size: '20×10', desc: '东西纵深40格、南北20格的长方形宙域，敌我双方在东西两极部署。' },
-  { id: 'random_large', name: '广袤演算星域', size: '动态', desc: '系统随机生成超大宇宙，半径扩展至20。' },
-  { id: 'standard', name: '伊谢尔伦要塞战', size: '25×15', desc: '帝国军最强要塞，主炮每30秒发射一次，威力足以歼灭整支舰队。摧毁要塞（HP 10000）可瘫痪主炮。' },
-  { id: 'narrow', name: '亚斯提星域', size: '109格', desc: '开阔宙域，散布着零星小行星带掩体。' },
-  { id: 'star', name: '费沙回廊', size: '55格', desc: '复杂多岔路航道，各大势力交错点。' }
+  { id: 'standard', name: '伊谢尔伦要塞战', size: '61×29', desc: '帝国军最强要塞。雷神之锤主炮每90秒充能发射，威力足以歼灭整支舰队；摧毁要塞（HP 10000）可瘫痪主炮。攻方自西缘进场，守方驻防要塞。' }
 ];
 
 export const brushOptions = [

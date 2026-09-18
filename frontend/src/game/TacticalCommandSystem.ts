@@ -33,6 +33,33 @@ export const ROLE_WEIGHT: Record<string, number> = {
   none: 0,
 };
 
+/** 国家职务中文名（军议面板「总指挥判定依据」显示用；与 ROLE_WEIGHT 键一一对应） */
+export const ROLE_LABEL: Record<string, string> = {
+  emperor: '皇帝',
+  prime_minister: '宰相',
+  council: '最高评议会议长',
+  military_minister: '军务尚书',
+  high_command_chief: '统帅本部总长',
+  joint_ops_chief: '统合作战本部长',
+  space_fleet_commander: '宇宙舰队司令长官',
+  space_fleet_deputy: '宇宙舰队副司令长官',
+  joint_ops_deputy: '统合作战本部次长',
+  intel_minister: '情报部长',
+  defense_commander: '防卫司令官',
+  fleet_commander: '舰队指挥官',
+  fleet_staff: '舰队参谋',
+  none: '—',
+};
+
+/** AI 战前计划 role 中文名（fleetIntentText 前缀显示用；见 BattleScene.planFactionBattle） */
+export const PLAN_ROLE_LABEL: Record<string, string> = {
+  assault: '突击',
+  capture: '夺取',
+  hold: '坚守',
+  support: '协同',
+  resupply: '补给',
+};
+
 /** 提督资序三元键：[职位权重, 数字军衔(1-13), 功绩(stats.tactics 近似)] */
 export function admiralSeniority(a: any): [number, number, number] {
   return [
@@ -126,21 +153,34 @@ export function isDirectCommandAllowed(fleet: any, supremeCommanderId: number | 
  * 有任务 → 任务文本；否则从状态机/姿态推导（敌方 AI 同样适用）。
  * @param nameOfFleet 按舰队 id 解析显示名（如"比克古舰队"），解析不到可返回 null
  */
-export function fleetIntentText(fleet: any, nameOfFleet?: (fleetId: any) => string | null): string {
-  if (fleet?.mission?.text) return fleet.mission.text;
-  const state = fleet?.state || '';
-  if (state === 'retreating') return '撤退补给中';
-  if (state === 'engaging') {
-    const tn = fleet?._lastTargetFleetId != null && nameOfFleet ? nameOfFleet(fleet._lastTargetFleetId) : null;
-    return tn ? `攻击 ${tn}` : '交战中';
-  }
-  if (state === 'flaring') return '前往信标点';
-  if (state === 'assembling') return '集结中';
-  const stance = fleet?.stance || 'search';
-  if (stance === 'defend') return '驻守警戒';
-  if (stance === 'siege') return '攻坚推进';
-  if (stance === 'fallback') return '撤退';
-  return '索敌推进';
+export function fleetIntentText(fleet: any, nameOfFleet?: (fleetId: any) => string | null, opts?: { team?: number }): string {
+  const enemy = opts?.team == null ? true : opts.team !== 1;
+  const base = ((): string => {
+    if (!enemy && fleet?.mission?.text) {
+      // [V18-B · B3] 途中接战可见（D2-C）：任务执行被战斗抢占（先接战、任务暂缓）时显式标注，避免误读为「任务被忽略」。
+      //   attack_fleet 的 engaging 即任务执行本身 → 不加；其余类型被接战抢占 → 加。
+      const mtype = fleet?.mission?.type;
+      if (fleet?.state === 'engaging' && mtype !== 'attack_fleet') return `${fleet.mission.text}（途中接战）`;
+      return fleet.mission.text;
+    }
+    const state = fleet?.state || '';
+    if (state === 'retreating') return '撤退补给中';
+    if (state === 'engaging') {
+      const tn = fleet?._lastTargetFleetId != null && nameOfFleet ? nameOfFleet(fleet._lastTargetFleetId) : null;
+      return tn ? `攻击 ${tn}` : '交战中';
+    }
+    if (state === 'flaring') return '前往信标点';
+    if (state === 'assembling') return '集结中';
+    const stance = fleet?.stance || 'search';
+    if (stance === 'defend') return '驻守警戒';
+    if (stance === 'siege') return '攻坚推进';
+    if (stance === 'fallback') return '撤退';
+    return '索敌推进';
+  })();
+  // [V18-A · B-0] AI 战前计划 role 前缀（仅 planFactionBattle 写 _planRole 的 AI 舰队有；玩家/无计划舰队不受影响）
+  const roleKey = fleet?._planRole as string | undefined;
+  const roleLabel = roleKey ? (PLAN_ROLE_LABEL[roleKey] || '') : '';
+  return roleLabel ? `[${roleLabel}] ${base}` : base;
 }
 
 /** 军议面板：战中改派门槛（准将 rank 8 以上可临机改派；以下只"接令"——部署阶段全员可派） */

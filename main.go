@@ -20,6 +20,8 @@ func main() {
 		Title:  "银河英雄传说",
 		Width:  1600,
 		Height: 1200,
+		// 启动默认最大化（取消最大化时回落到上面的尺寸）
+		WindowStartState: options.Maximised,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
