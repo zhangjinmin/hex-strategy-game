@@ -10,7 +10,9 @@
   },
   "dependencies": {
     "@types/three": "^0.160.0",
+    "@vue/devtools-api": "^8.2.1",
     "phaser": "^4.1.0",
+    "pinia": "^4.0.3",
     "three": "^0.160.0",
     "vue": "^3.2.37"
   },

@@ -1,35 +1,44 @@
-# --- Build artifacts (generated, not source) ---
-build/bin/
-build/*.exe
-build/HexFront_Saves.json
-frontend/dist*
-# 根目录 wails build 产物（149MB，可重新编译，禁止入库）
-/*.exe
-/*.msi
-# 临时输出/诊断文件
-/_out.txt
-/diffcheck.txt
-
-# --- Dependencies ---
+```
+# Dependencies
 node_modules/
 
-# --- Archives / compression copies (not source) ---
-*.rar
+# Build artifacts
+frontend/dist/
 
-# --- Vite dev cache ---
-frontend/vite.config.ts.timestamp-*.mjs
-
-# --- OS / editor noise ---
-.DS_Store
-Thumbs.db
+# Logs
 *.log
+
+# Environment variables
+.env
+.env.local
+.env.*
+
+# IDE
 .vscode/
 .idea/
 
-# --- WorkBuddy project metadata (not game source) ---
-.workbuddy/
+# OS
+.DS_Store
+Thumbs.db
 
-# --- Agent 会话草稿与 QA 截图（2026-09-18 清理后追加，防复发）---
-/_*
-/frontend/_*
-/docs/qa/shots-*/
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.git/info/exclude
+```
