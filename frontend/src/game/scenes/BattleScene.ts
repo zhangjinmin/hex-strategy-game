@@ -58,7 +58,7 @@ import {
     supplyFactor, moraleDrainPerTick, RALLY_MORALE,
     type AdmiralDoctrine, type RetreatTier,
 } from '../retreatDoctrine';
-import { aggression, supplyDecision, turnDiscipline, approachLateralOffset } from '../combatDoctrine';
+import { aggression, supplyDecision, approachLateralOffset } from '../combatDoctrine';
 // [v31-C] 分舰队编成 / 战法（纯计算）—— **迂回 · 包抄 · 诱饵 · 后勤战的共同抽象**：
 //   四项玩法都是"多路协同"，而多路协同的前提是"力量可分解"（见 docs/.../24-tactical-architecture-rebuild.md §2）
 import {
@@ -66,6 +66,12 @@ import {
     maxRoutesFor, MIN_UNITS_PER_ROUTE,
     type DetachmentPlan, type DetachmentSpec, type ManeuverType,
 } from '../taskForce';
+// [v48] 舰队移动物理系统（重构版）：单一真源 import，禁止再在本文件内联运动学逻辑
+//   注：本地仍保留同名的 const 声明以兼容现有代码（后续可全局替换为 import），故此处仅导入类型和函数
+import {
+    computeFleetMovement, turnDiscipline as turnDisciplineFn, approachAngle,
+    type FleetMotionState,
+} from '../FleetMovementSystem';
 
 
 // 贴图 key → Vite URL 映射表
@@ -90,6 +96,7 @@ const getShipTypeCode = (facTrait: string, cls: string) => {
  *  换阵时保留旧 offsets，按 smoothstep(缓入缓出) 把每 slotIdx 的 (cx,cy) 从旧阵位插到新阵位；
  *  过渡中不响应二次换阵（完成后自动吸附到最新 formKey）；morph 是**运行态叠加**，不污染
  *  `_formOffsets`/`_formSpacing` 缓存语义（缓存始终持有当前 formKey 的目标阵型）。 */
+// [v48] 已迁移至 FleetMovementSystem.ts，此处保留本地常量以兼容现有代码
 const FORMATION_MORPH_DUR = 3.5;
 
 /** [R10-B1] 限速航向角速率（rad / 帧 @ dt=1）。FIX-3：把"每帧瞬时确定的方向"平滑为有限角速度，
@@ -100,11 +107,13 @@ const FORMATION_MORPH_DUR = 3.5;
  *    90° 转向 ≈1.0s，与"缓慢转体、但读作飞船转弯而非残骸"的手感匹配（R1 §4 FIX-3 建议值）。 */
 // [v30] 90°/s → **45°/s**：用户实报「刷一声就转头了 / 不够厚重」⇒ 转身率减半（180° 掉头 ≈ 4s）。
 //   太空战舰的转身是**姿态控制**（RCS 反作用推进器），与"飞机靠升力转弯"无关 —— 慢是应该的。
+// [v48] 已迁移至 FleetMovementSystem.ts，此处保留本地常量以兼容现有代码
 const HEADING_TURN_RATE = Math.PI / 240;
 
 /** [v47 wheel-and-reform] 逐舰显示航向（u.visHeading）最大角速率（rad/帧@dt=1，≈9.2°/帧）。
  *  舰体跟随**自身位移航迹**：快到贴得住航迹（消灭「舰首朝前却侧滑平移」= 摇头晃脑的渲染根），
  *  慢到滤得掉 chase 逐帧噪声（阵位目标移动造成的瞬时方向摆动不再 1:1 进朝向）。 */
+// [v48] 已迁移至 FleetMovementSystem.ts，此处保留本地常量以兼容现有代码
 const UNIT_VIS_TURN_RATE = 0.16;
 
 /* ══════════════════════════════════════════════════════════════════════════
@@ -133,11 +142,13 @@ const UNIT_VIS_TURN_RATE = 0.16;
  *    故 v34b **不擅自改动**：方向/掉速的自洽修复已独立生效（见 `thrustDir`），
  *    转弯半径这一项由使用者按真机观感决定。
  *  推荐区间：**0.30（现状）~ 0.90**；改这一处即可，与其它修复无耦合。 */
+// [v48] 已迁移至 FleetMovementSystem.ts，此处保留本地常量以兼容现有代码
 const FLEET_BASE_SPEED = 0.30;
 
 /** 转向角速度的**建立速率**（rad/帧²）：角速度不能瞬间达到上限，需约 0.35s（≈21 帧 @60fps）
  *  才建立满转率 ⇒ "压舵 / 起转"的厚重感。
  *  旧实现 `rateLimitAngle` 直接钳制角度步长 = **无限角加速度** ⇒ 起转与停转都是瞬间的"轻"。 */
+// [v48] 已迁移至 FleetMovementSystem.ts，此处保留本地常量以兼容现有代码
 const TURN_RATE_ACCEL = HEADING_TURN_RATE / 21;
 
 /** **临界制动安全系数**：目标角速度上限取 `sqrt(2·a·|d|) × 本系数`。
@@ -149,6 +160,7 @@ const TURN_RATE_ACCEL = HEADING_TURN_RATE / 21;
  *    而旧 `rateLimitAngle` 是 0° / 0 次。后果：阵位按 `facingSmooth` 旋转 ⇒ 两侧单位交替来回
  *    ⇒ 用户实报「**长条阵型像两条肩膀在抖动、波浪舞**」。
  *    改为制动律 + 死区吸附后回到 **0° / 0 次**，同时保留惯量（建立 ~0.3s）。 */
+// [v48] 已迁移至 FleetMovementSystem.ts，此处保留本地常量以兼容现有代码
 const BRAKE_SAFETY = 0.85;
 
 /** [v30 / v34b] **推力对齐下限**：主引擎只能沿舰首方向推进 ⇒ 舰首与目标方向的夹角越大，前进越慢。
@@ -163,11 +175,13 @@ const BRAKE_SAFETY = 0.85;
  *  对齐良好的直线巡航仍是 100%（对齐度≈1 时不变）。
  *  ⚠ v30 引入本项的本意是"给转向加质量感"，但代价是"停船 ⇒ 原地转"被用户判为更糟
  *    ⇒ 本轮按用户实报回调；若真机确认"转向太飘"，回到 0.2~0.3 之间。 */
+// [v48] 已迁移至 FleetMovementSystem.ts，此处保留本地常量以兼容现有代码
 const THRUST_IDLE = 0.45;
 
 /** 线速度惯性：每帧向期望速度逼近的比例（越小越"厚重"）。
  *  0.18（τ≈0.08s，几乎瞬时）→ 0.055（τ≈0.27s）⇒ 起步 / 改向有"质量感"。
  *  ⚠ 过小会让 AI 接敌 / 规避变迟钝；建议区间 0.04 ~ 0.07。 */
+// [v48] 已迁移至 FleetMovementSystem.ts，此处保留本地常量以兼容现有代码
 const FLEET_ACCEL = 0.055;
 
 /** [v31-C] 分舰队拆分时的**初始侧向间距**（px）：略大于阵型足迹，确保拆开瞬间不重叠。
@@ -184,8 +198,10 @@ const DETACH_SPACING = 200;
  *   低速（含停船对射）时**冻结**，避免 `atan2` 在速度≈0 时抖动。 */
 
 /** 阵型朝向的跟随速率（rad/帧）= 90°/s。输入已是**平滑过的实际速度方向**，此处限速仅防抖。 */
+// [v48] 已迁移至 FleetMovementSystem.ts，此处保留本地常量以兼容现有代码
 const FORM_FACING_RATE = Math.PI / 120;
 /** 阵型朝向的最小速度阈值（px/帧 的平方）：低于此冻结阵型朝向。 */
+// [v48] 已迁移至 FleetMovementSystem.ts，此处保留本地常量以兼容现有代码
 const FORM_FACING_MIN_SPD2 = 0.02 * 0.02;
 
 
@@ -195,6 +211,7 @@ const FORM_FACING_MIN_SPD2 = 0.02 * 0.02;
  *  之间逐帧交替**（取证 _jit_probe1_base：|Δsprite| med=0 / p90=2.05×|Δfleet|，
  *  Δrel 沿航向投影符号翻转率 0.98）。放大到实体档后即读作"一抖一抖"。
  *  `Math.min(uDist, …)` 本身已保证不越冲 ⇒ 阈值只需大于浮点噪声即可。 */
+// [v48] 已迁移至 FleetMovementSystem.ts，此处保留本地常量以兼容现有代码
 const UNIT_CHASE_EPS = 0.02;
 
 /** [v21 JIT] 阵型呼吸幅度的渐入/渐出时间常数（帧 × 倍率，与位移同基准）。 */
@@ -5326,7 +5343,7 @@ export class BattleScene extends Phaser.Scene {
                     // [v42b] 交战中的转向纪律（恢复 v40 语义，但作用于**舰体速率**而非格位）：
                     //   denied(交战中大角度) ⇒ rateMul 0.06~0.16 ⇒ 不狂转（用户：「还在对战就不能转向」）。
                     //   ⚠ v42 曾把本消费整段删掉 ⇒ 交战中也全速转身 = 用户实报「摇头晃脑/神经病」。
-                    const _td = turnDiscipline({
+                    const _td = turnDisciplineFn({
                         // [v46-D] 「交战」改用**真实接敌距离**（与 4844 的 `minFleetDist < 250` 同一口径），
                         //   不再用 `state === 'engaging'`——该状态在 900px 外就已置位 ⇒ 整段接近航路
                         //   （900→250px）都被判成"交战中禁止转向"，转向被压成 0.61°/帧 的蠕动。
