@@ -36,16 +36,24 @@
  *   5 层糊成一块厚板 —— 这正是用户实报的"只有单层 / 阶梯状的 5 层"。
  *   现取 1.2：层与层之间留 0.2×舰高的净空，读得出"一层一层"，且不浪费纵向。
  *
- * 实算（hexR=50，spacingEff=26，SHIP_VISUAL_SCALE=0.40 ⇒ 最高舰 carrier H = 5.89）：
- *   0.3125×26 = 8.13 ｜ 1.2×5.89 = 7.07 ⇒ LAYER_GAP = 8.13（**比例项胜出** —— 缩舰后才成立，
- *   缩舰前是几何下限胜出、且小于舰高）。层距 8.13 vs 舰高 5.89 ⇒ 净空 2.24 ✓
+ * 实算（hexR=50，SHIP_VISUAL_SCALE=0.40 ⇒ 最高舰 carrier H = 5.89）：
+ *   ⚠ 实测 `spacingEff = formationSpacing(offs, hexR)` = **8~10.6**，**不是**常量 26 ——
+ *     `FORMATION_SPACING = 26` 只是名义值（本段历史上按 26 推导过，结论与实测相反，已订正）：
+ *     0.3125 × 8~10.6 = 2.5~3.3 ｜ 1.2 × 5.89 = 7.07 ⇒ **几何下限恒胜出**，LAYER_GAP = 7.07。
+ *     7.07 vs 舰高 5.89 ⇒ 净空 1.18 ✓（够读出一层层）。
+ *     比例项只在 `spacingEff > 22.6` 时才会胜出 —— 而 `formationSpacing` 对任何阵型都给不到那么大。
+ *     ⇒ 换句话说：**本常量当前完全由几何下限决定**，改 `LAYER_GAP_K` 在现行 scale 下无任何效果。
  *
  * ── TEAM_GAP 的间隙校验（demo 判据 boardGap = TEAM_GAP − 厚度 − 体高 > 0）──────
  * 厚度 = (L−1) × LAYER_GAP（队内最高层到最低层）。取
  *   TEAM_GAP = max(2.5 × spacingEff, 厚度 + 1.5 × maxShipH)
  * 后一项保证 boardGap ≥ 0.5 × maxShipH > 0。实算（carrier 队，L=16）：
- *   厚度 = 15×8.13 = 121.9；2.5×26 = 65；121.9+1.5×5.89 = 130.7 ⇒ TEAM_GAP = 130.7，
+ *   厚度 = 15×7.07 = **106.0**（与 L2 实测母队厚度 106.0px 逐位吻合）；
+ *   比例项 = 2.5 × spacingEff(8~10.6) = 20~27；
+ *   ⇒ TEAM_GAP = 厚度 + 1.5×maxShipH ≈ 130.7 —— **恒由厚度项决定**（L2 实测 129.7~130.7 ✓），
  *   boardGap = 130.7 − 121.9 − 5.89 = 2.9 > 0 ✓
+ *   ⚠ 厚度项胜出是**设计意图**（档距必须容得下最厚的那支队，否则档间互穿）；
+ *     比例项 TIER_GAP_K 在当前 scale 下同样是死参数。
  *
  * ⚠ 纵向包络（厚度 + (档数−1)×档距 ≈ 121.9 + 2×130.7 = 383）会**抬升巡航高度**：
  *   见 Battle3DOverlay.computeCruiseClearance()，否则最下面那一档会沉到地形以下。
@@ -192,4 +200,113 @@ export function tierIndexOf(index: number, tiers: number): number {
 /** 每方参战舰队数 → 实际档数（≤ TIER_MAX，且不超过舰队数）。 */
 export function tierCountFor(fleetCount: number): number {
   return Math.max(1, Math.min(TIER_MAX, Math.floor(fleetCount)));
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * [v34c] 档位分配：**按编制血缘**，不再按数组序号
+ *
+ * 用户实报（2026-09-20，附截图）：
+ *   「分出来的舰队 … 还漂浮在最上面一层，这种状态反正很诡异。」
+ *
+ * L2 探针实测（演习模式，1 根舰队 + 1 分舰队）：
+ *   序1 母队  200/198  16 层  厚 106.0px  档位Y **−64.8**
+ *   序2 分舰队 79/79    16 层  厚 121.9px  档位Y **+64.8**   ← `_detachedFrom` = 序1
+ *   ⇒ 血缘母子相隔 **129.7px = 16.0 个层距**（两队各自只有 ~110px 厚，中间还空 15.7px）
+ *   ⇒ 同方两队平面间距仅 198.4px，而足迹各需 300/208 ⇒ 平面本就重叠，纵向再拉开一个整档
+ *     的结果就是「一支贴地、一支悬在正上方一整个舰队高度」。
+ *
+ * 根因（两条，都在档位分配上，与层数无关 —— 实测分舰队也是 16 层、厚 122px，**并不薄**）：
+ *   ① 档位 = `tierIndexOf(数组序号, tiers)`。分舰队由 `splitFleet` **push 到 globalFleets 末尾**
+ *      ⇒ 序号与母队相邻，而在对称档位 `[−(T−1)/2 … +(T−1)/2]` 下相邻序号恰好落在**两端**。
+ *   ② `tiers = tierCountFor(一方舰队对象总数)`。分兵把对象数从 1 变 2 ⇒ tiers 1→2
+ *      ⇒ **母队档位从 0 变成 −64.8（无缘无故下沉 64.8px）**，分舰队出现在 +64.8。
+ *      这是「分兵瞬间整场舰队先大范围变化」的一部分来源，此前一直被归因于阵位重排。
+ *
+ * 修法（第一性原理：档位是**编制身份**的属性，不是运行时数组位置的属性）：
+ *   · 档数只由**根舰队数**决定（沿 `_detachedFrom` 回溯，没有血缘的才是根）
+ *     ⇒ 分兵不改变根数 ⇒ 档数与所有根舰队的档位在战斗中**恒定**（消除 ②）。
+ *   · 分舰队**继承其母队的档位**（跨多级拆分时沿链回溯到根）⇒ 同源同层（消除 ①）。
+ *   · 无分兵时 `roots ≡ list`，档位与旧实现**逐位一致**（回归零风险，台架已断言）。
+ *
+ * ⚠ 已量化的取舍（交给真机定，见 `DETACHED_TIER_OFFSET`）：同源同档后，两队纵向完全重合，
+ *   而它们在平面上的初始间距（`DETACH_SPACING = 200px`）小于"两支足迹不重叠"所需
+ *   （母队 300/2 + 分舰队 208/2 = 254px）⇒ 边缘约 56px 的水平交错。这比"悬在正上方一整个
+ *   舰队高度"更接近"母队里分出来的一块"，但**必须由人眼确认**。
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * 分舰队相对其母队的档位错位（单位：档）。**0 = 与母队同档**（默认）。
+ *
+ * 取 0 的理由：用户抱怨的是"浮在最上面一层"，落差本身是主因；而同档把这个落差直接归零。
+ * ⚠ 若要改回"错开一档"（= v34b 为止的行为），设为 `1` 即可，不必回滚代码 —— 但注意
+ *   **不互穿所需的最小错位是 1 整档**（两队半厚之和 ≈ 114px vs 档距 130px），所以 0 与 1
+ *   之间**没有**观感更好的中间档（0.5 档 = 65px < 114px ⇒ 半糊，是最差的选择）。
+ */
+export const DETACHED_TIER_OFFSET = 0;
+
+/**
+ * 血缘回溯：沿 `_detachedFrom` 找到该队的**根舰队**（同一方内按 id 匹配）。
+ * @returns 根舰队；`fleet` 本身即根时返回它自己；链条断裂（母队已灭/离场）或成环时返回 `null`。
+ */
+export function rootFleetOf<F extends { id?: any; _detachedFrom?: any }>(
+  fleet: F,
+  byId: Map<any, F>,
+): F | null {
+  let cur: F | undefined = fleet;
+  const seen = new Set<any>();
+  while (cur && cur._detachedFrom != null) {
+    const key = cur.id;
+    if (key == null || seen.has(key)) return null;   // 无 id 或成环 ⇒ 不可判定
+    seen.add(key);
+    const parent = byId.get(cur._detachedFrom);
+    if (!parent) return null;                        // 母队已不在场（全灭 / 合流）
+    cur = parent;
+  }
+  return cur ?? null;
+}
+
+/**
+ * 逐队档位 Y（世界单位）——队间叠层的**单一真源**。
+ *
+ * 同一方内：档距统一取各队 `teamGapFor` 的**最大值**（保证各档等距、包络整齐）；
+ * 档数由**根舰队数**决定；根舰队按根内序号 round-robin 取居中对称档位；
+ * 分舰队继承其根的档位（可加 `detachedOffset` 档错位）。
+ *
+ * @param fleets   该方（或全场，函数内部按 `factionId` 分组）的舰队列表
+ * @param gapOf    每队的档距（= `teamGapFor(fleetVLayout(f))`）
+ * @param detachedOffset 分舰队档位错位（档），默认 `DETACHED_TIER_OFFSET`
+ */
+export function assignFleetTiers<F extends { id?: any; factionId?: any; _detachedFrom?: any }>(
+  fleets: F[],
+  gapOf: (f: F) => number,
+  detachedOffset: number = DETACHED_TIER_OFFSET,
+): Map<F, number> {
+  const out = new Map<F, number>();
+  const bySide = new Map<any, F[]>();
+  for (const f of fleets) {
+    const arr = bySide.get(f.factionId);
+    if (arr) arr.push(f); else bySide.set(f.factionId, [f]);
+  }
+  bySide.forEach((list) => {
+    let gap = 0;
+    for (const f of list) {
+      const g = gapOf(f);
+      if (Number.isFinite(g) && g > gap) gap = g;
+    }
+    const byId = new Map<any, F>();
+    for (const f of list) if (f.id != null) byId.set(f.id, f);
+    // 根舰队（无血缘）——档数与档位的**唯一**依据；分舰队不参与计数 ⇒ 分兵不改变任何根的位置
+    const roots = list.filter((f) => f._detachedFrom == null);
+    const tiers = tierCountFor(roots.length || list.length);
+    const rootTier = new Map<F, number>();
+    roots.forEach((f, i) => rootTier.set(f, tierIndexOf(i, tiers)));
+    for (const f of list) {
+      const root = roots.includes(f as F) ? (f as F) : rootFleetOf(f, byId);
+      // 母队已灭 / 链条不可判定 ⇒ 退回第 0 档（至少与主力同层，不悬空）
+      const t = root && rootTier.has(root) ? (rootTier.get(root) as number) : tierIndexOf(0, tiers);
+      const off = f === root ? 0 : detachedOffset;
+      out.set(f, (tierOffsetOf(t, tiers) + off) * gap);
+    }
+  });
+  return out;
 }

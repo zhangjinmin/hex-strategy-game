@@ -23,6 +23,10 @@ export interface Faction {
   buildCounts: { barracks: number, mines: number, towers: number };
   admiralStats?: Record<string, number>;
   rank?: number;
+  /** 提督标签（政治 / 军事 / 人格 / 能力）。战术层据此解析作战风格：
+   *  阵型偏好 / 进攻系数 / **动摇线**（见 `game/retreatDoctrine.ts` → `resolveAdmiralDoctrine`）。
+   *  v29 起接入：此前 `MILITARY_STYLE_PARAMS` 全项目零引用，个性标签对战场行为无影响。 */
+  admiralTags?: string[];
 }
 
 

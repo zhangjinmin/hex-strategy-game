@@ -24,7 +24,6 @@ import { getEffectiveCompatibility, getDefectionProbability, getRelationBuff } f
 import { SaveGameData, LoadGameData } from '../../wailsjs/go/main/App';
 import { useAdmiralStore } from './admiralStore';
 import { useNodeStore } from './nodeStore';
-import { useSettingsStore } from './settingsStore';
 import { useFleetStore, shipTypeToCompKey } from './fleetStore';
 import {
   SHIP_TYPE_CN, resolveShipType, fleetVisualCount, allocateVisualCounts,
@@ -615,7 +614,6 @@ export const useGameStore = defineStore('game', () => {
     battleId?: string;
     attackers: any[];
     defenders: any[];
-    mapStyle?: 'hex' | 'crt' | '3d' | 'command';
   } | null>({ mode: 'skirmish', attackers: [], defenders: [] });
 
   // ===== 战术模拟（独立小游戏模式）=====
@@ -651,7 +649,8 @@ export const useGameStore = defineStore('game', () => {
   };
 
   // 战术模拟的出击启动：构建双方满编舰队 → 序列化 → 写入 tacticalState → 启动战斗
-  const launchSimBattle = (mapStyle: 'hex' | 'crt' | '3d' | 'command' = 'command') => {
+  // [2026-09-20] 原第 1 个参数 `mapStyle` 已删除：后续玩法只有指挥制。
+  const launchSimBattle = () => {
     if (simSelectedAdmirals.value.length === 0) {
       triggerToast('必须指派至少一名提督出战');
       return;
@@ -745,7 +744,6 @@ export const useGameStore = defineStore('game', () => {
       mode: 'skirmish',
       attackers: [],
       defenders: [],
-      mapStyle: mapStyle,
     };
     // 注入战斗层所需的状态变量（供 BattleScene.initFactions 读取）
     dispatchAdmirals.value = simSelectedAdmirals.value;
@@ -3732,8 +3730,6 @@ export const useGameStore = defineStore('game', () => {
       return;
     }
 
-    const settings = useSettingsStore();
-    const mapStyle: 'hex' | 'crt' | '3d' | 'command' = (settings.battlefieldMode as any as 'hex' | 'crt' | '3d' | 'command') || 'command';
     // 战役地图改用战术模拟同款随机大地图
     selectedMapId.value = 'random';
 
@@ -3743,7 +3739,6 @@ export const useGameStore = defineStore('game', () => {
       battleNodeId: nodeId,
       attackers,
       defenders,
-      mapStyle,
     };
 
     // 退出战略 tick 循环：清理所有未决状态，避免回归战略时出现暂停残留

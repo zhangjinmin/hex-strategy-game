@@ -73,7 +73,9 @@ const unwrap = <T>(x: any): T => (x && typeof x === 'object' && 'value' in x ? x
 const warRoomOpen = computed<boolean>(() => unwrap<boolean>(store.warRoomOpen));
 const deployPhase = computed<boolean>(() => unwrap<boolean>(store.battleDeployPhase));
 const supremeId = computed<number | null>(() => unwrap<number | null>(store.supremeCommanderId));
-const visible = computed(() => warRoomOpen.value && (store.tacticalState as any)?.mapStyle === 'command');
+// [2026-09-20] 原先还要求 `tacticalState.mapStyle === 'command'`；该字段已随
+//   「星域棋盘 / 全息战术投影 / 3D 战场」三模式一起删除 —— 现在战斗只有指挥制。
+const visible = computed(() => warRoomOpen.value);
 const setWarRoomOpen = (v: boolean) => { (store as any).warRoomOpen = v; };
 // [#74 · A2] 部署倒计时（单一数据源 store.deployCountdownSec）：悬停本面板时暂停计时
 const setCountdownPaused = (v: boolean) => { (store as any).deployCountdownPaused = v; };

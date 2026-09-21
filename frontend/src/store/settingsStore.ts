@@ -15,8 +15,11 @@ export const useSettingsStore = defineStore('settings', () => {
   // UI 缩放因子（80%~140%）：全局统一放大按钮/菜单/文字，解决"文字太小"
   const uiScale = ref(100);
 
-  // ===== 战场模式 =====
-  const battlefieldMode = ref<'hex' | 'crt' | '3d' | 'command'>('command');
+  // ===== 战场 =====
+  // [2026-09-20] 原「战场显示」模式选择（星域棋盘 hex / 全息战术投影 crt / 3D 战场 3d /
+  //   指挥制 command）已**整体删除**：后续玩法只有指挥制纯宇宙舰队战，其余三种模式的
+  //   代码也已从 BattleScene / Battle3DOverlay / CrtRenderer 中移除。
+  //   ⚠ 不要再引入 `battlefieldMode` —— 它会让"写了却不显示的代码"重新出现。
   /** 是否显示补给链可视化（补给圈/运输舰/链路）。默认开启，让玩家看清补给范围。 */
   const showSupplyChain = ref(true);
   /** 舰船模型档位：high=原始 ~5万面 / medium=LOD1 ~20% / low=LOD2 ~5%（离线减面产物，缺文件自动回落原始） */
@@ -65,9 +68,6 @@ export const useSettingsStore = defineStore('settings', () => {
         sfxEnabled.value = data.sfxEnabled ?? true;
         musicTrack.value = data.musicTrack ?? 'default';
         showSupplyChain.value = data.showSupplyChain ?? true;
-        battlefieldMode.value = (data.battlefieldMode === 'hex' || data.battlefieldMode === 'crt' || data.battlefieldMode === '3d' || data.battlefieldMode === 'command')
-          ? data.battlefieldMode
-          : 'command';
         // 白名单校验：非法值回落 'high'（不静默降画质）
         shipModelDetail.value = (data.shipModelDetail === 'high' || data.shipModelDetail === 'medium' || data.shipModelDetail === 'low')
           ? data.shipModelDetail
@@ -101,7 +101,6 @@ export const useSettingsStore = defineStore('settings', () => {
         musicEnabled: musicEnabled.value,
         sfxEnabled: sfxEnabled.value,
         musicTrack: musicTrack.value,
-        battlefieldMode: battlefieldMode.value,
         showSupplyChain: showSupplyChain.value,
         shipModelDetail: shipModelDetail.value,
         battle3dQuality: battle3dQuality.value,
@@ -119,7 +118,7 @@ export const useSettingsStore = defineStore('settings', () => {
   };
 
   // 自动持久化
-  watch([musicVolume, sfxVolume, musicEnabled, sfxEnabled, musicTrack, battlefieldMode, factionColorScheme, starmapDisplayMode, briefingDisabled, uiScale, apiKey, apiModel, apiUrl, showSupplyChain, shipModelDetail, battle3dQuality, battle3dPerfGuard, battle3dShowFps], save, { deep: true });
+  watch([musicVolume, sfxVolume, musicEnabled, sfxEnabled, musicTrack, factionColorScheme, starmapDisplayMode, briefingDisabled, uiScale, apiKey, apiModel, apiUrl, showSupplyChain, shipModelDetail, battle3dQuality, battle3dPerfGuard, battle3dShowFps], save, { deep: true });
 
   // 初始化加载
   load();
@@ -130,7 +129,6 @@ export const useSettingsStore = defineStore('settings', () => {
     musicEnabled.value = true;
     sfxEnabled.value = true;
     musicTrack.value = 'default';
-    battlefieldMode.value = 'command';
     showSupplyChain.value = true;   // 修复：原实现漏重置该项
     shipModelDetail.value = 'high';
     battle3dQuality.value = 'high';
@@ -161,7 +159,6 @@ export const useSettingsStore = defineStore('settings', () => {
 
   return {
     musicVolume, sfxVolume, musicEnabled, sfxEnabled, musicTrack,
-    battlefieldMode,
     showSupplyChain,
     shipModelDetail,
     getShipModelDetailValue,

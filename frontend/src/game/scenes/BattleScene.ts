@@ -2,12 +2,7 @@ import * as Phaser from 'phaser';
 import { useGameStore } from '../../store/gameStore';
 import { useNodeStore } from '../../store/nodeStore';
 import { battleDialogues } from '../../config/dialoguesData';
-// CRT 全息投影渲染（已拆分到 crt/CrtRenderer.ts）
-import {
-  CRT_Y_SCALE, CRT_GRID_COLOR, CRT_ACCENT, CRT_BG,
-  drawCRTBackground, renderCRTWireframeMap, updateCRTEffects, redrawCRTFleets, drawCRTOverlays,
-  type CrtContext,
-} from './crt/CrtRenderer';
+// 纯宇宙扫描空间的 2D 渲染（指挥制专用；**仅降级路径可见**，正常战斗由 Battle3DOverlay 呈现）
 import { drawCommandSpace, drawCommandFleets, drawCommandScanOverlay } from './crt/CommandSpaceRenderer';
 
 // Vite 资源导入：返回运行时 URL，解决 Phaser 加载器找不到 src 下资源的问题
@@ -41,6 +36,36 @@ import {
 // 阵型排布：可随实体数 n 缩放的格位枚举（原 8 坐标硬编码表的替代）
 import { formationOffsets, formationSpacing, FORMATION_SPACING, type FormationCell } from '../../config/formationLayout';
 import type { FormationType } from '../../config/formations';
+// [v33] 旧案 44 图战术模块整合（docs/design/loch-web-plan/02_*）：
+//   **全部走单一真源 import，禁止再在本文件内联 beats 表 / 地形分支 / 舰种装甲表。**
+//   数值真源 = config/balance.ts 的 TACTICAL_V33 / COLUMN_MATRIX / DIRECTION_ARMOR / INTERCEPT /
+//   FORMATION_COLLAPSE / SHIP_BAND，每一项都有独立开关可回退。
+import { formationCounterMul } from '../../config/formations';
+import {
+    columnProfileCached, columnMatrixMul, nextRangeBand, shipBandMul, type RangeBand,
+} from '../../config/formationColumns';
+import {
+    dirArmorMul, hitSideFromAngle, fleetInterceptRate, interceptDamageMul, DIRECTION_CRIT_MIN,
+} from '../../config/shipTacticalProfile';
+import { TACTICAL_COMBO_CLAMP, TERRAIN_RULES, FACING_TURN } from '../../config/balance';
+import { terrainEffect, effectiveVisionMul, TERRAIN_VISUAL } from '../../config/terrainEffects';
+import { updateFormationCollapse, collapseMuls, COLLAPSE_REASON_TEXT } from '../formationMorale';
+import { computeCombatModifiers } from '../../utils/skillEffects';
+// 提督作战风格 + 撤退档位（v29）：补给**不再触发撤退**，改由「动摇线(提督个性) + 士气 + 兵力态势」决定；
+//   补给改为影响战斗力与士气衰减速率。见 docs/design/3d-tactical-battle/22-tactical-depth-closed-loop.md
+import {
+    NEUTRAL_DOCTRINE, resolveAdmiralDoctrine, resolveRetreatTier, retreatParams, retreatSpeedMulRamped,
+    supplyFactor, moraleDrainPerTick, RALLY_MORALE,
+    type AdmiralDoctrine, type RetreatTier,
+} from '../retreatDoctrine';
+import { aggression, supplyDecision, turnDiscipline, approachLateralOffset } from '../combatDoctrine';
+// [v31-C] 分舰队编成 / 战法（纯计算）—— **迂回 · 包抄 · 诱饵 · 后勤战的共同抽象**：
+//   四项玩法都是"多路协同"，而多路协同的前提是"力量可分解"（见 docs/.../24-tactical-architecture-rebuild.md §2）
+import {
+    MANEUVERS, selectManeuver, assignDetachments, splitUnitCounts, requiredFleets, maneuverLabel,
+    maxRoutesFor, MIN_UNITS_PER_ROUTE,
+    type DetachmentPlan, type DetachmentSpec, type ManeuverType,
+} from '../taskForce';
 
 
 // 贴图 key → Vite URL 映射表
@@ -73,7 +98,96 @@ const FORMATION_MORPH_DUR = 3.5;
  *    转向与位移**同步**加速/减速，不产生新的相对错位（闭环 R1 §5 U4）。
  *  · 数值 π/120 rad/帧 = 1.5°/帧 @60fps = **90°/s**：≈ v14 舰首 30°/s 的 3 倍，180° 掉头 ≈2.0s、
  *    90° 转向 ≈1.0s，与"缓慢转体、但读作飞船转弯而非残骸"的手感匹配（R1 §4 FIX-3 建议值）。 */
-const HEADING_TURN_RATE = Math.PI / 120;
+// [v30] 90°/s → **45°/s**：用户实报「刷一声就转头了 / 不够厚重」⇒ 转身率减半（180° 掉头 ≈ 4s）。
+//   太空战舰的转身是**姿态控制**（RCS 反作用推进器），与"飞机靠升力转弯"无关 —— 慢是应该的。
+const HEADING_TURN_RATE = Math.PI / 240;
+
+/** [v47 wheel-and-reform] 逐舰显示航向（u.visHeading）最大角速率（rad/帧@dt=1，≈9.2°/帧）。
+ *  舰体跟随**自身位移航迹**：快到贴得住航迹（消灭「舰首朝前却侧滑平移」= 摇头晃脑的渲染根），
+ *  慢到滤得掉 chase 逐帧噪声（阵位目标移动造成的瞬时方向摆动不再 1:1 进朝向）。 */
+const UNIT_VIS_TURN_RATE = 0.16;
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * [v29 → v30 → v34b] 舰队机动物理化参数（用户三次实报："阵型绕着一个点画圆圈 / 像点不像舰"）
+ *
+ * 根因（第一性原理）：转弯半径 **R = v / ω**。
+ *   · v29 只走了"降低 ω"这一条路：注释写「尺度上无法把 R 提到数倍舰长（那要求 ω < 6°/s，
+ *     180° 掉头需 35s，不可玩）」—— **漏掉了另一条路：提高 v**。
+ *   · 实算（v34b 之前）：v = 0.30px/帧 × 60 = 18 px/s、ω = 45°/s ⇒ **R = 23px**，
+ *     而阵型半跨可达 300px ⇒ 转向时**阵型的重排幅度（数十~上百 px）远大于舰队本身的位移**
+ *     ⇒ 观感 = 「舰队没怎么动，而一堆舰船在自己挪位 / 原地转圈」（用户 2026-09-20 复报）。
+ *   · v34b 取 v = 0.90px/帧（54 px/s）⇒ **R ≈ 69px ≈ 2.8 倍舰长**（舰长 25px）
+ *     ⇒ 转向读作"边前进边划弧"，而不是"原地打转"。
+ *
+ * ⚠ 这是**节奏级**参数，一键回退 = 把本值改回 0.30（其余修复可独立生效）。
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+/** 舰队基准航速（px/帧 @ dt=1）。**当前保留 v29 以来的 0.30（行为中性）。**
+ *
+ *  为什么要把它从内联表达式提成常量：它是**转向可读性的唯一杠杆**。
+ *  转弯半径 **R = v / ω** —— v29 的注释只考虑了"降低 ω"这条路（判定不可玩），
+ *  **漏掉了"提高 v"**：ω 固定 45°/s 时
+ *      v = 0.30 ⇒ R ≈ 23px（**< 一个舰长 25px**）⇒ 转向读作"原地打转"；
+ *      v = 0.90 ⇒ R ≈ 69px（≈2.8 倍舰长）⇒ 转向读作"划弧前进"。
+ *  ⚠ 提高它同时会把"接近 800px 交战距"由 ~44s 压到 ~15s（**节奏变更**），
+ *    故 v34b **不擅自改动**：方向/掉速的自洽修复已独立生效（见 `thrustDir`），
+ *    转弯半径这一项由使用者按真机观感决定。
+ *  推荐区间：**0.30（现状）~ 0.90**；改这一处即可，与其它修复无耦合。 */
+const FLEET_BASE_SPEED = 0.30;
+
+/** 转向角速度的**建立速率**（rad/帧²）：角速度不能瞬间达到上限，需约 0.35s（≈21 帧 @60fps）
+ *  才建立满转率 ⇒ "压舵 / 起转"的厚重感。
+ *  旧实现 `rateLimitAngle` 直接钳制角度步长 = **无限角加速度** ⇒ 起转与停转都是瞬间的"轻"。 */
+const TURN_RATE_ACCEL = HEADING_TURN_RATE / 21;
+
+/** **临界制动安全系数**：目标角速度上限取 `sqrt(2·a·|d|) × 本系数`。
+ *  物理含义 = "从当前速率**恰好能停住**"的制动上限；0.85 留 15% 余量抵消离散化误差。
+ *
+ *  ⚠⚠ 这是 v29 首版的**回归修复**：首版用「比例控制（`d × 0.8`）+ 角加速度限制」，
+ *    那是一个**欠阻尼二阶系统** —— 接近目标时速率降不下来 ⇒ 转过头 ⇒ 反向修正 ⇒ 往复。
+ *    实测（`_v29_osc_diag.cjs`，目标 90°）：**过冲 −13.5° · 角速度符号翻转 7 次**；
+ *    而旧 `rateLimitAngle` 是 0° / 0 次。后果：阵位按 `facingSmooth` 旋转 ⇒ 两侧单位交替来回
+ *    ⇒ 用户实报「**长条阵型像两条肩膀在抖动、波浪舞**」。
+ *    改为制动律 + 死区吸附后回到 **0° / 0 次**，同时保留惯量（建立 ~0.3s）。 */
+const BRAKE_SAFETY = 0.85;
+
+/** [v30 / v34b] **推力对齐下限**：主引擎只能沿舰首方向推进 ⇒ 舰首与目标方向的夹角越大，前进越慢。
+ *  对齐度 = `cos(目标方向 − 舰首朝向)`，取 `max(0, ·)^0.5`（**平方根** ⇒ 小幅航向修正更快恢复全速）。
+ *
+ *  ⚠ **值从 0.05 提到 0.45（v34b）** —— 用户 2026-09-20 复报原话：
+ *    「舰队会先通过一些诡异的移动，然后**暂停**，然后再慢慢地 … 要转弯了，**先暂停**，然后再缓缓地转圈」。
+ *    L2 实测（`_probe_turn.mjs`，90° 转弯，3 队一致）：`speedMinRatio = 0.483`（**最低**速比；
+ *    转弯全程平均更低），而舰首对齐度在转弯中段≈0 ⇒ 0.05 的下限把舰队压到"几乎停船"，
+ *    舰队一停，单舰就只能在原地打转（"里面的一艘艘舰船在原地转圈，而不是前进"）。
+ *  0.45 ⇒ 即使完全没对齐也保留近半推力，"边前进边转向"成为可能；
+ *  对齐良好的直线巡航仍是 100%（对齐度≈1 时不变）。
+ *  ⚠ v30 引入本项的本意是"给转向加质量感"，但代价是"停船 ⇒ 原地转"被用户判为更糟
+ *    ⇒ 本轮按用户实报回调；若真机确认"转向太飘"，回到 0.2~0.3 之间。 */
+const THRUST_IDLE = 0.45;
+
+/** 线速度惯性：每帧向期望速度逼近的比例（越小越"厚重"）。
+ *  0.18（τ≈0.08s，几乎瞬时）→ 0.055（τ≈0.27s）⇒ 起步 / 改向有"质量感"。
+ *  ⚠ 过小会让 AI 接敌 / 规避变迟钝；建议区间 0.04 ~ 0.07。 */
+const FLEET_ACCEL = 0.055;
+
+/** [v31-C] 分舰队拆分时的**初始侧向间距**（px）：略大于阵型足迹，确保拆开瞬间不重叠。
+ *  拆分后各路会由战法航路继续牵引（几何复用 `config/fleetSplitManeuver.ts`）。 */
+const DETACH_SPACING = 200;
+
+/* ── [v31-D] 阵型朝向与舰首朝向分离（用户第三次反馈："整个阵型绕着一个点整体画圆"）─────────
+ * 病灶：阵位旋转用的是 `facingSmooth`（**舰首朝向**）⇒ 舰首一转，整队格位绕中心刚性旋转
+ *   ⇒ 每艘舰都沿弧线走 ⇒ 观感"绕一个点画圆圈"，与"战舰各自缓慢转身"完全相反。
+ * 正解：阵型对齐的是**舰队实际航向**，不是舰首。用**实际速度方向**（`vx/vy`）作阵型朝向：
+ *   · 掉头瞬间 → ①线惯性（`FLEET_ACCEL`，τ≈0.27s）②推力对齐衰减（`THRUST_IDLE`，掉头几乎停船）
+ *     ⇒ 实际速度方向**几乎不变** ⇒ **阵位不绕圈，各舰原地转身**；
+ *   · 转完加速 → 速度方向真正转向新航向 ⇒ 阵位**自然**对齐（无需任何"旋转动画"）。
+ *   低速（含停船对射）时**冻结**，避免 `atan2` 在速度≈0 时抖动。 */
+
+/** 阵型朝向的跟随速率（rad/帧）= 90°/s。输入已是**平滑过的实际速度方向**，此处限速仅防抖。 */
+const FORM_FACING_RATE = Math.PI / 120;
+/** 阵型朝向的最小速度阈值（px/帧 的平方）：低于此冻结阵型朝向。 */
+const FORM_FACING_MIN_SPD2 = 0.02 * 0.02;
+
 
 /** [v21 JIT] 单位阵位跟随的**除零保护**（px）。旧值是 2px「死区」，与 `chase` 的
  *  1.0px/帧下限构成极限环：单位进入死区即完全停止，而目标随舰队每帧移动 ~0.5px，
@@ -93,6 +207,8 @@ const JIT_AUX_TAU = 2;
 /** 把当前角 cur 以不超过 maxStep 的步长逼近目标角 target（角差先 wrap 到 [-π, π]）。
  *  与 Battle3DOverlay.approachAngle **同式**（wrap 用 atan2(sin,cos) ⇒ 跨 ±π 环回正确）；
  *  此处独立实现（不跨文件 import）以免 2D/3D 模块循环依赖。 */
+// ⚠ [v29] 已被"角速度带惯量"模型取代（见文件顶部 TURN_RATE_ACCEL 参数块），**当前无调用点**；
+//   保留仅供对照 / 兜底。新模型不再直接钳制角度步长，而是让角速度以有限角加速度逼近目标。
 function rateLimitAngle(cur: number, target: number, maxStep: number): number {
     let d = target - cur;
     d = Math.atan2(Math.sin(d), Math.cos(d));
@@ -118,9 +234,6 @@ const DEPLOY_COUNTDOWN_SEC = 20;
 const DEPLOY_GAP_MIN = 160;
 const DEPLOY_GAP_FOOTPRINT_K = 1.35;
 
-// CRT 常量已移至 crt/CrtRenderer.ts
-
-// === CRT 全息战术投影参数 ===
 
 export class BattleScene extends Phaser.Scene {
     private store: any;
@@ -160,20 +273,18 @@ export class BattleScene extends Phaser.Scene {
      *  public：3D overlay billboard 据此决定姿态按钮只给总指挥旗舰。 */
     public supremeCommanderId: number | null = null;
 
-    // === CRT 全息战术投影 ===
-    // '3d' 走与 'hex' 完全相同的逻辑（所有 === 'crt' 判断对 '3d' 为 false）；3D 视觉由 Battle3DOverlay 叠加渲染
-    private mapStyle: 'hex' | 'crt' | '3d' | 'command' = 'command';
-    /** 指挥制宇宙起伏地形种子（同一局形状稳定） */
+    // === 纯宇宙战场的 2D 底层（Phaser 侧）===
+    // ⚠ 正常战斗的视觉**全部由 `Battle3DOverlay`（Three.js）负责**：指挥制下
+    //   `body.battle3d-mode` 的 CSS 会把整个 Phaser 画布隐藏，这里画的东西一个像素都看不到。
+    //   本层只在「3D overlay 8 秒内建不起来」的降级路径里可见（见 App.vue）。
+    //   历史上此处有 hex / crt / 3d 三种战场模式，2026-09-20 全部删除，只剩指挥制。
+    /** 宇宙起伏地形种子（同一局形状稳定） */
     private commandSpaceSeed = 1;
-    private crtGraphics!: Phaser.GameObjects.Graphics;
-    private crtWireframe!: Phaser.GameObjects.Graphics;
-    private crtFleets!: Phaser.GameObjects.Graphics;  // 每帧更新的舰队线框层
-    private crtOverlay!: Phaser.GameObjects.Graphics;
-    private crtHudLabel: Phaser.GameObjects.Text | null = null;
-    private crtScan: Phaser.GameObjects.Graphics | null = null;  // 指挥制：全屏扫描线 overlay（相机空间）
-    private cmdScanTimer = 0;
-    private crtGlowTime: { val: number } = { val: 0 };
-    private crtFleetRedrawTimer: { val: number } = { val: 0 };
+    private spaceGraphics!: Phaser.GameObjects.Graphics;
+    private spaceFleets!: Phaser.GameObjects.Graphics;
+    private spaceScan: Phaser.GameObjects.Graphics | null = null;
+    private spaceScanTimer = 0;
+    private spaceGlowTime: { val: number } = { val: 0 };
 
     // ===== 伊谢尔伦要塞武器系统 =====
     private fortressWeapon: {
@@ -210,7 +321,7 @@ export class BattleScene extends Phaser.Scene {
     /** 按地图矩阵实际范围推导指挥制出生参数（buildMapData 末尾调用；hex/crt 不受影响）。
      *  取横向半跨（攻左守右沿 X 拉开），并兜底 ≥ hexRadius×40 防退化小图挤中间。 */
     private computeCommandSpawnExtent(matrix: any[]) {
-        if (this.mapStyle !== 'command' || matrix.length === 0) return;
+        if (matrix.length === 0) return;
         const xs = matrix.map((t: any) => this.hexRadius * (Math.sqrt(3) * t.q + Math.sqrt(3) / 2 * t.r));
         const half = (Math.max(...xs) - Math.min(...xs)) / 2;
         this.commandHalfX = Math.max(half, this.hexRadius * 40);
@@ -252,11 +363,12 @@ export class BattleScene extends Phaser.Scene {
         this.store = useGameStore();
         const state = (this.store as any).tacticalState;
         const isCampaign = state && state.mode === 'campaign';
-        this.mapStyle = state?.mapStyle ?? 'hex';
-        if (this.mapStyle === '3d') {
-            console.log('[BattleScene] 3D battlefield mode: Phaser logic engine running, rendering delegated to Battle3DOverlay');
-        }
-        console.log(`[BattleScene] create() mapStyle=${this.mapStyle}, state.mapStyle=${state?.mapStyle}, isCampaign=${isCampaign}`);
+        console.log(`[BattleScene] create() isCampaign=${isCampaign}`);
+        // [FIX-2D白渲染] create() 可多次触发（重进战斗），而 App.vue 的可见性同步可能
+        //   落在两次 create 之间被静默吞掉 → 2D 场景（7000+ 对象）在画布已 CSS 隐藏时
+        //   仍每帧全量渲染（实测 ~65ms/帧，20fps 主因）。此处按当前真值自愈一次：
+        //   指挥制 3D 在位 → 只停渲染，不停逻辑（update 照常，3D 层每帧取数）。
+        this.sys.setVisible(!document.body.classList.contains('battle3d-mode'));
 
         // 重置战斗状态
         this.store.gameOver = false;
@@ -275,37 +387,19 @@ export class BattleScene extends Phaser.Scene {
         else if (this.store.selectedMapId === 'random_rect') initZoom = Math.min(initZoom, 0.55);
         // v6.9：伊谢尔伦 61×29 长条图——初始视角拉远看全要塞走廊
         else if (this.store.selectedMapId === 'standard') initZoom = Math.min(initZoom, 0.4);
-        // 指挥制：无六边形格子，不按 hexRadius 缩放（否则 zoom 会被算到 0.3，
-        // 舰队小到看不见、背景线条被压缩成一片）。用固定舒适视角。
-        if (this.mapStyle === 'command') initZoom = 0.85;
+        // 无六边形格子，不按 hexRadius 缩放（否则 zoom 会被算到 0.3，舰队小到看不见）。
+        initZoom = 0.85;
         this.cameras.main.setZoom(initZoom);
 
-        // === CRT 全息战术投影：3D 俯瞰透视 ===
-        // command（指挥制）复用同一套 Graphics 图层与扫描线风格，
-        // 但渲染内容改为纯宇宙起伏等高线（不画六边形网格）。
-        if (this.mapStyle === 'crt' || this.mapStyle === 'command') {
-            if (this.mapStyle === 'crt') {
-                // 3D 俯瞰效果通过线框地图的 Y 轴压缩实现（CRT_Y_SCALE）
-                console.log(`[BattleScene] CRT holographic mode enabled (yScale=${CRT_Y_SCALE})`);
-            } else {
-                console.log('[BattleScene] Command mode enabled (pure space, no hex grid)');
-                this.commandSpaceSeed = Math.floor(Math.random() * 100000) + 1;
-            }
-
-            this.cameras.main.setBackgroundColor(CRT_BG);
-            this.crtGraphics = this.add.graphics().setDepth(0);
-            this.crtWireframe = this.add.graphics().setDepth(1);
-            // 指挥制：舰队光环需盖在单位 sprite(depth 5/6) 之上，否则被遮挡看不见
-            this.crtFleets = this.add.graphics().setDepth(this.mapStyle === 'command' ? 10 : 2);
-            this.crtOverlay = this.add.graphics().setDepth(100);
-            if (this.mapStyle === 'command') {
-                // 指挥制：全屏扫描线 overlay（独立层，每 ~60ms 随相机重绘）
-                this.crtScan = this.add.graphics().setDepth(101);
-                drawCommandSpace(this.cameras.main, this.crtGraphics, this.commandSpaceSeed);
-            } else {
-                this.drawCRTBackground();
-            }
-        }
+        // === 纯宇宙扫描空间（Phaser 侧底层；正常战斗的视觉在 Battle3DOverlay）===
+        this.commandSpaceSeed = Math.floor(Math.random() * 100000) + 1;
+        this.cameras.main.setBackgroundColor('#040810');
+        this.spaceGraphics = this.add.graphics().setDepth(0);
+        // 舰队光环需盖在单位 sprite(depth 5/6) 之上，否则被遮挡看不见
+        this.spaceFleets = this.add.graphics().setDepth(10);
+        // 全屏扫描线 overlay（独立层，每 ~60ms 随相机重绘）
+        this.spaceScan = this.add.graphics().setDepth(101);
+        drawCommandSpace(this.cameras.main, this.spaceGraphics, this.commandSpaceSeed);
 
         this.hpBarsGraphics = this.add.graphics().setDepth(30);
         // 补给链可视化：画补给源/运输舰的补给圈，以及到补给舰队的链路
@@ -331,10 +425,9 @@ export class BattleScene extends Phaser.Scene {
                 if (data.type === 'castle') {
                     const fac = this.factionMap.get(data.ownerId);
                     if (fac) {
-                        const cScale = this.mapStyle === 'crt' ? CRT_Y_SCALE : 1;
                         fac.castlePos = {
                             x: this.hexRadius * (Math.sqrt(3) * data.q + Math.sqrt(3)/2 * data.r),
-                            y: this.hexRadius * (3/2 * data.r) * cScale
+                            y: this.hexRadius * (3/2 * data.r)
                         };
                     }
                 }
@@ -342,19 +435,11 @@ export class BattleScene extends Phaser.Scene {
             // 安全回退：未分配城堡的舰队 → 推到地图边缘（避免城堡在(0,0)中央）
             this.store.factions.forEach((f: any) => {
                 if (!f.castlePos || (f.castlePos.x === 0 && f.castlePos.y === 0)) {
-                    if (this.mapStyle === 'command') {
-                        // 指挥制后勤战：攻左守右拉到战场边缘（v6.6: 按地图实际半跨动态，见 commandSpawnDist）
-                        f.castlePos = {
-                            x: f.team === 1 ? -this.commandSpawnDist : this.commandSpawnDist,
-                            y: (Math.random() - 0.5) * this.commandHalfX * 0.4
-                        };
-                    } else {
-                        const edgeQ = f.team === 1 ? -20 : 20;
-                        f.castlePos = {
-                            x: this.hexRadius * (Math.sqrt(3) * edgeQ),
-                            y: (Math.random() - 0.5) * this.hexRadius * 6
-                        };
-                    }
+                    // 攻左守右拉到战场边缘（v6.6: 按地图实际半跨动态，见 commandSpawnDist）
+                    f.castlePos = {
+                        x: f.team === 1 ? -this.commandSpawnDist : this.commandSpawnDist,
+                        y: (Math.random() - 0.5) * this.commandHalfX * 0.4
+                    };
                 }
             });
             // v6.9 伊谢尔伦要塞战（演习轨道）：初始化雷神之锤主炮——对齐战役轨道能力。
@@ -371,7 +456,7 @@ export class BattleScene extends Phaser.Scene {
                     this.fortressWeapon.hpBarFill.destroy();
                     this.fortressWeapon = null;
                 }
-                // 要塞中心 q=18, r=0 → 像素坐标（与 renderHexMap 同源换算）
+                // 要塞中心 q=18, r=0 → 像素坐标（与 buildTileGrid 同源换算）
                 const fX = this.hexRadius * (Math.sqrt(3) * 18 + Math.sqrt(3) / 2 * 0);
                 const fY = this.hexRadius * (3 / 2 * 0);
                 // 守方 = team 2（演习轨道攻守由 team 决定，无 state.attackers/defenders）
@@ -402,34 +487,24 @@ export class BattleScene extends Phaser.Scene {
             }
             // 先实例化舰队，再渲染地块（确保地块多边形在上层，优先接收点击事件）
             this.spawnInitialFleets();
-            // 关键：renderHexMap 内部才会填充 tilesList/tilesDict（BattleScene.ts:1126），
+            // 关键：buildTileGrid 内部才会填充 tilesList/tilesDict（BattleScene.ts:1126），
             // 而 AI 的探索/目标选择完全依赖 tilesList。此前指挥制直接跳过调用 → tilesList 为空
             // → AI 找不到任何地块目标 → 舰队原地不动（用户实报）。
             // 因此指挥制仍要建地块数据（只是不显示），保证 AI 逻辑完整。
-            this.renderHexMap(mapDataMatrix);
-            if (this.mapStyle === 'command') {
-                // 纯宇宙：隐藏六边形地块与地形标记（保留数据层，仅关闭视觉与交互）
-                this.tilesList.forEach((t: any) => {
-                    if (t?.sprite) { t.sprite.setVisible(false); t.sprite.disableInteractive(); }
-                    if (t?.text) t.text.setVisible(false);
-                });
-            } else {
-                // P1 地形标记渲染
-                this.renderTerrainMarkers();
-            }
-            // CRT 模式：绘制全息线框地图（sprite 在 update 中透明化 + 线框几何体叠加）
-            if (this.mapStyle === 'crt') {
-                this.renderCRTWireframeMap(mapDataMatrix);
-            } else if (this.mapStyle === 'command') {
-                // 指挥制：绘制纯宇宙起伏等高线（覆盖在 crtGraphics 上）
-                if (this.crtGraphics) {
-                    drawCommandSpace(this.cameras.main, this.crtGraphics, this.commandSpaceSeed);
-                }
+            this.buildTileGrid(mapDataMatrix);
+            // 地块 sprite / text 在本函数内**创建即隐藏**（见 `buildTileGrid` 顶部注释）：
+            //   它们是占位对象，只为占领/补给逻辑提供 setFillStyle / setText 的落点。
+            // 地形标记（淡色斑）—— 仅 2D 降级路径可见，真正的地形视觉在
+            //   `Battle3DOverlay.buildTerrainZones()`。
+            this.renderTerrainMarkers();
+            // 纯宇宙起伏等高线
+            if (this.spaceGraphics) {
+                drawCommandSpace(this.cameras.main, this.spaceGraphics, this.commandSpaceSeed);
             }
         }
 
         // 指挥制后勤战：中线带布置 3 个中立星球中继（占领后扩大补给半径）
-        // （函数内部自带 mapStyle==='command' 守卫，hex/crt 零影响）
+        // （中继布置只与"是否有格子"无关，直接执行）
         this.spawnSupplyRelayPlanets();
 
         // [V18-A · P1] 新战斗：清空上一场的总指挥覆盖（本场一次性，不进存档）
@@ -455,13 +530,14 @@ export class BattleScene extends Phaser.Scene {
         //   ⇒ 右键会「弹浏览器原生菜单 + 投信标/移动」双触发。1 行补齐（?. 守卫同先例）。
         this.input.mouse?.disableContextMenu();
 
-        // ── [2a] 选目标态拾取（2D：hex/crt）──
-        //   3D（3d/command）由 overlay 屏幕空间拾取，此处按 mapStyle 分流避免双触发。
+        // ── [2a] 选目标态拾取（降级路径专用）──
+        //   正常战斗的拾取由 `Battle3DOverlay` 做屏幕空间命中（此时 Phaser 画布被
+        //   `battle3d-mode` 隐藏、收不到指针事件）；本处理器只在 3D 建不起来、
+        //   画布重新可见时生效。
         //   用 pointerup + getDistance 过滤拖拽：2D 相机平移是 pointermove+isDown，
         //   若用 pointerdown 会把"从敌方舰上起手的平移"误判成选目标（报告已注明此偏离）。
         this.input.on('pointerup', (pointer: Phaser.Input.Pointer) => {
             if (!this.cpCommandMode) return;
-            if (this.mapStyle === '3d' || this.mapStyle === 'command') return;
             if (pointer.getDistance() > 30) return;
             const fid = this.pickFleetAtWorld(pointer.worldX, pointer.worldY);
             if (fid !== null) this.tryExecuteOnFleet(fid);
@@ -511,6 +587,15 @@ export class BattleScene extends Phaser.Scene {
                     return;
                 }
                 return; // 部署阶段屏蔽其他按键
+            }
+
+            // [v31-C] **玩家主动分舰队**：`X` 键把"当前选中的己方舰队"按战法拆成多路。
+            //   选中 = 战场点击己方舰队拾取（`battleSelectedFleetId`）；与 1-5 阵型键正交。
+            //   这是用户裁定"玩家可主动拆分自己的舰队"的入口。
+            if (keyName === 'X') {
+                if (this.store.isPaused || this.store.gameOver) return;
+                this.splitSelectedFleet();
+                return;
             }
 
             if (!newForm || this.store.isPaused || this.store.gameOver) return;
@@ -613,12 +698,27 @@ export class BattleScene extends Phaser.Scene {
                                 if (d < nearestEnemyDist) nearestEnemyDist = d;
                             }
                         });
-                        // P5 AI性格化：提督风格权重（基于能力值与标签）
+                        // P5 AI性格化：提督风格权重
                         const admStats = aiFac.admiralStats || {};
+                        // v29【勘误 + 接入】：原注释写"基于能力值与标签"，但实现**只读 admiralStats**——
+                        //   提督标签（MILITARY_STYLE_PARAMS）从未参与（全项目零引用）。现改为**标签优先、数值兜底**：
+                        //   冒险/突击/机动类 → aggressive；谨慎/防守/后勤类 → cautious。
+                        //   ⇒ 下游 :641（被塔打的死战阈值）、:644（进攻坚的战力比）、:669/:670（性格化阵型）
+                        //     首次由"这个提督是谁"驱动。
+                        const aiDoctrine: AdmiralDoctrine = (aiFac as any)._doctrine
+                            ?? ((aiFac as any)._doctrine = resolveAdmiralDoctrine((aiFac as any).admiralTags));
+                        const AGG_STYLES = ['aggressive', 'frontal_assault', 'mobile_raid'];
+                        const CAUT_STYLES = ['cautious', 'counter_defense', 'logistics_focus'];
                         const aggScore = (admStats.attack || 50) + (admStats.command || 50);
                         const cautScore = (admStats.defense || 50) + (admStats.tactics || 50);
-                        const personalityType = aggScore > cautScore + 20 ? 'aggressive' : (cautScore > aggScore + 20 ? 'cautious' : 'balanced');
-                        const advMult = personalityType === 'aggressive' ? 0.8 : (personalityType === 'cautious' ? 1.2 : 1.0);
+                        const personalityType = (aiDoctrine.styleTag && AGG_STYLES.includes(aiDoctrine.styleTag)) ? 'aggressive'
+                            : (aiDoctrine.styleTag && CAUT_STYLES.includes(aiDoctrine.styleTag)) ? 'cautious'
+                            : aggScore > cautScore + 20 ? 'aggressive' : (cautScore > aggScore + 20 ? 'cautious' : 'balanced');
+                        // [v31-A] 进攻性：**教范 `attackMod` 参与推进阈值**（>1 更主动，<1 更保守）。
+                        //   判据形如 `forceRatio > 2.0 * advMult * deployAdj` ⇒ advMult 越小越早压上。
+                        //   取 `1/attackMod`：进攻型(1.3~1.4)更早进攻、谨慎型(0.7)更晚（范围 0.71~1.43）。
+                        const doctrineAggro = aiDoctrine.attackMod > 0 ? 1 / aiDoctrine.attackMod : 1;
+                        const advMult = (personalityType === 'aggressive' ? 0.8 : (personalityType === 'cautious' ? 1.2 : 1.0)) * doctrineAggro;
                         const forceRatio = totalEnemyPower > 0 ? myPower / totalEnemyPower : 999;
 
                         // [V18-B/#67 · (a) D3 契约补全] 段③「1Hz 战略姿态评估」是低于 L1 的 AI 写者，
@@ -656,11 +756,15 @@ export class BattleScene extends Phaser.Scene {
                                 }
                                 fleet.stance = 'search';
                             }
-                            // P5 性格化：激进派默认楔形突击，保守派默认方阵防御
-                            // P3 合围指令：AI 优先楔形包抄
+                            // [v31-A] 性格化阵型：**教范（`MILITARY_STYLE_PARAMS.formation`）首次生效**。
+                            //   优先级：合围指令(部署卡) > 撤退(圆阵) > **该提督教范阵型**。
+                            //   ⚠ 旧实现只在 `siege+aggressive` / `fallback+cautious` **两个分支**赋值 ⇒
+                            //     其余情况**根本不写 formation** ⇒ 舰队保持出厂值不回炉
+                            //     （用户实报："毕典菲尔特特性是直冲，出来的阵型竟然是个长条"
+                            //      —— 因为人格**从未参与**阵型决策，见 `24` §1 证据 3）。
                             if (aiFac._deployTactic === 'encircle' && fleet.stance === 'siege') fleet.formation = 'wedge';
-                            else if (fleet.stance === 'siege' && personalityType === 'aggressive') fleet.formation = 'wedge';
-                            else if (fleet.stance === 'fallback' && personalityType === 'cautious') fleet.formation = 'circle';
+                            else if (fleet.stance === 'fallback') fleet.formation = 'circle'; // 撤退：全向防御
+                            else fleet.formation = aiDoctrine.formation;                       // 其余：**教范默认**
                         }
                 }
                 });
@@ -782,17 +886,12 @@ export class BattleScene extends Phaser.Scene {
         const state = (this.store as any).tacticalState;
         const isCampaign = state && state.mode === 'campaign';   // ← [#74 · B2] 从死变量转为真条件
         const hasPlayer = this.store.factions.some((f: any) => f.type === 'player' && f.active);
-        // [#74 · B2] JM 2026-09-16 拍板「仅指挥制加」：演习(skirmish)只在指挥制下进入部署暂停。
-        //   ⚠ 刻意偏离设计文档 §1.4：**战役不受 mapStyle 限制**，否则战役的 battlefieldMode 被
-        //   设置面板改为 hex/crt/3d 时会丢失部署窗口（回归）。战役维持原不变量「有玩家即部署」。
-        const wantDeploy = hasPlayer && (isCampaign || this.mapStyle === 'command');
+        // [#74 · B2] JM 2026-09-16 拍板：演习(skirmish)与战役**都**进入部署暂停（有玩家即部署）。
+        const wantDeploy = hasPlayer;
         if (!wantDeploy) {
-            if (this.mapStyle === 'command') {
-                // v3 修复（用户反馈"军议面板一闪而过"）：原 25s delayedCall 自动收起，
-                //   玩家开局看战场根本来不及看面板 → 表现为"右侧一闪而过"。
-                //   改为常驻：开局展开，玩家手动点 × 关闭，之后靠右上角按钮再开。
-                (this.store as any).warRoomOpen = true;
-            }
+            // v3 修复（用户反馈"军议面板一闪而过"）：原 25s delayedCall 自动收起 →
+            //   改为常驻：开局展开，玩家手动点 × 关闭，之后靠右上角按钮再开。
+            (this.store as any).warRoomOpen = true;
             // [V18-A · B-0] 演习/无玩家轻量分支：也为 AI 生成战前计划（与战役同口径；用户要求两模式兼顾）
             this.planAiFactionsForDeploy();      // ← 本分支唯一调用点，勿上提
             // [V18-A · P1] 镜像「总指挥确认卡」候选（演习制下无真暂停 → 卡片只读展示）
@@ -804,7 +903,7 @@ export class BattleScene extends Phaser.Scene {
         this.store.isPaused = true;
         // 提督扮演：镜像部署阶段 → 军议面板（指挥制下自动展开，战前分配初始任务）
         (this.store as any).battleDeployPhase = true;
-        if (this.mapStyle === 'command') (this.store as any).warRoomOpen = true;
+        (this.store as any).warRoomOpen = true;
         // 玩家舰队摆好初始阵型（默认楔形）
         const pFac = this.store.factions.find((f: any) => f.type === 'player');
         const pFleet = this.globalFleets.find((f: any) => f.factionId === pFac?.id);
@@ -871,7 +970,7 @@ export class BattleScene extends Phaser.Scene {
             ``,
         ];
         // 「右侧『军议』…」仅指挥制拼接（非指挥制无该面板，显示会造成"找不到面板"的新困惑）
-        if (this.mapStyle === 'command') lines.push(`  右侧「军议」为各舰队分配初始任务 · 确认总指挥`, ``);
+        lines.push(`  右侧「军议」为各舰队分配初始任务 · 确认总指挥`, ``);
         lines.push(cdLine ? `  [回车] 立即开战          ${cdLine}` : `  [回车] 立即开战`);
         this.deployText.setText(lines.join('\n'));
         // [V18-A · F2 去镜像] 指令卡不再镜像写入 AI 阵营的 _deployTactic：
@@ -930,10 +1029,19 @@ export class BattleScene extends Phaser.Scene {
             const ef = this.factionMap.get(fl.factionId);
             return ef && ef.team !== myTeam && fl.units && fl.units.length > 0;
         });
+        // [v31-A] 与战略层**统一口径**：性格判定**优先读提督标签**。
+        //   旧实现只读 `admiralStats`，与 `:673`（v29 已改为标签优先）**口径不一致** ——
+        //   同一文件里曾并存两套"性格"判定（`24` §1 证据 2）。
+        const doctrine: AdmiralDoctrine = (aiFac as any)._doctrine
+            ?? ((aiFac as any)._doctrine = resolveAdmiralDoctrine((aiFac as any).admiralTags));
+        const AGG_SET = ['aggressive', 'frontal_assault', 'mobile_raid'];
+        const CAUT_SET = ['cautious', 'counter_defense', 'logistics_focus'];
         const admStats = aiFac.admiralStats || {};
         const agg = (admStats.attack || 50) + (admStats.command || 50);
         const caut = (admStats.defense || 50) + (admStats.tactics || 50);
-        const personality = agg > caut + 20 ? 'aggressive' : (caut > agg + 20 ? 'cautious' : 'balanced');
+        const personality = (doctrine.styleTag && AGG_SET.includes(doctrine.styleTag)) ? 'aggressive'
+            : (doctrine.styleTag && CAUT_SET.includes(doctrine.styleTag)) ? 'cautious'
+            : agg > caut + 20 ? 'aggressive' : (caut > agg + 20 ? 'cautious' : 'balanced');
         const diff = this.store.selectedDiff || 'normal';
         // 按兵力降序：最强 → 突击；其余按序 → 夺取 / 协同 / 坚守 / 补给
         const scored = fleets
@@ -976,12 +1084,21 @@ export class BattleScene extends Phaser.Scene {
             }
             fl.mission = mission;
             fl._planRole = role;
+            // [v31-A] **出场阵型 = 该提督的教范阵型**（用户核心诉求：毕典菲尔特出场就该是楔形，
+            //   而不是"长条"）。此前本函数**全文无 formation 赋值** ⇒ 出场到战略层首个 Tick 之间
+            //   的窗口里舰队没有阵型（出厂值未设）⇒ 观感上"提督特性完全没生效"。
+            fl.formation = doctrine.formation;
         });
+
+        // [v31-C] **分舰队编成**：按战法把本方舰队编成多路（够则直接分工、不足则拆最强的一支）。
+        //   这是"迂回 / 包抄 / 诱饵 / 后勤战"从抽象变成战场的唯一入口。
+        //   战法选择 = `taskForce.selectManeuver`（教范偏好 → 态势可行性 → 降级链）；
+        //   机动几何复用 `config/fleetSplitManeuver.ts`（已具备三幕包抄的闭式不互穿保证）。
+        this.applyManeuver(aiFac, fleets, enemyFleets);
     }
 
     /** [V18-A · P1] 把「总指挥确认卡」所需候选/判定依据镜像到 store（供 CouncilWarRoom 渲染） */
     private publishSupremeCommanderPanel() {
-        if (this.mapStyle !== 'command') { (this.store as any).supremeCommanderCandidates = []; return; }
         const cands: any[] = [];
         this.globalFleets.forEach((fl: any) => {
             const fac = this.factionMap.get(fl.factionId);
@@ -1038,7 +1155,7 @@ export class BattleScene extends Phaser.Scene {
         const defenderFac = this.factionMap.get(state.defenders?.[0]?.factionId);
         // 指挥制下兜底同步按动态出生距离（正常路径 castlePos 已由 buildCampaignEnvironment 给足，
         // 这里是 castlePos 缺失时的兜底，hex/crt 保持 ±150 原样）
-        const fallbackSpawnDist = this.mapStyle === 'command' ? this.commandSpawnDist : 150;
+        const fallbackSpawnDist = this.commandSpawnDist;
         const attackerSpawn = attackerFac?.castlePos || { x: -fallbackSpawnDist, y: 0 };
         const defenderSpawn = defenderFac?.castlePos || { x: fallbackSpawnDist, y: 0 };
 
@@ -1361,10 +1478,7 @@ export class BattleScene extends Phaser.Scene {
             }
         });
 
-        // v2 修复：CRT 模式下买地/铺路/据点失主后，重画全息棱柱（之前有 bug：后续买的地块没 3D 效果）
-        if (this.mapStyle === 'crt' && this.crtWireframe) {
-            this.renderCRTWireframeMap(this.tilesList);
-        }
+        // （原「CRT 模式重画全息棱柱」已随该模式删除）
     }
 
     /** 指挥制补给源作用半径（世界单位）：旗舰在此距离内即获得补给。
@@ -1512,9 +1626,7 @@ export class BattleScene extends Phaser.Scene {
 
             // 补给判定基准必须使用旗舰的物理坐标，而非舰队虚拟阵型锚点
             const flagship = fl.units[0];
-            // CRT模式下sprite.y被Y轴压缩，反算前必须还原为逻辑坐标
-            const yComp = this.mapStyle === 'crt' ? CRT_Y_SCALE : 1;
-            const realY = flagship.sprite.y / yComp;
+            const realY = flagship.sprite.y;
             const fQ = Math.round((Math.sqrt(3)/3 * flagship.sprite.x - 1/3 * realY) / this.hexRadius);
             const fR = Math.round((2/3 * realY) / this.hexRadius);
 
@@ -1522,18 +1634,13 @@ export class BattleScene extends Phaser.Scene {
             // 团队级补给：同team的任意阵营地块均可提供补给（非严格faction匹配）
             const myTeam = this.factionMap.get(fac.id)?.team;
 
-            // ===== 指挥制（无六边形格子）：改用"补给源空间距离"判定 =====
-            // 六边形模式下补给靠地块连通（tilesDict + connected）；
-            // 指挥制纯宇宙没有格子可依附，若沿用会永远判定为断补给 → 后勤战失效。
-            // 因此指挥制下改为：计算旗舰到最近己方补给源（castle/planet）的距离，
-            // 在 SUPPLY_BASE_RADIUS 内即视为获得补给。
-            const isCommandMode = this.mapStyle === 'command';
+            // ===== 补给判定：旗舰到最近己方补给源（castle / 占领的中继·星球）的空间距离 =====
             let inSupplyByDistance = false;
             // 补给链判定：优先用 SupplyChainSystem 的结果（含运输舰延伸范围）
             const chainInfo = this.supplyInfo.get(fl);
             if (chainInfo) {
                 inSupplyByDistance = !!chainInfo.inSupply;
-            } else if (isCommandMode) {
+            } else {
                 // v6.1：getNearestSupplySource 已改为"超圈余量"口径（圈内 ≤0）→ 直接判 ≤0
                 const src = this.getNearestSupplySource(flagship.sprite.x, realY, myTeam);
                 if (src !== null && src <= 0) inSupplyByDistance = true;
@@ -1541,18 +1648,7 @@ export class BattleScene extends Phaser.Scene {
 
             fl.units.forEach((u: any) => {
                 let inSupply = inSupplyByDistance;
-                if (!isCommandMode && currentTile && currentTile.ownerId !== 0 && currentTile.connected) {
-                    const tileFac = this.factionMap.get(currentTile.ownerId);
-                    if (tileFac && tileFac.team === myTeam) inSupply = true;
-                }
 
-                if (!isCommandMode && currentTile && currentTile.ownerId !== 0 && currentTile.type === 'barracks') {
-                    const tileFac = this.factionMap.get(currentTile.ownerId);
-                    if (tileFac && tileFac.team === myTeam) {
-                        inSupply = true;
-                        u.hp = Math.min(u.maxHp, u.hp + u.maxHp * 0.05);
-                    }
-                }
 
                 if (inSupply) {
                     u.supply = Math.min(100, (u.supply !== undefined ? u.supply : 100) + 5);
@@ -1569,9 +1665,11 @@ export class BattleScene extends Phaser.Scene {
 
                     // ===== 断粮三段式惩罚（用户要求：先掉士气，再掉生命）=====
                     if (fl.morale === undefined) fl.morale = 100;
-                    // 阶段1：补给 < 30 → 士气持续下降（每帧 -1.5）
-                    if (u.supply < 30) {
-                        fl.morale = Math.max(0, fl.morale - 1.5);
+                    // v29：士气衰减随补给度**连续加剧**（30% 附近 −1.0/帧，归零时 −2.0/帧），
+                    //   取代旧的恒定 −1.5 —— 体现"越打越弱"而非"过线即恒定掉士气"。
+                    const moraleDrain = moraleDrainPerTick(u.supply);
+                    if (moraleDrain > 0) {
+                        fl.morale = Math.max(0, fl.morale - moraleDrain);
                     }
                     // 阶段2：士气归零 且 补给仍为 0 → 才开始扣结构生命
                     //        （士气未归零时只表现为战力/机动衰减，见伤害与速度计算处）
@@ -1591,12 +1689,12 @@ export class BattleScene extends Phaser.Scene {
                 currentTile.hp -= Math.max(25, totalAtk * 0.12);
                 // 占领进度：hex透明度反映剩余HP（越低越接近占领）
                 const hpPct = Math.max(0.05, currentTile.hp / 300);
-                currentTile.sprite.setAlpha(this.mapStyle === 'crt' ? 0.15 + hpPct * 0.2 : 0.4 + hpPct * 0.5);
+                currentTile.sprite.setAlpha(0.4 + hpPct * 0.5);
                 if (currentTile.hp <= 0) {
                     currentTile.ownerId = fac.id;
                     currentTile.hp = 0;
-                    currentTile.sprite.setFillStyle(fac.color, this.mapStyle === 'crt' ? 0.35 : 0.9);
-                    currentTile.sprite.setStrokeStyle(2, fac.color, this.mapStyle === 'crt' ? 0.5 : 1.0);
+                    currentTile.sprite.setFillStyle(fac.color, 0.9);
+                    currentTile.sprite.setStrokeStyle(2, fac.color, 1.0);
                     this.showFleetDialogue(fl, 'capture');
                     this.store.triggerToast(`前线据点已被 [${fac.name}] 攻占！`);
                     // v2 修复：占领后立即重新评估目标（推进/拆塔/回防），杜绝占领后发呆
@@ -1618,11 +1716,10 @@ export class BattleScene extends Phaser.Scene {
             // v5：① hex 反算邻域 ±2 格扫描（多格拼图也不漏）；② 距离门槛放宽到 280
             //   （≥ 航母 siege 站位 260）；③ 舰队锚点直接用 fl.x/fl.y；④ 进度期即触发
             //   登陆艇视觉（startCapture 只在 capture 事件播一次，重复事件幂等）。
-            if (fl.units.length > 0 && (this.mapStyle === 'command' || currentTile)) {
+            if (fl.units.length > 0) {
                 const capR = this.hexRadius * 2;
                 const candTiles: any[] = [];
-                if (this.mapStyle === 'command' || !currentTile || currentTile.type === 'planet' || currentTile.type === 'relay') {
-                    // 指挥制 / 反算格非占领类：邻域扫描收集可占领目标
+                    // 邻域扫描（±2 格）收集可占领目标。指挥制无格子语义，此路径恒定生效。
                     if (currentTile && (currentTile.type === 'planet' || currentTile.type === 'relay')) {
                         candTiles.push(currentTile);
                     }
@@ -1644,7 +1741,6 @@ export class BattleScene extends Phaser.Scene {
                         });
                         if (bestT) candTiles.push(bestT);
                     }
-                }
 
                 let capTarget: any = null;
                 for (const ct of candTiles) {
@@ -1673,9 +1769,7 @@ export class BattleScene extends Phaser.Scene {
                         this.showFleetDialogue(fl, 'capture'); // 触发占领语录
                         capTarget.ownerId = fac.id;
                         capTarget.captureProgress = 0;
-                        if (this.mapStyle !== 'crt') {
-                            capTarget.sprite.setFillStyle(fac.color, 0.9); capTarget.sprite.setStrokeStyle(3, fac.color, 1.0);
-                        }
+                        capTarget.sprite.setFillStyle(fac.color, 0.9); capTarget.sprite.setStrokeStyle(3, fac.color, 1.0);
                         fac.goldRate += 15;
                         this.store.triggerToast(`战略要地已被 [${fac.name}] 占领！后勤线扩展。`);
                         // v2 修复：占领星球后立即重新评估目标
@@ -1688,9 +1782,7 @@ export class BattleScene extends Phaser.Scene {
                             const dist = Math.max(Math.abs(t.q - capTarget.q), Math.abs(t.r - capTarget.r), Math.abs(-t.q-t.r - (-capTarget.q-capTarget.r)));
                             if (dist <= 2 && t.type !== 'sea' && t.type !== 'ruined' && t.type !== 'planet' && t.type !== 'castle' && t.type !== 'relay') {
                                 t.ownerId = fac.id; t.type = 'pending';
-                                if (this.mapStyle !== 'crt') {
-                                    t.sprite.setFillStyle(fac.color, 0.9); t.text.setText('').setAlpha(0);
-                                }
+                                t.sprite.setFillStyle(fac.color, 0.9); t.text.setText('').setAlpha(0);
                             }
                         });
                     }
@@ -1883,13 +1975,21 @@ export class BattleScene extends Phaser.Scene {
         this.store.triggerToast(`▸ 【${fac.name || '己方舰队'}】已奉命前往目标空域。`);
     }
 
-    // 渲染地图切片（将原 create 里的绘图代码抽离复用，完整保留交互与视觉）
-    protected renderHexMap(mapDataMatrix: any[]) {
-        const isCRT = this.mapStyle === 'crt';
-        const yScale = isCRT ? CRT_Y_SCALE : 1;
+    /**
+     * 构建地块**数据层**（`tilesList` / `tilesDict`）并为每格建一个**占位 sprite**。
+     *
+     * ⚠ 两个必须知道的前提（2026-09-20 三模式删除后）：
+     *   ① **数据层是刚需** —— AI 的探索/目标选择、占领、补给判定全部读 `tilesList`/`tilesDict`，
+     *      删掉它 AI 会"找不到任何地块目标 ⇒ 舰队原地不动"。
+     *   ② **视觉层不是主路径** —— 指挥制下 `body.battle3d-mode` 会隐藏整个 Phaser 画布，
+     *      这里建的 `poly`/`txt` 在正常战斗中**一个像素都看不到**；它们只是占位对象，
+     *      供占领/买地等逻辑调用 `setFillStyle` / `setText` 时有落点（不存在的对象会抛错）。
+     *      只有「3D overlay 8 秒内建不起来」的降级路径才会显示它们（见 App.vue）。
+     */
+    protected buildTileGrid(mapDataMatrix: any[]) {
         mapDataMatrix.forEach(data => {
             const x = this.hexRadius * (Math.sqrt(3) * data.q + Math.sqrt(3)/2 * data.r);
-            const y = this.hexRadius * (3/2 * data.r) * yScale;
+            const y = this.hexRadius * (3/2 * data.r);
 
             if (data.type === 'castle') {
                const fac = this.factionMap.get(data.ownerId);
@@ -1899,30 +1999,25 @@ export class BattleScene extends Phaser.Scene {
             const points: number[] = [];
             for (let i = 0; i < 6; i++) {
               const angle = (Math.PI / 180) * (60 * i - 30);
-              points.push(x + this.hexRadius * Math.cos(angle)); points.push(y + this.hexRadius * Math.sin(angle) * yScale);
+              points.push(x + this.hexRadius * Math.cos(angle)); points.push(y + this.hexRadius * Math.sin(angle));
             }
 
             let fillColor = 0x2d3446; let strokeColor = 0x475569; 
             const ownerFac = this.factionMap.get(data.ownerId);
-            if (isCRT) {
-                // CRT 黑底透明 + 阵营色线框
-                fillColor = 0x000000;
-                strokeColor = 0x224422; // 默认暗绿
-                if (ownerFac) strokeColor = ownerFac.color;
-                else if (data.type === 'sea') strokeColor = 0x113366;
-                else if (data.type === 'ruined') strokeColor = 0x333333;
-                else if (data.type === 'pier') strokeColor = 0x0ea5e9;
-                else if (data.type === 'planet') strokeColor = 0x33cc33;
-                else if (data.type === 'fortress') strokeColor = 0xff3311;
-            } else if (ownerFac) { fillColor = ownerFac.color; strokeColor = ownerFac.color; }
+            if (ownerFac) { fillColor = ownerFac.color; strokeColor = ownerFac.color; }
+            else if (data.type === 'sea') { fillColor = 0x1e3a8a; strokeColor = 0x2563eb; }
+            else if (data.type === 'ruined') { fillColor = 0x1c1917; strokeColor = 0x44403c; }
+            else if (data.type === 'pier') { fillColor = 0x0284c7; strokeColor = 0x0ea5e9; }
+            else if (data.type === 'planet') { fillColor = 0x92400e; strokeColor = 0xf59e0b; }
+            else if (data.type === 'fortress') { fillColor = 0x2a2a3a; strokeColor = 0x6a6a7a; }
             else if (data.type === 'sea') { fillColor = 0x1e3a8a; strokeColor = 0x2563eb; }
             else if (data.type === 'ruined') { fillColor = 0x1c1917; strokeColor = 0x44403c; }
             else if (data.type === 'pier') { fillColor = 0x0284c7; strokeColor = 0x0ea5e9; }
             else if (data.type === 'planet') { fillColor = 0x92400e; strokeColor = 0xf59e0b; }
             else if (data.type === 'fortress') { fillColor = 0x2a2a3a; strokeColor = 0x6a6a7a; }
             
-            const poly = this.add.polygon(0, 0, points, fillColor).setAlpha(isCRT ? 0.01 : 0.9);
-            const sWidth = (data.type === 'fortress') ? 2 : (ownerFac ? 3 : (isCRT ? 1.5 : 1));
+            const poly = this.add.polygon(0, 0, points, fillColor).setAlpha(0.9);
+            const sWidth = (data.type === 'fortress') ? 2 : (ownerFac ? 3 : 1);
             poly.setStrokeStyle(sWidth, strokeColor, 1.0);
             poly.setOrigin(0).setInteractive(new Phaser.Geom.Polygon(points), Phaser.Geom.Polygon.Contains);
 
@@ -1952,12 +2047,10 @@ export class BattleScene extends Phaser.Scene {
             if (data.type === 'castle') txtAlpha = 1.0;
 
             const txt = this.add.text(x, y, markTxt, {
-                fontSize: fontSize, color: isCRT ? '#88cc88' : txtColor, fontFamily: 'monospace', align: 'center'
-            }).setOrigin(0.5).setAlpha(isCRT ? 0 : txtAlpha);
+                fontSize: fontSize, color: txtColor, fontFamily: 'monospace', align: 'center'
+            }).setOrigin(0.5).setAlpha(txtAlpha);
 
-            if (isCRT && data.type === 'castle') {
-                txt.setColor('#ffcc00').setStroke('#000000', 3);
-            } else if (data.type === 'castle') { txt.setStroke('#0f172a', 2); txt.setDepth(10); }
+            if (data.type === 'castle') { txt.setStroke('#0f172a', 2); txt.setDepth(10); }
 
             const tileHp = (data.type === 'ruined' || data.type === 'sea' || data.type === 'fortress') ? 99999 : (data.hp || 150);
             if (data.type === 'planet') data.hp = 1000;
@@ -1971,25 +2064,20 @@ export class BattleScene extends Phaser.Scene {
             const tile = {
               q: data.q, r: data.r, cost: data.cost, ownerId: data.ownerId, type: data.type,
               typeName: typeNames[data.type] || data.type,
+              // [v35 G1] **必须把 `terrain` 搬进来** —— `buildMapData()` 在 `:4059-4066`
+              //   往 `mapDataMatrix` 注入了 6 种空域地形（星云/小行星带/引力点/残骸区/机雷区/
+              //   杰夫粒子云，共 27% 密度），但本函数**重建 tile 对象时漏了这个字段**
+              //   ⇒ `getTerrainAt().terrain` 恒 `undefined` ⇒ `terrainEffect()` 恒中性
+              //   ⇒ 移速/射程/闪避/索敌/持续损伤 **六处消费者全部空转**、地面标记也不画
+              //   ⇒ 战场"零地形"（用户实报 2026-09-20："地图中是有各种空域地形的，我现在就一个中继点"）。
+              //   ⚠ 这是**唯一断点**：`buildMapData` 的返回值直接作为本函数的 `mapDataMatrix` 参数
+              //     （见 `:454 buildMapData()` → `:534 buildTileGrid(mapDataMatrix)`），同源同序。
+              terrain: data.terrain,
               tileClass: 'none', tier: 'none', hp: tileHp, maxHp: tileHp, x, y, sprite: poly, text: txt, lastTowerShotTime: 0,
               connected: false, captureProgress: 0
             };
 
-            if (!isCRT) {
-                if (data.type === 'ruined') {
-                    const rockCount = Phaser.Math.Between(3, 6);
-                    for (let i = 0; i < rockCount; i++) {
-                        const rx = x + Phaser.Math.Between(-14, 14);
-                        const ry = y + Phaser.Math.Between(-14, 14);
-                        const rSize = Phaser.Math.Between(2, 5);
-                        this.add.polygon(rx, ry, [
-                            0, 0, rSize, rSize*0.5, rSize*1.2, rSize*1.5, 0, rSize*2, -rSize, rSize*1.2, -rSize*0.8, 0
-                        ], 0x44403c).setStrokeStyle(1, 0x292524).setDepth(1).setAngle(Phaser.Math.Between(0, 360));
-                    }
-                } else if (data.type === 'sea') {
-                    this.add.circle(x + Phaser.Math.Between(-10, 10), y + Phaser.Math.Between(-10, 10), 3, 0x1e40af, 0.4).setDepth(1);
-                }
-            }
+            // （原「陨石废墟碎石 / 深空暗流」装饰已随 hex 棋盘模式的视觉一并删除）
 
             // 左键/右键地块交互
             poly.on('pointerup', async (pointer: Phaser.Input.Pointer) => this.handleTileClick(pointer, tile, poly, txt));
@@ -2013,7 +2101,6 @@ export class BattleScene extends Phaser.Scene {
     private computeSupremeCommander() {
         this.supremeCommanderId = null;
         (this.store as any).supremeCommanderId = null;
-        if (this.mapStyle !== 'command') return;
         const state = (this.store as any).tacticalState;
         const isCampaign = state && state.mode === 'campaign';
         let supremeId: number | null = null;
@@ -2055,7 +2142,7 @@ export class BattleScene extends Phaser.Scene {
      *      兜底全控，避免玩家完全无法操作；通常此时已 gameOver）
      */
     private checkSupremeSuccession() {
-        if (this.mapStyle !== 'command' || this.supremeCommanderId == null) return;
+        if (this.supremeCommanderId == null) return;
         const team1Alive = this.globalFleets.filter((fl: any) => {
             const fac = this.factionMap.get(fl.factionId);
             return fac && fac.team === 1 && fl.units && fl.units.length > 0;
@@ -2088,7 +2175,6 @@ export class BattleScene extends Phaser.Scene {
 
     /** 中继补给源（v5 改为空间站 relay 类型，不再是星球）：占领后纳入补给网 */
     private spawnSupplyRelayPlanets() {
-        if (this.mapStyle !== 'command') return;
         // v6.3：星球→中继**限量**转换。v6.2 把 15~25 个随机星球全量转 relay，
         //   每个都带 630 半径灰圈 → 20 多个大圈叠满地图（用户实报"越设计越丑"）。
         //   中继是稀缺战略节点：只保留战线中线带至多 4 个（按距中线距离排序取最近），
@@ -2160,7 +2246,7 @@ export class BattleScene extends Phaser.Scene {
                 campaignMatrix.push({ q, r, cost: 50, type: 'pending', ownerId: 0 });
             }
         }
-        this.renderHexMap(campaignMatrix);
+        this.buildTileGrid(campaignMatrix);
     }
 
     // 构建战役模式专属的无污染对峙空域
@@ -2178,7 +2264,7 @@ export class BattleScene extends Phaser.Scene {
         //   演习/战术模拟走 computeCommandSpawnExtent 动态值），矩阵生成后由
         //   computeCommandSpawnExtent 的结果接管 castlePos 兜底逻辑。
         //   hex/crt: 26→208, 50→400（保持原样）
-        const spawnDist = this.mapStyle === 'command' ? this.commandSpawnDist : this.hexRadius * 8;
+        const spawnDist = this.commandSpawnDist;
 
         if (state.attackers && state.attackers[0]) {
             const isPlayerFac = state.attackers[0].factionId === pFactionId;
@@ -2234,7 +2320,7 @@ export class BattleScene extends Phaser.Scene {
                 const tile = campaignMatrix.find(t => t.q === 15 + dq && t.r === 0 + dr);
                 if (tile) tile.type = 'fortress';
             });
-            this.renderHexMap(campaignMatrix);
+            this.buildTileGrid(campaignMatrix);
 
             // 初始化要塞武器
             const fX = this.hexRadius * (Math.sqrt(3) * 15 + Math.sqrt(3) / 2 * 0);
@@ -2284,7 +2370,7 @@ export class BattleScene extends Phaser.Scene {
                     campaignMatrix.push({ q, r, cost: 50, type: 'pending', ownerId: 0 });
                 }
             }
-            this.renderHexMap(campaignMatrix);
+            this.buildTileGrid(campaignMatrix);
         }
     }
 
@@ -2517,61 +2603,97 @@ export class BattleScene extends Phaser.Scene {
 
     /** 获取坐标所在的格子（含地形） */
     private getTerrainAt(x: number, y: number): any {
-        const yComp = this.mapStyle === 'crt' ? CRT_Y_SCALE : 1;
-        const realY = y / yComp;
+        const realY = y;
         const q = Math.round((Math.sqrt(3) / 3 * x - 1 / 3 * realY) / this.hexRadius);
         const r = Math.round((2 / 3 * realY) / this.hexRadius);
         return this.tilesDict[`${q},${r}`] || null;
     }
 
+    /**
+     * 地形影响（v33 收口）
+     *
+     * 原实现是三个并列 switch（各自维护 `terrain` 分支）⇒ 新增地形要改三处、易漏，
+     * 且旧案地形表的「索敌」「损伤」两列**从未被实现**。
+     * 现统一委托 `config/terrainEffects.ts` 的单一真源表（**既有 4 种地形的乘数原样保留**，
+     * 只新增索敌列与机雷/杰夫粒子云的损伤列 ⇒ 本项对既有手感的改变仅来自视野）。
+     */
+    private getTerrainEffect(x: number, y: number) {
+        return terrainEffect(this.getTerrainAt(x, y)?.terrain);
+    }
+
     /** 地形 → 移速倍率 */
     private getTerrainSpeedMul(x: number, y: number): number {
-        const tile = this.getTerrainAt(x, y);
-        if (!tile?.terrain) return 1.0;
-        switch (tile.terrain) {
-            case 'nebula': return 0.6;    // 星云：减速40%
-            case 'gravity': return 1.3;   // 引力点：加速30%
-            case 'debris': return 0.85;   // 残骸：轻微减速
-            case 'asteroid': return 0.8;  // 小行星带：减速20%
-            default: return 1.0;
-        }
+        return this.getTerrainEffect(x, y).speedMul;
     }
 
     /** 地形 → 射程修正（%），小行星带射程-30% */
     private getTerrainRangeMul(x: number, y: number): number {
-        const tile = this.getTerrainAt(x, y);
-        if (!tile?.terrain) return 1.0;
-        if (tile.terrain === 'asteroid') return 0.7;
-        return 1.0;
+        return this.getTerrainEffect(x, y).rangeMul;
     }
 
     /** 地形 → 闪避修正（星云+20%） */
     private getTerrainDodgeMul(x: number, y: number): number {
-        const tile = this.getTerrainAt(x, y);
-        if (!tile?.terrain) return 1.0;
-        if (tile.terrain === 'nebula') return 1.2;
-        return 1.0;
+        return this.getTerrainEffect(x, y).dodgeMul;
+    }
+
+    /**
+     * 地形 → 视野修正（v33 新增，补旧案地形表的「索敌」列）。
+     * 既有插槽：`getVisionRange()` 返回视野半径、`clarity` 已按 `d/visionRange` 分
+     * full/partial/fuzzy —— 只是从没被地形影响过。
+     */
+    private getTerrainVisionMul(x: number, y: number): number {
+        return effectiveVisionMul(this.getTerrainEffect(x, y));
+    }
+
+    /** [v33 P1-4.1] 地形持续损伤的累计时钟（ms，真实时间） */
+    private terrainDotAccumMs = 0;
+
+    /**
+     * [v33 P1-4.1] 机雷 / 杰夫粒子云的**持续损伤**（补旧案地形表的「损伤」列）。
+     *
+     * 实现口径：
+     *   · 每 `TERRAIN_RULES.DOT_TICK_MS`(3000ms) 结算一次，对**格内所有单位**扣
+     *     `maxHp × dotPct`（机雷 1.5% / 粒子云 0.8% ⇒ 约 30% / 16% 每分钟）。
+     *   · 只改 `u.hp`，**不在这里处理死亡**：既有的每帧清理（`globalFleets` 过滤
+     *     `u.hp <= 0`）会统一走旗舰沉没叙事 / 战损账单 / 指挥带宽降级那条完整链路，
+     *     另写一份死亡处理必然漏项。
+     *   · 累加器夹 100ms（与全文件 `Math.min(delta, 100)` 约定同源），防单帧卡顿后连爆。
+     */
+    private applyTerrainDot(delta: number) {
+        if (!TERRAIN_RULES.DOT_ENABLED_DEFAULT) return;
+        this.terrainDotAccumMs += Math.min(delta, 100);
+        if (this.terrainDotAccumMs < TERRAIN_RULES.DOT_TICK_MS) return;
+        this.terrainDotAccumMs = 0;
+        for (const fleet of this.globalFleets) {
+            const units = fleet?.units;
+            if (!units || units.length === 0) continue;
+            for (const u of units) {
+                const eff = this.getTerrainEffect(u.sprite.x, u.sprite.y);
+                if (!(eff.dotPct > 0)) continue;
+                const dmg = Math.max(1, Math.floor((u.maxHp || 0) * eff.dotPct));
+                u.hp -= dmg;
+                this.spawnDamageNumber(u.sprite.x, u.sprite.y, dmg, false);
+            }
+        }
     }
 
     /** 渲染地形标记到 hex（nebula/asteroid/gravity/debris） */
     private renderTerrainMarkers() {
         if (!this.tilesList || !this.tilesDict) return;
-        const styleMap: Record<string, { color: number; label: string }> = {
-            nebula: { color: 0x8b5cf6, label: '☁' },
-            asteroid: { color: 0x78716c, label: '◍' },
-            gravity: { color: 0xf59e0b, label: '◎' },
-            debris: { color: 0x64748b, label: '✕' },
-        };
+        // 颜色/图标取自 `config/terrainEffects.TERRAIN_VISUAL`（与 3D 分区层、战场图例同源）。
+        // ⚠ 此前这里是**本地第二份** styleMap ⇒ 与 3D 层各写一套颜色，改一处不会同步另一处。
+        const styleMap = TERRAIN_VISUAL;
         this.tilesList.forEach((t: any) => {
             if (!t.terrain) return;
             const st = styleMap[t.terrain];
             if (!st) return;
-            if (this.mapStyle === 'crt') {
-                // CRT 模式：用 alpha 叠加表示
-                if (t.sprite?.active) t.sprite.setAlpha((t.sprite.alpha || 0.5) + 0.15);
-            } else if (t.sprite?.active) {
-                t.sprite.setFillStyle(st.color, 0.12);
-                t.sprite.setStrokeStyle(1, st.color, 0.3);
+            // 降级路径专用：见上方注释。0.30 是"叠在近黑底上仍读得出"的实测下限。
+            const r = this.hexRadius * 0.92;
+            // name 是验收用的：L2 探针按 `name === "terrainBlob"` 计数。
+            this.add.circle(t.x, t.y, r, st.color, 0.30).setDepth(1).setName('terrainBlob');
+            if (t.terrain === 'mine' || t.terrain === 'jeff') {
+                this.add.circle(t.x, t.y, r, st.color, 0).setDepth(1)
+                    .setStrokeStyle(2, st.color, 0.7).setName('terrainBlobRing');
             }
         });
     }
@@ -2744,7 +2866,49 @@ export class BattleScene extends Phaser.Scene {
         const ecmLevel = myFac.admiralStats?.electronicLevel || 0;
         let vision = baseVision + intel * 2 + ecmLevel * 30;
         if (fleet.stance === 'search') vision += 50;
+        // [v33] 地形「索敌」列（旧案地形表唯一从未被实现的一列）。
+        //   ⚠ 已按 TERRAIN_RULES.VISION_STRENGTH 削弱：本返回值是**索敌硬门**
+        //     （d < visionRange 才进 visibleEnemies，closestEnemyFleet 又只取非 fuzzy 者），
+        //     原始等级乘数（最大 −45%）会把视野压到 266px ⇒ 舰队永久丢目标、AI 空转。
+        //     现最坏 −20%，保住体感且不越悬崖（详见 balance.TERRAIN_RULES 注释）。
+        vision *= this.getTerrainVisionMul(fleet.x, fleet.y);
         return vision;
+    }
+
+    /**
+     * [v33 P1-4.4] 舰队提督特技 → 战术修正（**按舰队对象缓存**，每帧只算一次）。
+     *
+     * 为什么需要缓存：`computeCombatModifiers` 要遍历特技 × 效果两层，而伤害是**逐舰逐发**
+     * 结算的（单帧可达数百次）⇒ 直接内联调用会把热路径拖垮。
+     * 特技在战场内不会变，故缓存到舰队对象上安全（`_skillMods` 由本方法唯一写入）。
+     *
+     * ⚠ 战场侧此前完全拿不到提督特技（skills 只在战略层 gameStore 用），
+     *   故 `initFactions` 新增把 `admiralSkills` 带进 faction 配置（玩家/敌方对称）。
+     */
+    private skillModsOf(fleet: any): ReturnType<typeof computeCombatModifiers> {
+        if (!(fleet as any)._skillMods) {
+            const sk = this.factionMap.get(fleet.factionId)?.admiralSkills;
+            (fleet as any)._skillMods = computeCombatModifiers(sk || []);
+        }
+        return (fleet as any)._skillMods;
+    }
+
+    /**
+     * [v33 P1-4.2] 舰队拦截率（**带 250ms TTL 缓存**）。
+     *
+     * 为什么必须缓存：`fleetInterceptRate` 要遍历该舰队**全部存活单位**求防空加权均值，
+     * 而伤害是逐舰逐发结算的 ⇒ 不缓存就是 **O(N²)/帧**（N 可达 120）。
+     * 拦截率只在单位被击毁时变化，250ms 的陈旧度在观感上不可察（且不影响任何确定性口径）。
+     * 与 `skillModsOf` 同属"热路径只读一次"的既有约定（参见 v12.2 syncShips 优化）。
+     */
+    private interceptRateOf(fleet: any): number {
+        const now = this.time.now;
+        if ((fleet as any)._interceptAt === undefined || now - (fleet as any)._interceptAt > 250) {
+            (fleet as any)._interceptRate = fleetInterceptRate(
+                fleet.units || [], this.skillModsOf(fleet).intercept);
+            (fleet as any)._interceptAt = now;
+        }
+        return (fleet as any)._interceptRate ?? 0;
     }
 
     // ── 指挥点系统方法 ──
@@ -2778,7 +2942,7 @@ export class BattleScene extends Phaser.Scene {
         this.store.isPaused = true;
     }
 
-    /** 参谋敌情摘要：可见敌舰队数、最近敌距离、我方阵型克制判断（复用 update 内 beats 表） */
+    /** 参谋敌情摘要：可见敌舰队数、最近敌距离、我方阵型克制判断（走 formations.formationCounterMul 单一真源） */
     private buildStaffBriefing(pFleet: any, pFac: any): string {
         // 敌情收集：只统计迷雾可见的敌方舰队（复用渲染迷雾同款口径：友军建筑300px / 舰队250·450px）
         let visibleEnemyCount = 0;
@@ -2809,14 +2973,20 @@ export class BattleScene extends Phaser.Scene {
 
         if (visibleEnemyCount === 0) return '参谋：当前视野内无敌舰队。';
         const formCn: Record<string, string> = { wedge: '楔形阵', line: '横阵', spindle: '纺锤阵', circle: '圆形阵', square: '方阵' };
-        // 阵型克制判断（与 update 内 beats 表保持一致）
-        const beats: Record<string, string> = { 'wedge': 'spindle', 'spindle': 'circle', 'circle': 'square', 'square': 'line', 'line': 'wedge' };
+        // [v33 P0-1] 阵型克制判断改为 formations.formationCounterMul（单一真源）。
+        //   原实现是本文件内的**第二张** beats 表，且与 config/formations.ts 的环**关系相反**：
+        //     本文件（旧）：楔→纺→圆→方→横→楔
+        //     formations.ts：楔→横→纺→圆→方→楔
+        //   ⇒ "楔 vs 横" 战略层判楔克横、战术层判互不克制；"楔 vs 纺" 只在战术层成立。
+        //   现统一为 formations.ts 口径（战略层早已引用它），战术层的
+        //   wedge↔spindle / line↔wedge 两组关系随之翻转（行为变更，见 docs/qa/v33_*）。
         let formAdvice = '';
         if (nearestEnemy) {
             const eForm = nearestEnemy.formation;
-            if (beats[pFleet.formation] === eForm) {
+            const mul = formationCounterMul(pFleet.formation, eForm);
+            if (mul > 1.0) {
                 formAdvice = `我方${formCn[pFleet.formation] || pFleet.formation}克制其${formCn[eForm] || eForm}，保持阵型！`;
-            } else if (beats[eForm] === pFleet.formation) {
+            } else if (mul < 1.0) {
                 formAdvice = `警告：敌${formCn[eForm] || eForm}克制我方${formCn[pFleet.formation] || pFleet.formation}，建议变阵！`;
             } else {
                 formAdvice = `敌${formCn[eForm] || eForm}与我方${formCn[pFleet.formation] || pFleet.formation}互不克制。`;
@@ -2971,7 +3141,7 @@ export class BattleScene extends Phaser.Scene {
         const flFac = fl ? this.factionMap.get(fl.factionId) : null;
         if (fl && flFac && flFac.type === 'player') {   // [V18-B · C3] 移除恒假 `|| flFac.type === 'ally'`（#63-a，行为不变）
             this.battleSelectedFleetId = fl.id;
-            this.store.triggerToast?.(`◎ 已选中：${flFac.name || '舰队'} — 右键点地即可令其前往`);
+            this.store.triggerToast?.(`◎ 已选中：${flFac.name || '舰队'} — 右键点地令其前往 · 浮标「分兵」或按 X 拆分`);
             return true;
         }
         // 点空域 / 敌军 / 选中项已失效 → 清选中（幂等；已无选中时不重复 toast）
@@ -3151,6 +3321,275 @@ export class BattleScene extends Phaser.Scene {
         }
     }
 
+    /** [v31-A] 舰队所属提督的作战教范（按 `faction.admiralTags` 解析，结果缓存在 faction 上）。
+     *  **仅在提督确实带标签时返回教范**；无标签 ⇒ 返回 null，调用方回退旧行为（零回归）。 */
+    private fleetDoctrine(fleet: any): AdmiralDoctrine | null {
+        const fac: any = this.factionMap.get(fleet.factionId);
+        if (!fac) return null;
+        if (!fac._doctrine) fac._doctrine = resolveAdmiralDoctrine(fac.admiralTags);
+        return (fac.admiralTags && fac.admiralTags.length > 0) ? fac._doctrine : null;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // [v31-C] 分舰队（TaskForce）—— 让"迂回 / 包抄 / 诱饵 / 后勤战"在结构上可表达
+    //
+    // 结构性缺口：`globalFleets` 里一支舰队原本是**不可分的原子** ⇒ 所有"多路协同"战法
+    //   在结构上无法表达（这正是 `fleetSplitManeuver.ts` 声明"不接任何玩法触发"的原因）。
+    // 本段补上"力量可分解"，战法表（`taskForce.ts` 的 `MANEUVERS`）即可落地。
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * 把一支舰队按战法规格**拆成多个分舰队**（子编队 = 独立 `fleet` 对象，共享同一提督）。
+     *
+     * 规则：
+     *   · 第 0 路（通常是 `main`）**留在母队**（不新建对象）—— 旗舰与指挥链不动；
+     *   · 其余各路各建一个子编队（新 `id` / 新 `displayId` / 继承 `commanderId`）；
+     *   · 实体按 `splitUnitCounts` 切分；**运输舰留在母队**（走既有补给链，不参与拆分）；
+     *   · 子编队的 `formationSlot` **必须重编号**（否则阵位枚举错位 ⇒ 单位瞬移）；
+     *   · 初始位置 = 母队位置 + `lateral × DETACH_SPACING`，随后由战法航路牵引。
+     *
+     *   · **划出去的单位会从 `parent.units` 移除**（`parent.formationCount0` 随之重算）——
+     *     同一 unit 不得同时属于两支舰队（否则位置被拉扯、层号被覆盖、托盘与部队脱节）。
+     * @returns 新建的子编队（不含母队）；兵力不足或规格不足 2 路时返回空数组。
+     */
+    private splitFleet(parent: any, specs: DetachmentSpec[]): any[] {
+        if (!parent || !parent.units || !specs || specs.length < 2) return [];
+        const isSup = (u: any) => u.classType === '补给' || u.classType === 'supply';
+        const combat = parent.units.filter((u: any) => !isSup(u));
+        if (combat.length < specs.length) return [];   // 兵力不足以拆分
+
+        const counts = splitUnitCounts(combat.length, specs);
+        const created: any[] = [];
+        // [v34d] **已划出的单位登记** —— `parent.units` 必须把分给子编队的单位**移除**。
+        //   不移除的后果（L2 实测）：
+        //   ① 同一 unit 被两支舰队同时引用（实测 **158 个共享 sprite**）⇒ 母/子两队每帧
+        //      各给该 sprite 算一次目标位 ⇒ 位置被来回拉扯；
+        //   ② 末尾的母队重编号循环遍历**全量 units**，会把子队的 `formationSlot` 覆盖成母队
+        //      口径（实测子队 slot = 119..197，而其 `formationCount0 = 79`）⇒
+        //      `formOffsets[slotIdx] || ringCell(slotIdx)` 全部落到兜底环位（形状与托盘无关）、
+        //      `layK[slot] ?? 0` 全部取 0 ⇒ **整队塌成一层**（用户实报"第二次分兵只有一层"）。
+        //   ⇒ 托盘（按 `offs` 算足迹中心）与部队（被 `ringCell` 摆到环上）各走各的（同一批实测：
+        //      分舰队托盘 vs 舰船质心偏移 119.5px，而母队仅 1.8px）。
+        const moved = new Set<any>();
+        let cursor = 0;
+        specs.forEach((spec, i) => {
+            const take = counts[i] || 0;
+            const slice = combat.slice(cursor, cursor + take);
+            cursor += take;
+            if (i === 0 || slice.length === 0) return;  // 第 0 路（main）留在母队
+            for (const u of slice) moved.add(u);        // 划出登记（裁剪在 forEach 之后统一做）
+
+            const child: any = {
+                ...parent,
+                id: Math.random(),                       // 与既有 fleetId 同口径（见 :1274）
+                displayId: this.globalFleets.length + 1,
+                units: slice,
+                x: parent.x + spec.lateral * DETACH_SPACING,
+                y: parent.y,
+                vx: 0, vy: 0,
+                // 独立战术单位 ⇒ 清掉母队的任务 / 信标 / 重组标记，避免共用可变状态
+                mission: null, targetFlare: null, _regrouping: false,
+                _detachedFrom: parent.id,
+                _maneuverRole: spec.role,
+                _maneuverLateral: spec.lateral,
+                _maneuverIntent: spec.intent,
+                _maneuverTargetKind: spec.targetKind,
+            };
+            let fs = 0;
+            for (const u of slice) { u.formationSlot = fs++; u.gridX = 0; u.gridY = 0; }
+            child.formationCount0 = fs;
+            this.globalFleets.push(child);
+            created.push(child);
+        });
+
+        // ⚠ **必须先裁剪、再重编号**（顺序不可交换）：若先重编号，子队的 `formationSlot`
+        //    会被母队口径覆盖 —— 这正是本缺陷的成因，见上方 `moved` 的注释。
+        if (moved.size > 0) parent.units = parent.units.filter((u: any) => !moved.has(u));
+        // 母队（第 0 路）重建阵位编号
+        let fs0 = 0;
+        for (const u of parent.units) { if (isSup(u)) continue; u.formationSlot = fs0++; u.gridX = 0; u.gridY = 0; }
+        parent.formationCount0 = fs0;
+        return created;
+    }
+
+    /**
+     * [v32] **后勤猎杀目标**：为 `targetKind === 'enemy_supply'` 的分队找最近的敌方补给节点。
+     * 优先级：① 敌方运输舰（机动的补给链——打掉 = 断前线补给）>
+     *        ② 敌方已占补给点（中继 / 星球 / 司令部）。
+     * 都找不到 → `null`（调用方落回常规接战）。
+     *
+     * 这是"后勤战"从**数据**变成**行为**的落点：`_maneuverTargetKind` 在此之前**全项目零消费**，
+     * 所以"猎杀运输舰"只存在于头顶标签文本里，AI 实际还是去打最近的敌军舰队。
+     */
+    private findEnemySupplyTarget(fleet: any, myFac: any): { x: number; y: number } | null {
+        const myTeam = myFac?.team;
+        let best: { x: number; y: number } | null = null;
+        let bestD = Infinity;
+
+        // ① 敌方运输舰（正在往返补给的补给链）
+        for (const a of this.auxShips) {
+            if (!a.unit || a.unit.hp <= 0) continue;
+            const af = this.factionMap.get(a.fleet?.factionId);
+            if (!af || af.team === myTeam) continue;
+            const d = Phaser.Math.Distance.Between(fleet.x, fleet.y, a.x, a.y);
+            if (d < bestD) { bestD = d; best = { x: a.x, y: a.y }; }
+        }
+        if (best) return best;
+
+        // ② 敌方已占的补给点
+        for (const t of this.tilesList) {
+            if (!t.ownerId || t.ownerId === myFac?.id) continue;
+            if (t.type !== 'relay' && t.type !== 'planet' && t.type !== 'castle') continue;
+            const tf = this.factionMap.get(t.ownerId);
+            if (!tf || tf.team === myTeam) continue;
+            const d = Phaser.Math.Distance.Between(fleet.x, fleet.y, t.x, t.y);
+            if (d < bestD) { bestD = d; best = { x: t.x, y: t.y }; }
+        }
+        return best;
+    }
+
+    /**
+     * 为一个阵营按战法**编成并执行**：
+     *   ① 舰队数 ≥ 战法路数 ⇒ **直接分工**（不拆分，最省）；
+     *   ② 舰队数不足 ⇒ **拆最强的一支**补足路数（体现"分舰队"）；
+     *   ③ 单路战法（`frontal` / `hold`）⇒ 只打标记，不拆分。
+     * @returns 实际采用的战法
+     */
+    private applyManeuver(fac: any, myFleets: any[], enemyFleets: any[]): ManeuverType {
+        if (myFleets.length === 0) return 'frontal';
+        const doc: AdmiralDoctrine = (fac as any)._doctrine
+            ?? ((fac as any)._doctrine = resolveAdmiralDoctrine((fac as any).admiralTags));
+        const myTeam = this.factionMap.get(fac.id)?.team;
+        const myPower = myFleets.reduce((s: number, f: any) => s + this.calculateFleetPower(f), 0);
+        const ePower = enemyFleets.reduce((s: number, f: any) => s + this.calculateFleetPower(f), 0);
+        const maneuver = selectManeuver(doc.styleTag ? [doc.styleTag] : [], {
+            fleetCount: myFleets.length,
+            // [v32] **可编成路数**（≠ 现有舰队数）——分兵的前提正是"现有舰队不够"，
+            //   用现有数去判 `minFleets` 会让 AI 在 1 支舰队时永远退化成正面突击。
+            //   口径 = 各队按兵力能编出的路数之和（每路至少 2 艘，上限 3），见 `taskForce.maxRoutesFor`。
+            maxRoutes: maxRoutesFor(myFleets.map((f: any) => f.units?.length ?? 0)),
+            forceRatio: ePower > 0 ? myPower / ePower : 999,
+            enemySupplyPresent: this.auxShips.some((a: any) => {
+                const af = this.factionMap.get(a.fleet?.factionId);
+                return !!af && af.team !== myTeam;
+            }),
+            ownSupplyPresent: this.auxShips.some((a: any) => a.fleet?.factionId === fac.id),
+        });
+
+        const need = requiredFleets(maneuver);
+        if (need <= 1) { myFleets.forEach((f: any) => { f._maneuver = maneuver; }); return maneuver; }
+
+        // ① 舰队够 ⇒ 直接分工（不拆分）
+        if (myFleets.length >= need) {
+            const plans = assignDetachments(
+                myFleets.map((f: any) => ({ id: f.id, power: this.calculateFleetPower(f) })), maneuver);
+            for (const p of plans) {
+                for (const fid of p.fleetIds) {
+                    const fl = myFleets.find((f: any) => f.id === fid);
+                    if (!fl) continue;
+                    fl._maneuver = maneuver; fl._maneuverRole = p.role;
+                    fl._maneuverLateral = p.lateral; fl._maneuverIntent = p.intent;
+                    fl._maneuverTargetKind = p.targetKind;
+                }
+            }
+            return maneuver;
+        }
+
+        // ② 不足 ⇒ 拆最强的一支补足路数
+        const parent = [...myFleets].sort((a: any, b: any) => this.calculateFleetPower(b) - this.calculateFleetPower(a))[0];
+        const specs = MANEUVERS[maneuver]?.detachments ?? [];
+        const kids = this.splitFleet(parent, specs);
+        parent._maneuver = maneuver;
+        parent._maneuverRole = specs[0]?.role ?? 'main';
+        parent._maneuverLateral = specs[0]?.lateral ?? 0;
+        parent._maneuverIntent = specs[0]?.intent ?? '';
+        if (kids.length > 0) {
+            this.store.triggerToast?.(`${fac.name || '友军'}：${maneuverLabel(maneuver)} —— 已分出 ${kids.length} 支分队`);
+        }
+        return maneuver;
+    }
+
+    /**
+     * [v31-C] **玩家主动拆分**：把当前选中的己方舰队按战法拆成多路。
+     *
+     * 入口：战场**点选一支己方舰队**（→ `battleSelectedFleetId`）后按 `X`。
+     * 战法选择：优先沿用该舰队既有战法；否则按「提督教范 + 真实兵力态势」选一个
+     *   —— 与 AI 的 `applyManeuver` **同源规则**，保证玩家与友军 AI 用同一套战法体系。
+     */
+    public splitSelectedFleet(): boolean {
+        const fid = this.battleSelectedFleetId;
+        if (fid === null || fid === undefined) {
+            this.store.triggerToast?.('◎ 请先点选一支己方舰队（或直接点舰队浮标上的「分兵」）');
+            return false;
+        }
+        return this.splitFleetById(fid);
+    }
+
+    /** [v31-C] 按舰队 id 拆分 —— **3D 浮标「分兵」按钮 / 快捷键 `X` / 未来 UI 共用同一入口**。 */
+    public splitFleetById(fleetId: number): boolean {
+        const fleet: any = this.globalFleets.find((f: any) => f.id === fleetId);
+        if (!fleet || !fleet.units || fleet.units.length === 0) return false;
+        const fac: any = this.factionMap.get(fleet.factionId);
+        if (!fac || fac.team !== 1) { this.store.triggerToast?.('◎ 只能拆分己方舰队'); return false; }
+
+        const doc: AdmiralDoctrine = (fac._doctrine
+            ?? (fac._doctrine = resolveAdmiralDoctrine(fac.admiralTags))) as AdmiralDoctrine;
+
+        let maneuver: ManeuverType = fleet._maneuver;
+        // [v32] 可编成路数 = **被点的这一支**能拆出几路（分兵是对这一支的操作，不看该阵营其它舰队）
+        const routes = maxRoutesFor([fleet.units?.length ?? 0]);
+        if (!maneuver || requiredFleets(maneuver) <= 1) {
+            const myFleets = this.globalFleets.filter((f: any) => f.factionId === fac.id && f.units?.length > 0);
+            const enemyFleets = this.globalFleets.filter((f: any) => {
+                const ef = this.factionMap.get(f.factionId);
+                return !!ef && ef.team !== fac.team && f.units?.length > 0;
+            });
+            const myPower = myFleets.reduce((s: number, f: any) => s + this.calculateFleetPower(f), 0);
+            const ePower = enemyFleets.reduce((s: number, f: any) => s + this.calculateFleetPower(f), 0);
+            maneuver = selectManeuver(doc.styleTag ? [doc.styleTag] : [], {
+                fleetCount: myFleets.length,
+                maxRoutes: routes,
+                forceRatio: ePower > 0 ? myPower / ePower : 999,
+                // [v32 修] 原先恒为 false ⇒ 「后勤猎杀」「补给护航」在玩家侧**永远不可行**
+                //   （`feasible('raid')` 要求敌方有补给在场）⇒ 重后勤提督点分兵也只会退化到正面突击。
+                enemySupplyPresent: this.auxShips.some((a: any) => {
+                    const af = this.factionMap.get(a.fleet?.factionId);
+                    return !!af && af.team !== fac.team;
+                }),
+                ownSupplyPresent: this.auxShips.some((a: any) => a.fleet?.factionId === fac.id),
+            });
+            // [v32] 玩家**主动**分兵时，教范若给单路战法而兵力足够多路 ⇒ 升到通用多路战法（一翼迂回）。
+            //   理由：玩家点"分兵"这个动作本身就是在要求多路 ⇒ 玩家意图优先于教范（否则按钮被性格挡死）。
+            if (requiredFleets(maneuver) <= 1 && routes >= 2) maneuver = 'flank';
+        }
+
+        const specs = MANEUVERS[maneuver]?.detachments ?? [];
+        if (specs.length < 2) {
+            // 区分两种失败原因，避免把"兵力不够"误报成"战法单路"（用户实报的困惑点）
+            if (routes < 2) {
+                this.store.triggerToast?.(
+                    `◎ 兵力不足：拆分需至少 ${MIN_UNITS_PER_ROUTE * 2} 艘战斗舰（当前 ${fleet.units?.length ?? 0} 艘）`);
+            } else {
+                this.store.triggerToast?.(`◎ ${maneuverLabel(maneuver)} 为单路战法，无需拆分`);
+            }
+            return false;
+        }
+        const kids = this.splitFleet(fleet, specs);
+        if (kids.length === 0) {
+            this.store.triggerToast?.('◎ 兵力不足，无法拆分（需至少 2 艘战斗舰）');
+            return false;
+        }
+
+        fleet._maneuver = maneuver;
+        fleet._maneuverRole = specs[0]?.role ?? 'main';
+        fleet._maneuverLateral = specs[0]?.lateral ?? 0;
+        fleet._maneuverIntent = specs[0]?.intent ?? '';
+        for (const k of kids) k._maneuver = maneuver;
+        this.store.triggerToast?.(
+            `分舰队 · ${maneuverLabel(maneuver)}：${specs.slice(1).map((s: any) => s.intent).join(' / ') || '已分兵'}`);
+        return true;
+    }
+
     /** 姿态命令的公共执行体（即时/延迟两路共用） */
     private applyStanceToFleet(fleet: any, payload: string) {
         fleet.stance = payload;
@@ -3159,7 +3598,12 @@ export class BattleScene extends Phaser.Scene {
         // 在锁定期内不得改写玩家刚下达的姿态，杜绝"点索敌→下一秒被还原驻守"（用户实报）。
         // 自动保命类强制转换（isCriticalLowHp → fallback）在血量真正告急时仍走 fleet.state 直改，不受此锁约束。
         fleet._userStanceLockUntil = this.time.now + 12000;
-        if (payload === 'search') fleet.formation = 'spindle';
+        // [v31-A] 姿态 → 阵型：**优先用该舰队提督的教范阵型**（人格首次影响"姿态指令的落地形态"）。
+        //   撤退(fallback)恒用圆阵（全向防御，与战略层口径一致）；其余姿态用教范偏好；
+        //   **提督无标签时回退原硬编码表**（零回归）。
+        const doc = this.fleetDoctrine(fleet);
+        if (doc) fleet.formation = payload === 'fallback' ? 'circle' : doc.formation;
+        else if (payload === 'search') fleet.formation = 'spindle';
         else if (payload === 'siege') fleet.formation = 'wedge';
         else if (payload === 'defend') fleet.formation = 'circle';
         else if (payload === 'fallback') fleet.formation = 'line';
@@ -3257,7 +3701,12 @@ export class BattleScene extends Phaser.Scene {
                 milRank: this.skirmishMilRank(admInfo.rank),
                 composition: this.skirmishCompositionFor(this.skirmishMilRank(admInfo.rank)),
                 entityBudget: spawnPlan.player[index] ?? 0,
-                admiralStats: effStats, rank: admInfo.rank
+                admiralStats: effStats, rank: admInfo.rank,
+                // v29：把提督标签带进战场 faction → 战术层据此解析作战风格（动摇线 / 阵型偏好）
+                admiralTags: admInfo.tags,
+                // [v33 P1-4.4] 提督特技带进战场：新增的三维（阵型崩溃抵抗 / 拦截 / 射击武器专精）
+                //   需要战术层能读到特技；此前战场侧完全拿不到 skills（只在战略层 gameStore 用）。
+                admiralSkills: admInfo.skills || [],
             });
         });
 
@@ -3314,6 +3763,10 @@ export class BattleScene extends Phaser.Scene {
                id: eAdm.id + 10000, imageId: eAdm.imageId, type: 'ai', team: 2, 
                name: `${eAdm.name}舰队`, color: cColor, cssColor: '#' + cColor.toString(16).padStart(6, '0'), 
                trait: eAdm.faction, deck: enemyDeck, admiralStats: buffedStats, rank: diff === 'hard' ? 4 : (diff === 'easy' ? 2 : 3),
+               // v29：敌方提督标签同样进入战场 → AI 舰队也按"这个提督是谁"行事（个性不再只属于玩家）
+               admiralTags: eAdm.tags,
+               // [v33 P1-4.4] 敌方特技同样生效（避免"机制只加给玩家"的不对称）
+               admiralSkills: eAdm.skills || [],
                // [大战场] 敌方难度改用**兵力（军衔）**表达：旧实现用 deck 条数 4/6/8 表达，已废。
                // 注意 `rank` 字段不能动 —— 它是另一套口径（副官/卡牌规模），与军衔无关。
                milRank: this.skirmishEnemyMilRank(),
@@ -3469,12 +3922,11 @@ export class BattleScene extends Phaser.Scene {
                     // v6.6：不再硬编码 ±3000——按地图矩阵实际半跨动态推导（commandSpawnDist）。
                     //   大图（hexR=50 半径32）≈ ±7600，小图（hexR=26 半径6）≈ ±1180，
                     //   未来伊谢尔伦长条图（51×17）自动按横向半跨贴边。见 commandSpawnDist 注释。
-                    if (this.mapStyle === 'command') {
-                        f.castlePos = {
-                            x: f.team === 1 ? -this.commandSpawnDist : this.commandSpawnDist,
-                            y: (Math.random() - 0.5) * this.commandHalfX * 0.4
-                        };
-                    }
+                    // 忽略矩阵位置，直接按 team 分配左右边缘出生点（v6.6：按地图实际半跨动态推导）
+                    f.castlePos = {
+                        x: f.team === 1 ? -this.commandSpawnDist : this.commandSpawnDist,
+                        y: (Math.random() - 0.5) * this.commandHalfX * 0.4
+                    };
                     mapDataMatrix.forEach(t => {
                        const dist = Math.max(Math.abs(t.q - node.q), Math.abs(t.r - node.r), Math.abs(-t.q-t.r - (-node.q-node.r)));
                        if (dist <= 2) {
@@ -3498,23 +3950,108 @@ export class BattleScene extends Phaser.Scene {
           }
         });
 
-        // ── P1 地形系统：为可通行格子随机注入地形效果（星云/小行星带/引力点/残骸区）──
-        // 对称公平：地形只加在非出生区（距所有castle ≥4 格）
+        // ── P1 地形系统：为可通行格子注入地形效果 ──
+        // 对称公平：地形只加在非出生区（距所有 castle ≥3 格）
         const castleTiles = mapDataMatrix.filter(t => t.type === 'castle');
-        mapDataMatrix.forEach(t => {
-          if (t.type === 'sea' || t.type === 'ruined' || t.type === 'planet' || t.type === 'castle') return;
-          const nearCastle = castleTiles.some(c => {
-            const d = Math.max(Math.abs(t.q - c.q), Math.abs(t.r - c.r), Math.abs(-t.q-t.r - (-c.q-c.r)));
-            return d <= 3;
+        const isNearCastle = (t: any) => castleTiles.some(c => Math.max(
+          Math.abs(t.q - c.q), Math.abs(t.r - c.r), Math.abs(-t.q - t.r - (-c.q - c.r))) <= 3);
+        const EXCLUDED = new Set(['sea', 'ruined', 'planet', 'castle']);
+        /**
+         * 地形抽签表（**唯一真源**）：`[id, 权重]`。
+         * 权重沿用 v33 的累计阈值（0.06/0.06/0.04/0.04/0.04/0.03）⇒ 各类型相对比例不变，
+         * 只是不再写死在 if 链里，好让"区域化生成"按配额分配类型。
+         */
+        const TERRAIN_DRAW: [string, number][] = [
+          ['nebula', 0.06],    // 星云：减速 + 闪避+（v33）索敌-5%
+          ['asteroid', 0.06],  // 小行星带：射程-30% +（v33）索敌-20%
+          ['gravity', 0.04],   // 引力点：移速+30% +（v33）索敌-20%
+          ['debris', 0.04],    // 残骸区：可藏匿 +（v33）索敌-20%
+          ['mine', 0.04],      // 机雷区：移动-45% / 每 3s 扣 1.5% maxHp
+          ['jeff', 0.03],      // 杰夫粒子云：移动-10% / 每 3s 扣 0.8% maxHp
+        ];
+        const DRAW_SUM = TERRAIN_DRAW.reduce((a, [, w]) => a + w, 0);
+        const rollType = (): string => {
+          let r = Math.random() * DRAW_SUM;
+          for (const [id, w] of TERRAIN_DRAW) { if ((r -= w) < 0) return id; }
+          return TERRAIN_DRAW[TERRAIN_DRAW.length - 1][0];
+        };
+
+        if (TERRAIN_RULES.REGION_GEN) {
+          // ── [v36d] 区域化生成：播种子 + 泛洪生长 ──
+          // 旧实现逐格独立掷骰 ⇒ 6 种均分下 P(相邻同类) ≈ 17% ⇒ 83% 的相邻边都是分界
+          // ⇒ 画面必然是"六边形彩色马赛克"。改成少量种子长成大片区域后，
+          //   地形才读作"空域"（一片星云 / 一条小行星带）而不是撒盐粒。
+          //
+          // ⚠ **类型必须按配额分配**：首版给每个区域**随机**取类型，实测 97 片区域里
+          //   一片 111 格的杰夫吃掉了大半地图（jeff 419 / nebula 5）——单类型垄断 + 
+          //   另一些类型几乎不出现（图例就成了空头支票）。现改为"每种类型按权重拿配额"。
+          const byKey = new Map<string, any>();
+          for (const t of mapDataMatrix) byKey.set(`${t.q},${t.r}`, t);
+          const canPlace = (t: any) => !!t && !t.terrain && !EXCLUDED.has(t.type) && !isNearCastle(t);
+          const NB6: [number, number][] = [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]];
+
+          const usable = mapDataMatrix.filter(canPlace);
+          const target = Math.round(usable.length * TERRAIN_RULES.COVERAGE);
+          const [szMin, szMax] = TERRAIN_RULES.REGION_SIZE;
+          const seeds = [...usable];
+          for (let i = seeds.length - 1; i > 0; i--) {          // Fisher–Yates
+            const j = Math.floor(Math.random() * (i + 1));
+            [seeds[i], seeds[j]] = [seeds[j], seeds[i]];
+          }
+          let seedPtr = 0;
+          const nextSeed = (): any => {
+            while (seedPtr < seeds.length) { const s = seeds[seedPtr++]; if (canPlace(s)) return s; }
+            return null;
+          };
+          /** 从 seed 泛洪生长至多 want 格；返回实际长出的格数。 */
+          const growRegion = (seed: any, type: string, want: number): number => {
+            const frontier: any[] = [seed];
+            let grown = 0;
+            while (frontier.length > 0 && grown < want) {
+              // 随机取前沿（而非 FIFO）⇒ 生长轮廓不规则，不是规整圆斑
+              const k = Math.floor(Math.random() * frontier.length);
+              const cur = frontier.splice(k, 1)[0];
+              if (!canPlace(cur)) continue;
+              cur.terrain = type;
+              grown++;
+              for (const [dq, dr] of NB6) {
+                const n = byKey.get(`${cur.q + dq},${cur.r + dr}`);
+                if (canPlace(n)) frontier.push(n);
+              }
+            }
+            return grown;
+          };
+
+          for (const [type, w] of TERRAIN_DRAW) {
+            let want = Math.round((target * w) / DRAW_SUM);
+            let guard = 0;
+            while (want > 0 && guard++ < 200) {
+              const seed = nextSeed();
+              if (!seed) break;
+              const size = Math.min(want, szMin + Math.floor(Math.random() * (szMax - szMin + 1)));
+              const grown = growRegion(seed, type, size);
+              if (grown === 0) continue;
+              want -= grown;
+            }
+          }
+
+          // 区域之外撒一点零散格：避免"区域边缘过于干净"显得像人工分区
+          if (TERRAIN_RULES.SCATTER > 0) {
+            for (const t of mapDataMatrix) {
+              if (!canPlace(t)) continue;
+              if (Math.random() < TERRAIN_RULES.SCATTER) t.terrain = rollType();
+            }
+          }
+        } else {
+          // ── 旧实现（逐格独立掷骰）：`TERRAIN_RULES.REGION_GEN = false` 时走这里 ──
+          mapDataMatrix.forEach(t => {
+            if (EXCLUDED.has(t.type) || isNearCastle(t)) return;
+            if (Math.random() < 0.27) t.terrain = rollType();   // 27% 覆盖（与 v33 一致）
           });
-          if (nearCastle) return; // 出生区不放置地形，保证公平
-          const roll = Math.random();
-          if (roll < 0.06) t.terrain = 'nebula';        // 星云：减速+视野-50%+闪避+
-          else if (roll < 0.12) t.terrain = 'asteroid';  // 小行星带：射程-30%+近战优
-          else if (roll < 0.16) t.terrain = 'gravity';   // 引力点：移速+30%
-          else if (roll < 0.20) t.terrain = 'debris';    // 残骸区：可藏匿
-          if (t.terrain) t.cost += 25; // 有地形的格子铺路更贵
-        });
+        }
+
+        mapDataMatrix.forEach(t => { if (t.terrain) t.cost += 25; }); // 有地形的格子铺路更贵
+
 
         // v6.6：按矩阵实际范围推导指挥制出生参数（castlePos 三处赋值 + 中继避让共用）
         this.computeCommandSpawnExtent(mapDataMatrix);
@@ -3578,7 +4115,6 @@ export class BattleScene extends Phaser.Scene {
                 if (selFleet && selFac && selFac.type === 'player') {
                     // [R10-B2] 第一道权限守卫（第二道纵深校验在 orderFleetMove 内）
                     this.orderFleetMove(selFleet, tile.x, tile.y);
-                    if (this.mapStyle === 'crt') poly.setAlpha(0.3);
                     return;
                 }
                 // [V18-B · C4] 已移除恒假的「盟军右键 → 军议 toast」分支（#63-a：Faction.type 无 'ally'，该分支恒不可达，行为不变）。
@@ -3586,18 +4122,10 @@ export class BattleScene extends Phaser.Scene {
                 this.battleSelectedFleetId = null;
             }
             this.deployFlare(tile.x, tile.y, pFac.id);
-            if (this.mapStyle === 'crt') poly.setAlpha(0.3);
             return;
         }
 
-        // [R10-B2] 左键点击：先试选中舰队（仅 2D hex/crt；3D 由 overlay 屏幕空间拾取，见
-        //   Battle3DOverlay.handlePick）。命中玩家/盟军舰队 → 选中并吞掉本次点击（不买地）；
-        //   点空域/敌军 → 清选中后落回既有买地逻辑。cpCommandMode/deployPhase 期间跳过（优先既有交互）。
-        if ((this.mapStyle === 'hex' || this.mapStyle === 'crt')
-            && !this.cpCommandMode && !this.deployPhase) {
-            const selFid = this.pickFleetAtWorld(pointer.worldX, pointer.worldY);
-            if (this.applyFleetSelectByPick(selFid)) return;
-        }
+        // 【2D 拾取已删除】选目标/选舰队在指挥制下由 `Battle3DOverlay` 做屏幕空间命中
 
         // 左鍵點擊 (button === 0)：擴張補給線或建立野戰修補站
         if (tile.ownerId !== pFac.id) {
@@ -3618,7 +4146,6 @@ export class BattleScene extends Phaser.Scene {
                     tile.ownerId = pFac.id;
                     poly.setFillStyle(pFac.color, 0.9);
                     poly.setStrokeStyle(3, pFac.color, 1.0);
-                    if (this.mapStyle === 'crt') poly.setAlpha(0.35);
                     // 觸發連通性更新
                     this.updateSupplyNetwork(); 
                 } else {
@@ -3697,19 +4224,14 @@ export class BattleScene extends Phaser.Scene {
         this.factionMap.clear();
         this.store.factions.forEach((f: any) => this.factionMap.set(f.id, f));
 
-        // === CRT 全息投影效果 ===
-        if (this.mapStyle === 'crt') {
-            this.updateCRTEffects(time);
-        } else if (this.mapStyle === 'command') {
-            // 指挥制：纯宇宙，不画六边形网格；舰队光环每帧重绘，扫描线 overlay 随相机节流重绘
-            if (this.crtFleets) {
-                drawCommandFleets(this.crtFleets, this.globalFleets, this.crtGlowTime.val, this.factionMap);
-            }
-            this.cmdScanTimer += delta;
-            if (this.crtScan && this.cmdScanTimer > 60) {
-                this.cmdScanTimer = 0;
-                drawCommandScanOverlay(this.cameras.main, this.crtScan, this.time.now);
-            }
+        // === 纯宇宙扫描空间：舰队光环每帧重绘，扫描线 overlay 随相机节流重绘 ===
+        if (this.spaceFleets) {
+            drawCommandFleets(this.spaceFleets, this.globalFleets, this.spaceGlowTime.val, this.factionMap);
+        }
+        this.spaceScanTimer += delta;
+        if (this.spaceScan && this.spaceScanTimer > 60) {
+            this.spaceScanTimer = 0;
+            drawCommandScanOverlay(this.cameras.main, this.spaceScan, this.time.now);
         }
 
         const pFac = this.store.factions.find((f: any) => f.type === 'player');
@@ -3819,6 +4341,10 @@ export class BattleScene extends Phaser.Scene {
                     // ── 旗舰沉没叙事：特写 + 提督诀别台词 + 接任播报 ──
                     // filter 顺序遍历，units[0] 被评估时仍是旗舰；units.length > 1 保证还有接任者（否则走下方全灭分支）
                     if (fleet.units[0] === u && fleet.units.length > 1) {
+                        // [v33 P1-4.3] 旗舰沉没 → 阵型崩溃触发源（旧案阵型表的「旗舰」列
+                        //   = 风险与增益的交换；纺锤/球型旗舰置前换取士气，代价就是这里）。
+                        //   标记一旦写入即持久，直到士气回稳（RECOVER_MORALE）才解除崩溃。
+                        (fleet as any)._flagshipSunkAt = this.time.now;
                         const sinkFac = this.factionMap.get(fleet.factionId);
                         const sinkName = sinkFac?.name || '舰队';
                         (this.store as any).triggerToast?.(`★ ${sinkName}旗舰被击沉！副舰长接任指挥权。`);
@@ -3879,6 +4405,9 @@ export class BattleScene extends Phaser.Scene {
 
         // 提督扮演 P0：总指挥舰队覆灭 → 指挥继任（仅指挥制；函数内部自带守卫，hex/crt 零影响）
         this.checkSupremeSuccession();
+
+        // [v33 P1-4.1] 地形持续损伤（机雷 / 杰夫粒子云）——内部自带 3s 节流
+        this.applyTerrainDot(delta);
 
         this.globalFleets.forEach(fleet => {
             const myFac = this.factionMap.get(fleet.factionId);
@@ -4013,16 +4542,87 @@ export class BattleScene extends Phaser.Scene {
 
             const currentSupply = this.fleetSupplyPct(fleet);
 
-            // 状态转换判定：断粮或姿态为撤退时，强制进入撤退状态
+            // ── v29 撤退判定重构：补给**不再是触发条件** ──
+            //   原实现 `currentSupply < 30` 是**与战局无关的硬阈值** ⇒ 交战中补给到点即抛下敌人
+            //   以 3 倍速掉头（用户实报"离谱"）；且退出线 80 过高，与"占领完站桩 10–14 秒"同源。
+            //   现改为「提督动摇线（个性）+ 士气 + 兵力态势」，分三档（见 game/retreatDoctrine.ts）。
+            //   补给的作用移交给战斗力衰减（fleetSupplyFactor）与士气衰减速率（moraleDrainPerTick）。
+            const myFacDoc: any = this.factionMap.get(fleet.factionId);
+            if (myFacDoc && !myFacDoc._doctrine) {
+                myFacDoc._doctrine = resolveAdmiralDoctrine(myFacDoc.admiralTags);
+            }
+            const doctrine: AdmiralDoctrine = myFacDoc?._doctrine ?? NEUTRAL_DOCTRINE;
+            // [v40] 进取度 ∈ [0,1]：从动摇线派生（越低越大胆）。挂在这里 = 全状态都有值。
+            const _aggr = aggression(doctrine.retreatThreshold, (NEUTRAL_DOCTRINE as any).retreatThreshold);
+            (myFacDoc as any)._aggression = _aggr;
+            const moraleNow = fleet.morale === undefined ? 100 : fleet.morale;
             const isManualRetreat = fleet.stance === 'fallback';
-            if (fleet.state !== 'retreating' && (isManualRetreat || currentSupply < 30)) {
+            const wantTier = resolveRetreatTier({
+                morale: moraleNow, hpPct, threshold: doctrine.retreatThreshold, manual: isManualRetreat,
+            });
+            if (fleet.state !== 'retreating' && wantTier !== 'none') {
                 fleet.state = 'retreating';
-            } else if (fleet.state === 'retreating' && !isManualRetreat && currentSupply > 80) {
+                // 脱离时间起点：速度从常规值**平滑升到**该档（溃散除外）——"缓慢撤退"由此而来，
+                //   交战中不再允许一帧掉头。
+                if ((fleet as any)._retreatEnteredAt === undefined) (fleet as any)._retreatEnteredAt = this.time.now;
+            } else if (fleet.state === 'retreating' && !isManualRetreat
+                       && moraleNow >= RALLY_MORALE && hpPct >= doctrine.retreatThreshold) {
+                // 退出条件：**士气回稳 + 兵力回到动摇线以上**（原为纯补给 > 80 —— 停船过久、归队过晚的主因）
                 fleet.state = 'exploring';
                 // R10-A1/B5：早退通道必须一并清重组标记——否则 `_regrouping` 残留为 true，
                 //   该舰队下次进入撤退时撤退分支的 `!_regrouping`（曾用）会永久关闭还击（状态泄漏）。
                 fleet._regrouping = false;
+                (fleet as any)._retreatEnteredAt = undefined;
             }
+            // 当前撤退档位（供速度 / 火力乘区读取）。非撤退态恒为 'none'。
+            //   兼容：撤退态但本帧 wantTier 为 none（例如刚被手动置入）→ 取 'withdraw' 兜底。
+            (fleet as any)._retreatTier = fleet.state === 'retreating'
+                ? (wantTier === 'none' ? 'withdraw' : wantTier) as RetreatTier
+                : 'none' as RetreatTier;
+
+            // ── [v33 P0-2] 距离带（**舰队级**，含滞回）────────────────────────
+            //   为什么是舰队级而不是单位级：列位由几何决定（前列 ⟺ gx 最大 ⟺ 离敌最近），
+            //   若 band 也由单位自身距离决定，两维被构造性地绑死（前列必 near、后列必 far）
+            //   ⇒ 矩阵两端全部命中最高值 ⇒ 退化成常数。舰队级 band 与之正交，矩阵语义变为
+            //   「当前接敌距离下哪一列在吃红利」，玩家的选择是"用什么阵型去接这个距离的仗"。
+            //   滞回在 nextRangeBand 内（单阈值会让伤害数字逐帧跳变）。
+            const bandNow: RangeBand = nextRangeBand(
+                minFleetDist, this.getIdealEngageDist(fleet),
+                (fleet as any)._rangeBand as RangeBand | undefined,
+            );
+            (fleet as any)._rangeBand = bandNow;
+
+            // ── [v33 P1-4.3] 阵型崩溃状态（旧案阵型表的「崩溃」行 = 火力/回避/机动 −50%）──
+            //   概念澄清：旧案把「崩溃」列在**阵型表**里是"当前状态"视角（同表「无阵」亦然），
+            //   故实现为**状态**而非可选阵型。定位 = 士气链的中间档：
+            //     士气<40 且 兵力<60% → 崩溃（还能打但打不动）→ 士气<25 撤离 → 士气<1 溃散。
+            //   恢复门槛（70）远高于进入门槛（40）是**故意的强滞回**：否则士气在 40 附近抖动
+            //   会让乘区逐帧翻转（"忽强忽弱"）。
+            const colResist = this.skillModsOf(fleet).collapseResist;
+            const colResult = updateFormationCollapse(
+                (fleet as any)._formationCollapsed === true,
+                {
+                    morale: moraleNow,
+                    hpPct,
+                    flagshipSunkAt: (fleet as any)._flagshipSunkAt,
+                    retreatTier: (fleet as any)._retreatTier as RetreatTier,
+                    resist: colResist,
+                },
+            );
+            // 状态跃迁时给一次战报（避免每帧刷屏）
+            if (colResult.collapsed !== ((fleet as any)._formationCollapsed === true)) {
+                if (colResult.collapsed) {
+                    (this.store as any).addBattleLog?.({
+                        text: `${myFacDoc?.name || '舰队'}阵型崩溃（${COLLAPSE_REASON_TEXT[colResult.reason || 'morale']}）：火力与机动大幅下降`,
+                        type: 'battle',
+                    });
+                } else {
+                    (this.store as any).addBattleLog?.({ text: `${myFacDoc?.name || '舰队'}重整阵型，恢复战力`, type: 'battle' });
+                }
+            }
+            (fleet as any)._formationCollapsed = colResult.collapsed;
+            (fleet as any)._collapseReason = colResult.reason;
+            const colMul = collapseMuls(colResult.collapsed);
 
             // 确定当前优先级状态 — 带威胁评估 + 塔攻击
             // v2 修复：engaging 但目标消失（守军被灭/基地易主）→ 强制转 exploring 重新评估，杜绝死锁
@@ -4153,8 +4753,7 @@ export class BattleScene extends Phaser.Scene {
                 //   速度模式已在 :4165 对 flaring 豁免，故"边打边走"不会被缠斗减速卡住。
                 if (closestEnemyFleet && minFleetDist < 250) isEngaging = true;
                 if (Phaser.Math.Distance.Between(fleet.x, fleet.y, fleetTargetX, fleetTargetY) < 40) {
-                    const flareYComp = this.mapStyle === 'crt' ? CRT_Y_SCALE : 1;
-                    const flareRealY = fleetTargetY / flareYComp;
+                    const flareRealY = fleetTargetY;
                     const fQ = Math.round((Math.sqrt(3)/3 * fleetTargetX - 1/3 * flareRealY) / this.hexRadius);
                     const fR = Math.round((2/3 * flareRealY) / this.hexRadius);
                     const tileAtFlare = this.tilesDict[`${fQ},${fR}`];
@@ -4183,36 +4782,18 @@ export class BattleScene extends Phaser.Scene {
                 //   重组完成条件放宽为"进入补给圈（chainInfo.inSupply）"——补给恢复交给运输舰。
                 let nearestSupply: any = null;
                 let minDistToSupply = Infinity;
-                if (this.mapStyle === 'command') {
-                    // 空间补给源：己方司令部 + 己方占领星球（与 getNearestSupplySource 同源）
-                    this.store.factions.forEach((f: any) => {
-                        const tf = this.factionMap.get(f.id);
-                        if (!tf || tf.team !== myFac.team || !f.castlePos) return;
-                        const d = Phaser.Math.Distance.Between(fleet.x, fleet.y, f.castlePos.x, f.castlePos.y);
-                        if (d < minDistToSupply) { minDistToSupply = d; nearestSupply = { x: f.castlePos.x, y: f.castlePos.y }; }
-                    });
-                    this.tilesList.forEach((t: any) => {
-                        if ((t.type !== 'planet' && t.type !== 'relay') || t.ownerId !== myFac.id) return;
-                        const d = Phaser.Math.Distance.Between(fleet.x, fleet.y, t.x, t.y);
-                        if (d < minDistToSupply) { minDistToSupply = d; nearestSupply = { x: t.x, y: t.y }; }
-                    });
-                } else {
-                    // hex/crt 保持原地块逻辑
-                    this.tilesList.forEach(t => {
-                        if (t.type === 'barracks' && t.ownerId === myFac.id) {
-                            const d = Phaser.Math.Distance.Between(fleet.x, fleet.y, t.x, t.y);
-                            if (d < minDistToSupply) { minDistToSupply = d; nearestSupply = t; }
-                        }
-                    });
-                    if (!nearestSupply) {
-                        this.tilesList.forEach(t => {
-                            if (t.ownerId === myFac.id && t.connected && (t.type === 'castle' || t.type === 'planet' || t.type === 'barracks' || t.type === 'pending')) {
-                                const d = Phaser.Math.Distance.Between(fleet.x, fleet.y, t.x, t.y);
-                                if (d < minDistToSupply) { minDistToSupply = d; nearestSupply = t; }
-                            }
-                        });
-                    }
-                }
+                // 空间补给源：己方司令部 + 己方占领星球（与 getNearestSupplySource 同源）
+                this.store.factions.forEach((f: any) => {
+                    const tf = this.factionMap.get(f.id);
+                    if (!tf || tf.team !== myFac.team || !f.castlePos) return;
+                    const d = Phaser.Math.Distance.Between(fleet.x, fleet.y, f.castlePos.x, f.castlePos.y);
+                    if (d < minDistToSupply) { minDistToSupply = d; nearestSupply = { x: f.castlePos.x, y: f.castlePos.y }; }
+                });
+                this.tilesList.forEach((t: any) => {
+                    if ((t.type !== 'planet' && t.type !== 'relay') || t.ownerId !== myFac.id) return;
+                    const d = Phaser.Math.Distance.Between(fleet.x, fleet.y, t.x, t.y);
+                    if (d < minDistToSupply) { minDistToSupply = d; nearestSupply = { x: t.x, y: t.y }; }
+                });
                 // v4 修复（越过运输舰）：撤退目标优先级改为——
                 //   ① 若补给链已接通（inSupply，含运输舰覆盖）→ 原地停船接受补给，不再奔向补给源；
                 //   ② 否则找最近补给点；若无 → castlePos 兜底。
@@ -4231,7 +4812,11 @@ export class BattleScene extends Phaser.Scene {
                 const inboundAux: any = this.auxShips.find((a: any) =>
                     a.targetFleet === fleet && (a.state === 'outbound' || a.state === 'supplying')
                     && a.unit && a.unit.hp > 0);
-                if (this.mapStyle === 'command' && supplyChainLive && currentSupply < 90) {
+                // [v41] 近处有船 ⇒ **原地停船等**（不掉头去会合）；远时才保留双向会合。
+                //   用户实报：船就在后面不远处，舰队却掉头迎接，补给满后又掉回来 = 两次丑陋机动。
+                const nearAux: any = inboundAux
+                    && Math.hypot(inboundAux.x - fleet.x, inboundAux.y - fleet.y) < 8 * this.hexRadius ? inboundAux : null;
+                if (supplyChainLive && currentSupply < 90) {
                     // v6.1：补给圈内（含运输舰覆盖）→ 停船就地补给（补给速度 AUX_SUPPLY_RATE 远大于流失率）
                     fleet._regrouping = true;
                     fleetTargetX = fleet.x; fleetTargetY = fleet.y;
@@ -4241,22 +4826,19 @@ export class BattleScene extends Phaser.Scene {
                         fleet.state = 'exploring';
                         if (!this.isStanceLocked(fleet)) fleet.stance = 'search'; // [V18-B · B2] L3 常规写前检查 L1 锁
                     }
-                } else if (inboundAux) {
-                    // 双向会合：舰队转向运输舰，缩短断粮暴露时间（也弥补运输舰 1.4px/帧
-                    //   追不上高机动撤退舰队的问题——T2 的实用替代）。
+                } else if (nearAux) {
+                    // [v41] 双向会合（**仅当船还远**）：舰队转向运输舰，缩短断粮暴露时间。
+                    //   船已在附近时走 S0-船近停等（决策层），寻路侧配合 = 不进本分支，原地停船。
                     fleet._regrouping = false;
-                    fleetTargetX = inboundAux.x; fleetTargetY = inboundAux.y;
+                    fleetTargetX = nearAux.x; fleetTargetY = nearAux.y;
                 } else if (nearestSupply && !supplyChainLive) {
                     fleetTargetX = nearestSupply.x; fleetTargetY = nearestSupply.y;
                     // 已到达补给点 → 标记重组状态，等待恢复
                     if (Phaser.Math.Distance.Between(fleet.x, fleet.y, fleetTargetX, fleetTargetY) < 60) {
                         fleet._regrouping = true;
                         fleetTargetX = fleet.x; fleetTargetY = fleet.y; // 停留恢复
-                        // 重组完成：hex/crt = HP>70%且补给>60（地块兵营回补快）；
-                        //   指挥制 = 补给链已接通（inSupply，靠运输舰/星球回补，slowpath 也比死锁强）
-                        const regroupDone = this.mapStyle === 'command'
-                            ? (() => { const ci = this.supplyInfo.get(fleet); return !!(ci && ci.inSupply); })()
-                            : (hpPct > 0.7 && currentSupply > 60);
+                        // 重组完成 = 补给链已接通（inSupply：靠运输舰/星球回补）
+                        const regroupDone = (() => { const ci = this.supplyInfo.get(fleet); return !!(ci && ci.inSupply); })();
                         if (regroupDone) {
                             fleet._regrouping = false;
                             fleet.state = 'exploring';
@@ -4272,9 +4854,26 @@ export class BattleScene extends Phaser.Scene {
                 isEngaging = !!(closestEnemyFleet && minFleetDist < 250);
             } else if (fleet.state === 'engaging' && closestEnemyFleet) {
                 isEngaging = true;
-                if (fleet.stance === 'defend') {
+                // ===== [v32] **战法优先于姿态**：分舰队的角色决定机动方式 =====
+                //   修的是用户实报"AI 都是直线突击、没有迂回/包抄/后勤战"的**最终执行层原因**：
+                //   旧实现里 ① `stance === 'siege'` 一律"直奔敌军坐标"、② 非 siege 时只有
+                //   `cmdStat > 80` 才走包抄分支 ⇒ 无论 L2 算出什么战法，执行层都是**直线冲**。
+                //   根因 = `_maneuverRole` / `_maneuverTargetKind` **全项目零消费**
+                //   （此前只有 `_maneuverLateral` 被当作选边符号，见下方 `flankAngle`）。
+                const mRole = (fleet as any)._maneuverRole as string | undefined;
+                const mKind = (fleet as any)._maneuverTargetKind as string | undefined;
+                /** 迂回授权：被战法指定为左右翼 ⇒ 强制走弧线绕向敌军侧后（不再取决于提督属性） */
+                const wantsFlank = mRole === 'left' || mRole === 'right';
+                /** 后勤猎杀：本路目标 = 敌方补给节点（运输舰 > 敌方补给点） */
+                const raidTarget = mKind === 'enemy_supply' ? this.findEnemySupplyTarget(fleet, myFac) : null;
+
+                if (raidTarget) {
+                    // 断敌后路优先于咬主力（银英式后勤战）：直奔敌方补给节点，不纠缠敌方主力
+                    fleetTargetX = raidTarget.x; fleetTargetY = raidTarget.y;
+                    fleet.formation = 'spindle';
+                } else if (fleet.stance === 'defend') {
                     fleetTargetX = fleet.x; fleetTargetY = fleet.y;
-                } else if (fleet.stance === 'siege') {
+                } else if (fleet.stance === 'siege' && !wantsFlank) {
                     fleetTargetX = closestEnemyFleet.x; fleetTargetY = closestEnemyFleet.y;
                 } else {
                     // === 阶段C：战术AI重构 ===
@@ -4286,7 +4885,13 @@ export class BattleScene extends Phaser.Scene {
                     const idealDist = this.getIdealEngageDist(fleet);
 
                     // --- 2. 包抄行为：计算敌方朝向，尝试侧后接近 ---
+                    // [v46-G 已回退] 曾试过对敌方朝向做一阶低通（τ≈10 帧）以压掉它的帧间跳变，
+                    //   但实测**反而使 `facingAngle` 方向翻转从 0 次升到 4 次**（`_probe_v45` 同一受控输入）：
+                    //   低通让 `angleDiff` 滞后于「翼侧角锁定」所依据的原始朝向，二者时序错配 ⇒ 相位在
+                    //   错误时刻切换 ⇒ 制造出方向相反的两次重定向（来回摆）。**耦合不能靠"改变相位"来断，
+                    //   只能靠"锁死不跟随"来断**（见 v46-A）。故此处保持直接取值。
                     const enemyAngle = closestEnemyFleet.facingAngle || 0;
+                    const enemyAngleRaw = enemyAngle;   // 翼侧角锁定与 angleDiff 同一真源
                     // 从敌人背后45°方向接近 = 侧翼包抄
                     // [FIX-2.1 · #73] 锁侧翼选边：原每帧 Math.random() 选 ±45° ⇒ 目标方向逐帧在 ±66° 间
                     //   翻相，而限速航向只有 1.5°/帧 追不上 ⇒ 左右摆（取证 §2.1-(i)）。评分/算式不变，
@@ -4294,16 +4899,71 @@ export class BattleScene extends Phaser.Scene {
                     if ((fleet as any)._flankSign === undefined
                         || (fleet as any)._flankTargetId !== closestEnemyFleet.id
                         || (fleet as any)._flankEngaged !== true) {
-                        (fleet as any)._flankSign = Math.random() > 0.5 ? 1 : -1;
+                        // [v31-C] **战法优先于随机**：分舰队若已被战法指定侧翼（left=-1 / right=+1），
+                        //   就用它取代 `Math.random()` 选边 —— 这样"两翼包抄"才是真的左右夹击，
+                        //   而不是两队各自随机绕圈（同时修掉 `v17_01` 登记的「包抄左右随机、看不出意图」）。
+                        const _forcedSide = (fleet as any)._maneuverLateral;
+                        (fleet as any)._flankSign = (_forcedSide === -1 || _forcedSide === 1)
+                            ? _forcedSide
+                            : (Math.random() > 0.5 ? 1 : -1);
                         (fleet as any)._flankTargetId = closestEnemyFleet.id;
+                        // [v46] 与 `_flankSign` **同生命周期**初始化「翼侧角锁定」与两个相位状态
+                        //   （换目标 / 脱战重接战才重置 —— 与选边语义完全一致，不需要额外标记位）
+                        (fleet as any)._flankAngleLock = enemyAngleRaw + Math.PI + (fleet as any)._flankSign * Math.PI / 4;
+                        (fleet as any)._flankPhase = 0;
+                        (fleet as any)._mPhase = 0;
+                        // [v47·P1] _mPhase 与 flank 组**同生命周期**清零：它只在通用 search 分支更新，
+                        //   换目标/脱战重接战若不清 → 陈旧 2 会误武装 _backing（攻坚直冲变 55% 倒退速）。
                     }
                     (fleet as any)._flankEngaged = true;
-                    const flankAngle = enemyAngle + Math.PI + (fleet as any)._flankSign * Math.PI/4;
+                    // [v46-A] **翼侧角锁定** —— 打断「我方意图 ← 敌方舰首」这条正反馈：
+                    //   原式 `flankAngle = enemyAngle + π ± π/4` **每帧**吃敌方舰首朝向 ⇒ 敌方一转身，
+                    //   我方的包抄目标点就绕敌旋转；而敌方同样吃我方朝向 ⇒ 双方互为输入。
+                    //   `_probe_v45` 受控输入（敌绕圈）实测：目标点单帧跳 1377~1525px、`facingAngle`
+                    //   反向 147~165° ⇒ 舰队现场掉头 = 用户实报的「摇头晃脑、边晃边前进」。
+                    const flankAngle = (fleet as any)._flankAngleLock as number;
                     const approachAngle = Math.atan2(closestEnemyFleet.y - fleet.y, closestEnemyFleet.x - fleet.x);
                     // 夹角越小越接近正面，夹角越大越接近侧后
                     const angleDiff = Math.abs(Math.atan2(Math.sin(approachAngle - enemyAngle), Math.cos(approachAngle - enemyAngle)));
-                    const isBehind = angleDiff > Math.PI * 0.6; // 在敌人侧后方
-                    const isFlanking = angleDiff > Math.PI * 0.3 && angleDiff <= Math.PI * 0.6; // 侧翼
+                    // [v46-B] **侧后相位滞回**（双阈值）：原单阈值 `angleDiff > 0.6π` 在阈值附近逐帧
+                    //   翻面，而 `isBehind` 一变目标点就跳到敌人另一侧 ⇒ 与 v46-A 同源的另一半振荡。
+                    //   相位 0=正面 / 1=侧翼 / 2=侧后；**进入用严阈值、退出用松阈值** ⇒ 阈值处不再抖动。
+                    {
+                        const _php = ((fleet as any)._flankPhase as number) ?? 0;
+                        let _phn = _php;
+                        if (_php === 0) { if (angleDiff > Math.PI * 0.30) _phn = 1; }
+                        else if (_php === 1) {
+                            if (angleDiff > Math.PI * 0.62) _phn = 2;
+                            else if (angleDiff < Math.PI * 0.25) _phn = 0;
+                        } else { if (angleDiff < Math.PI * 0.55) _phn = 1; }
+                        (fleet as any)._flankPhase = _phn;
+                    }
+                    const _ph = (fleet as any)._flankPhase as number;
+                    const isBehind = _ph === 2;      // 在敌人侧后方
+                    const isFlanking = _ph === 1;    // 侧翼
+                    // [v46-C] **接敌机动相位**（双阈值滞回）—— 修「mfd 在阈值附近穿越 ⇒ 意图反复翻面」：
+                    //   `_probe_v45` 实测 `mfd/idealDist ∈ [0.33, 0.37]` **恰好横跨 0.35 阈值** ⇒ 目标点在
+                    //   「拉开点（自身后方 0.5×idealDist）」与「包抄点（敌后方 idealDist）」之间反复跳
+                    //   （相距 1400+px），`facingAngle` 因此反向 147~165° ⇒ 舰队现场掉头。
+                    //   相位 2=拉开 / 1=缠斗保持 / 0=接近；进入严、退出松 ⇒ 只在**质变**时才切换。
+                    {
+                        let _mp = ((fleet as any)._mPhase as number) ?? 0;
+                        const dIn = idealDist * 0.35, dOut = idealDist * 0.50;   // 拉开 ↔ 缠斗
+                        const eIn = idealDist * 0.70, eOut = idealDist * 0.85;   // 缠斗 ↔ 接近
+                        // [v48] **追击豁免**：拉开距离只对「对射」有意义。`adiff ≤ 0.3π` = 我在敌后半球
+                        //   （敌背对我；撤退中的敌军必然如此），加上敌公开的撤退态 ⇒ 敌正在脱离。
+                        //   此时若仍执行"拉开"：mfd<0.35d 进拉开（掉头后退）→ 后退+敌在跑 ⇒ mfd>0.5d
+                        //   退出 ⇒ 前进追 ⇒ 又 <0.35d ⇒ 又掉头 —— 「回头-前进-回头」循环
+                        //   （`_probe_v47` 钉敌实测：mfd=278 ⇒ 进拉开 ⇒ 目标点跳 1470px ⇒ 掉头，
+                        //   拉开态持续 254 帧；用户视频同一现象）。
+                        //   且战术上等于把逃跑窗口送给敌人（doctrine S6「敌露背后 ⇒ 追击」打架）。
+                        const _foeFleeing = angleDiff <= Math.PI * 0.3 || closestEnemyFleet.state === 'retreating';
+                        if (_mp === 2) { if (minFleetDist > dOut || _foeFleeing) _mp = 1; }
+                        else if (_mp === 1) { if (minFleetDist < dIn && !_foeFleeing) _mp = 2; else if (minFleetDist > eOut) _mp = 0; }
+                        else { if (minFleetDist < dIn && !_foeFleeing) _mp = 2; else if (minFleetDist < eIn) _mp = 1; }
+                        (fleet as any)._mPhase = _mp;
+                    }
+                    const _mPhase = (fleet as any)._mPhase as number;
 
                     // --- 3. 聚焦火力：优先补刀残血，避免3+打1 ---
                     let alliesOnTarget = 0;
@@ -4326,18 +4986,23 @@ export class BattleScene extends Phaser.Scene {
                     //   60/42px 改为按理想交战距比例推导（0.35/0.5 倍）——
                     //   战列 800 → 脱离 280 / 缠斗下限 400；驱逐 560 → 196/280。
                     //   固定 60px 是"接舷战"距离（用户实报：敌我舰队都贴上了）。
-                    if (isCautious) {
+                    if (isCautious && !wantsFlank) {
                         // 低统帅：正面直冲，无战术
+                        // [v32] 例外：被战法指定侧翼时不适用——**战法优先于提督属性**
                         fleetTargetX = closestEnemyFleet.x; fleetTargetY = closestEnemyFleet.y;
                         fleet.formation = 'wedge';
-                    } else if (minFleetDist < idealDist * 0.35) {
+                    } else if (_mPhase === 2) {
                         // 极近距离：脱离缠斗，拉开到理想距离
+                        //   [v46-C] 判据由瞬时 `minFleetDist < idealDist*0.35` 改为**相位**（双阈值滞回）：
+                        //   原式在 mfd 于阈值附近穿越时逐帧改判（实测 mfd/idealDist 在 0.33~0.37 摆动），
+                        //   目标点在「自身后方 0.5×idealDist」与「敌后方 idealDist」之间反复跳 = 摇头晃脑。
+                        //   ⚠ 远离阈值时相位与瞬时判定**同值** ⇒ 行为逐位不变，只在缺陷区生效。
                         const escapeAngle = Math.atan2(fleet.y - closestEnemyFleet.y, fleet.x - closestEnemyFleet.x);
                         fleetTargetX = fleet.x + Math.cos(escapeAngle) * idealDist * 0.5;
                         fleetTargetY = fleet.y + Math.sin(escapeAngle) * idealDist * 0.5;
-                    } else if (minFleetDist < idealDist * 0.7) {
+                    } else if (_mPhase === 1) {
                         // 已进入缠斗距离：保持当前位置对射，或侧翼机动
-                        if (isAggressive && !isBehind) {
+                        if ((isAggressive || wantsFlank) && !isBehind) {
                             // 尝试绕到侧后
                             fleetTargetX = closestEnemyFleet.x + Math.cos(flankAngle) * idealDist;
                             fleetTargetY = closestEnemyFleet.y + Math.sin(flankAngle) * idealDist;
@@ -4345,8 +5010,10 @@ export class BattleScene extends Phaser.Scene {
                             // 保持当前位置
                             fleetTargetX = fleet.x; fleetTargetY = fleet.y;
                         }
-                    } else if (isAggressive && !isBehind && !isFlanking) {
+                    } else if ((isAggressive || wantsFlank) && !isBehind && !isFlanking) {
                         // 高统帅+不在侧后 → 尝试包抄
+                        // [v32] `wantsFlank` 让**战法指定的左右翼**即使统帅不高也走包抄 ——
+                        //   这是"迂回/包抄"真正落到执行层的那一刀。
                         fleetTargetX = closestEnemyFleet.x + Math.cos(flankAngle) * idealDist;
                         fleetTargetY = closestEnemyFleet.y + Math.sin(flankAngle) * idealDist;
                     } else {
@@ -4374,7 +5041,39 @@ export class BattleScene extends Phaser.Scene {
                 
                 // 【高阶智能】判断舰队当前的后勤健康度。若补给低于 75%，极度抗拒脱离后勤网深入敌后
                 const currentSupply = this.fleetSupplyPct(fleet);
-                const needsTethering = currentSupply < 75;
+                // [v40] 补给/追击改为**性格×态势的决策表**（原：硬阈值 <75 ⇒ 无个性集体回头）。
+                //   规则表见 game/combatDoctrine.ts 的 supplyDecision（S1~S11，台架逐条断言）。
+                const _facD: any = this.factionMap.get(fleet.factionId);
+                const _docD: any = _facD?._doctrine ?? NEUTRAL_DOCTRINE;
+                const _auxOf = (a: any) => a.targetFleet === fleet && (a.state === 'outbound' || a.state === 'supplying') && a.unit && a.unit.hp > 0;
+                const _inbound = this.auxShips.some(_auxOf);
+                // [v41] 「在附近」与「在途」分开：船已在一两帧路程内（8×hexR）时，
+                //   掉头去会合纯属浪费 —— 停下它自己就到了（用户：哪怕停下来都比掉头好）。
+                //   距离用 hexR 倍数（hexR 随地图缩放 26~50，不可写绝对像素）。
+                const _nearAux = this.auxShips.find((a: any) => _auxOf(a)
+                    && Math.hypot(a.x - fleet.x, a.y - fleet.y) < 8 * this.hexRadius);
+                let _enemyFlee = false;
+                if (closestEnemyFleet) {
+                    const _d = Math.atan2(closestEnemyFleet.y - fleet.y, closestEnemyFleet.x - fleet.x) - (closestEnemyFleet.facingAngle || 0);
+                    _enemyFlee = Math.abs(((_d + Math.PI * 3) % (Math.PI * 2)) - Math.PI) < Math.PI * 0.45;   // 敌舰首与"我来向"夹角 < 81° ⇒ 背对我
+                }
+                const _myP = this.calculateFleetPower(fleet);
+                const _enP = closestEnemyFleet ? this.calculateFleetPower(closestEnemyFleet) : 0;
+                const _sup = supplyDecision({
+                    supplyPct: currentSupply,
+                    inSupplyChain: !!(this.supplyInfo.get(fleet)?.inSupply),
+                    supplyShipInbound: _inbound,
+                    supplyShipNear: !!_nearAux,
+                    enemyTurningAway: _enemyFlee,
+                    ourAdvantage: _enP > 0 && _myP / _enP >= 1.15,
+                    prevAction: (fleet as any)._supplyAction,
+                    aggression: (_facD as any)._aggression ?? 0.5,
+                    holdingGround: fleet.stance === 'defend' || fleet.stance === 'siege',
+                });
+                (fleet as any)._supplyAction = _sup.action;
+                (fleet as any)._supplyRule = _sup.rule;
+                // 语义映射：return ⇒ 需要"锚回补给网"；pursue ⇒ 明确解除锚定惩罚；hold ⇒ 维持现状
+                const needsTethering = _sup.action === 'return';
 
                 // 【核心重构】战术姿态决定寻路权重
                 // 方向性探索：计算敌方阵地方向，偏好朝敌方推进
@@ -4447,6 +5146,17 @@ export class BattleScene extends Phaser.Scene {
                         }
                         
                         if (score < minScore) { minScore = score; exploreTarget = t; }
+                // [v40] 接近阶段横向分离：让被战法指定了侧翼的队**在接敌前**就走自己的路
+                //   （`_maneuverLateral` 原本只在接敌后生效 ⇒ 远距离三路并成一路 = "为分而分"）。
+                //   偏移量随距离² 收敛 ⇒ 接敌时已归位，不干扰既有包抄逻辑（`combatDoctrine.approachLateralOffset`）。
+                if (exploreTarget && (fleet as any)._maneuverLateral && closestEnemyFleet) {
+                    const _dE = Phaser.Math.Distance.Between(fleet.x, fleet.y, closestEnemyFleet.x, closestEnemyFleet.y);
+                    const _off = approachLateralOffset((fleet as any)._maneuverLateral, _dE, 900, this.hexRadius * 4.4);
+                    if (_off !== 0) {
+                        const _ang = Math.atan2(closestEnemyFleet.y - fleet.y, closestEnemyFleet.x - fleet.x) + Math.PI / 2;
+                        exploreTarget = { x: exploreTarget.x + Math.cos(_ang) * _off, y: exploreTarget.y + Math.sin(_ang) * _off };
+                    }
+                }
                     }
                 });
                 // 记录本帧探索目标 key，供下帧滞回判定（待改2）
@@ -4496,6 +5206,41 @@ export class BattleScene extends Phaser.Scene {
             fleet._lastTickHp = totalHp;
 
             const distToTarget = Phaser.Math.Distance.Between(fleet.x, fleet.y, fleetTargetX, fleetTargetY);
+            // [v43 取证] **只读调试快照**（零分配：复用同一对象，每帧覆盖字段）。
+            //   为什么必须回写：`fleetTargetX/Y` / `minFleetDist` / `isEngaging` / `closestEnemyFleet`
+            //   全是 update 内的**局部变量**，L2 探针（`_probe_v43/v44.mjs`）从外部读不到
+            //   ⇒ 只能观测到"朝向在抖"，观测不到"为什么抖"（目标点帧间跳？接敌判据翻转？）。
+            //   ⚠ 只写不读、不参与任何判定 ⇒ 对行为零影响（可随时删）。
+            {
+                const d = (fleet as any)._dbg || ((fleet as any)._dbg = {});
+                d.tx = fleetTargetX; d.ty = fleetTargetY;
+                d.mfd = minFleetDist; d.eng = isEngaging ? 1 : 0;
+                d.ef = closestEnemyFleet ? String(closestEnemyFleet.id).slice(0, 8) : null;
+                d.nvis = visibleEnemies.length;
+                d.st = fleet.state;
+                // [v45 取证] 目标选择分支的**输入量**（在写入处直接重算，避免侵入 4868 的分支代码）：
+                //   分支条件只由 `idealDist` / `angleDiff` / `isBehind` 三者决定 ⇒ 有了它们 + `tx/ty`
+                //   就能**反推**本帧走了哪一支（含"哪一支在阈值上翻面"）。同时记录敌方坐标与敌朝向 ——
+                //   `flankAngle = enemyAngle + π ± π/4` 是**吃敌方朝向**的，故必须一并取证。
+                d.idl = this.getIdealEngageDist(fleet);
+                if (closestEnemyFleet) {
+                    const efa = closestEnemyFleet.facingAngle || 0;
+                    const ap2 = Math.atan2(closestEnemyFleet.y - fleet.y, closestEnemyFleet.x - fleet.x);
+                    const ad = Math.abs(Math.atan2(Math.sin(ap2 - efa), Math.cos(ap2 - efa)));
+                    d.ex = closestEnemyFleet.x; d.ey = closestEnemyFleet.y; d.efa = efa;
+                    d.adiff = ad;
+                    d.behind = ad > Math.PI * 0.6 ? 1 : 0;
+                    d.flank = (ad > Math.PI * 0.3 && ad <= Math.PI * 0.6) ? 1 : 0;
+                } else { d.ex = null; d.ey = null; d.efa = null; d.adiff = null; d.behind = null; d.flank = null; }
+            }
+            // [v47 BACKING-EXIT] 近距脱离 = **舰首仍朝敌、倒退拉开**（拖刀同款语义），不再"掉头逃跑"：
+            //   旧实现 _mPhase=2 把 fAngle 指向身后脱离点 ⇒ 舰队在炮战中现场掉头（用户：还在战斗中
+            //   怎么能转？被追击就不该能转向）；现在位移朝脱离点、舰首钉在敌人方向（下方 rawVX 走倒退通道）。
+            // [v47·P1 双保险] 附加"真实贴脸"闸：phase 陈旧时一旦敌拉开距离，倒退自动解除，
+            //   倒退只存在于"被贴住需要脱开"的真实缠斗距离内（phase2 定义域 <0.5×ideal）。
+            const _backing = fleet.state === 'engaging' && (fleet as any)._mPhase === 2
+                && !!closestEnemyFleet && !isRetreating && fleet.stance !== 'fallback'
+                && minFleetDist < this.getIdealEngageDist(fleet) * 0.6;
             let fAngle = fleet.facingAngle || 0;
             // 移动方向（默认与朝向一致；撤退时分离：移动朝补给点，火炮朝敌军）
             let moveAngle = fAngle;
@@ -4507,6 +5252,9 @@ export class BattleScene extends Phaser.Scene {
                 if (isRetreating && isEngaging && closestEnemyFleet) {
                     fAngle = Math.atan2(closestEnemyFleet.y - fleet.y, closestEnemyFleet.x - fleet.x);
                     // moveAngle 保持朝向 fleetTarget (已经在 distToTarget>5 分支设置好)
+                } else if (_backing && closestEnemyFleet) {
+                    // [v47] 脱离相同理：moveAngle 保持朝脱离点（= 背离敌），舰首改回朝敌
+                    fAngle = Math.atan2(closestEnemyFleet.y - fleet.y, closestEnemyFleet.x - fleet.x);
                 }
                 fleet.facingAngle = fAngle;
             } else if (isEngaging && closestEnemyFleet) {
@@ -4525,11 +5273,94 @@ export class BattleScene extends Phaser.Scene {
             //   该分离是此前"船尾给敌人"实报的修复，硬点 3 要求保留 ⇒ 单值方案无法同时满足，故用双平滑器。
             //   时间基准：与位移同源（位移 = speed * dt 每帧）⇒ 步长 = HEADING_TURN_RATE * dt。
             // [R10-B1-BEGIN]
-            const headingStep = HEADING_TURN_RATE * dt;
-            if (typeof fleet.heading !== 'number') fleet.heading = moveAngle;
-            if (typeof fleet.facingSmooth !== 'number') fleet.facingSmooth = fAngle;
-            fleet.heading = rateLimitAngle(fleet.heading, moveAngle, headingStep);
-            fleet.facingSmooth = rateLimitAngle(fleet.facingSmooth, fAngle, headingStep);
+            const headingStep = HEADING_TURN_RATE * dt;   // 满转率（rad/帧）
+            const rateAccel = TURN_RATE_ACCEL * dt;       // 角加速度上限（rad/帧²）
+            // [v30] **姿态控制转向**：太空战舰的转身 = 原地姿态调整（RCS），**不是飞机式弧线**。
+            //   ⇒ 取消 v29 的"位移航向平滑器 `fleet.heading`"（它必然让舰队中心走弧线 ⇒ 圆阵像"风暴"、
+            //     掉头像"沿弧线切换"）；位移方向改回**直接取目标方向**（`moveAngle`）；
+            //     转向的"重量"改由**推力对齐衰减**承担（见下方 `thrustFactor`：掉头时速度降到 12%
+            //     ⇒ 舰队几乎停在原地缓慢转身，转完再加速）。
+            //   `fleet.facingSmooth` 保留（驱动阵位旋转 / 2D 精灵 / 3D 舰首），仍是"缓慢转身"的载体。
+            if (typeof fleet.facingSmooth !== 'number') { fleet.facingSmooth = fAngle; fleet.facingRate = 0; }
+            if (typeof fleet.facingRate !== 'number') fleet.facingRate = 0;
+            // [v29b] 角速度带**惯量**（"压舵 / 收舵"）+ **临界制动律**（防欠阻尼振荡）。
+            //   ⚠ 首版（v29）用「比例控制 + 角加速度限制」 = **欠阻尼二阶系统**：接近目标时速率
+            //     降不下来 ⇒ 过冲 −13.5° / 角速度符号翻转 7 次 ⇒ 阵位按 facingSmooth 旋转 ⇒
+            //     两侧单位交替来回，即用户实报的「两条肩膀在抖动 / 波浪舞」。
+            //   现改为：
+            //     ① 目标速率 ≤ **制动上限** `sqrt(2·a·|d|)·BRAKE_SAFETY` —— 运动学上"恰好能停住"
+            //        的速率 ⇒ 不过冲（取代比例项）；
+            //     ② `|d| ≤ 满转率` 时**吸附**到目标并清零速率 —— 杜绝目标附近的极限环
+            //        （旧 rateLimitAngle 天然含此步，首版把它弄丢了）。
+            //   仿真（`_v29_osc_diag.cjs`）：过冲 0.000° / 翻转 0 次 / 稳态残差 0，且保留惯量。
+            {
+                // （v30）原 `dH` / `fleet.heading` 平滑块已**移除**：位移方向不再平滑
+                //   （平滑位移航向 = 舰队中心走弧线，是"圆阵风暴 / 掉头沿弧线切换"的直接来源）。
+
+                // [v41b] **掉头协议**（原地转身）—— 修「整个阵型绕一个小原点画圈」：
+                //   卡点 = 位移方向消费 facingSmooth，而 facingSmooth 以 0.75°/帧 慢转 ⇒
+                //   中心航迹是 R=v/ω≈23px 的小圆（v41 的吸附判据用 moveDir（速度方向），
+                //   弧线转弯时它与 formFacing 一起慢转、差恒 ≈0 ⇒ 结构性永不触发）。
+                //   判据必须用**目标航向差 dGoal = |wrap(fAngle − facingSmooth)|**（不是 moveDir）。
+                //   协议：差 > ENTER ⇒ 快档转身 + formFacing 同步 + 推力压死（原地转）。
+                // [v47 wheel-and-reform] 掉头协议**触发器**（滞回进/出）。
+                //   ⚠ v41b 的「进入帧把 formFacing 吸附到新航向」已**删除** —— 那是"画圆"的真凶：
+                //   进入协议的一帧全体格位目标按新朝向**瞬移**，每舰 uDist 跳到数百 px 冲向跳变点，
+                //   同时 thrustDir=facingSmooth 还在从旧朝向慢转 ⇒ 合成「整阵绕一个小原点旋转漂移」（用户实报）。
+                //   也删除 line/circle/square 豁免（双标：被豁免的阵型继续走弧线画圆）。
+                //   阵面重排改由下方 formFacing 三态管理器统一执行：协议期冻结、**退出帧一步阶跃**、
+                //   每舰限速直线落位 = "掉头 → 列队重组成新阵型"。
+                {
+                    const dGoal = Math.abs(Math.atan2(Math.sin(fAngle - fleet.facingSmooth), Math.cos(fAngle - fleet.facingSmooth)));
+                    // [v41e] **拖刀例外**保留：撤退+接敌时舰首朝敌 / 位移朝补给是既有设计，协议会破坏它。
+                    const _noProto = isRetreating === true && isEngaging === true;
+                    const ut = (fleet as any)._uturn === true;
+                    const nu = !_noProto && (ut ? dGoal > FACING_TURN.EXIT_RAD : dGoal > FACING_TURN.ENTER_RAD);
+                    (fleet as any)._uturn = nu;
+                    // 下降沿（本帧协议结束）：formFacing 管理器据此做唯一一次阵面阶跃
+                    (fleet as any)._uturnJustEnded = ut && !nu;
+                }
+                const dF = Math.atan2(Math.sin(fAngle - fleet.facingSmooth), Math.cos(fAngle - fleet.facingSmooth));
+                if ((fleet as any)._uturn === true) {
+                    // 协议期：快档、无惯量、formFacing 同步（阵位/托盘/位移一个真源 ⇒ 整阵绕锚点刚性转）
+                    // [v42b] 交战中的转向纪律（恢复 v40 语义，但作用于**舰体速率**而非格位）：
+                    //   denied(交战中大角度) ⇒ rateMul 0.06~0.16 ⇒ 不狂转（用户：「还在对战就不能转向」）。
+                    //   ⚠ v42 曾把本消费整段删掉 ⇒ 交战中也全速转身 = 用户实报「摇头晃脑/神经病」。
+                    const _td = turnDiscipline({
+                        // [v46-D] 「交战」改用**真实接敌距离**（与 4844 的 `minFleetDist < 250` 同一口径），
+                        //   不再用 `state === 'engaging'`——该状态在 900px 外就已置位 ⇒ 整段接近航路
+                        //   （900→250px）都被判成"交战中禁止转向"，转向被压成 0.61°/帧 的蠕动。
+                        engaged: minFleetDist < 250,
+                        disengaging: fleet.state === 'retreating' || (fleet as any)._mPhase === 2,
+                        angleToTurn: Math.abs(dF),
+                        aggression: ((this.factionMap.get(fleet.factionId) as any)?._aggression) ?? 0.5,
+                    });
+                    (fleet as any)._turnDisc = _td;
+                    if (_td.mode === 'denied') {
+                        // [v46-E] 「还在对战就不能转向」⇒ **保持航向**（清速率、不写朝向）。
+                        //   原实现按 `rateMul = 0.06~0.16` 极慢蠕动：转 180° 要 ~5 秒，既没做到"不转"
+                        //   （航向仍在持续变），也没做到"转过去"⇒ 最坏的中间态，观感即「摇头晃脑」。
+                        //   配合 v46-D 的距离口径，denied 只在真正接舷（<250px）时出现。
+                        fleet.facingRate = 0;
+                    } else {
+                        const uStep = HEADING_TURN_RATE * FACING_TURN.RATE_MUL * _td.rateMul * dt;
+                        if (Math.abs(dF) <= uStep) {
+                            fleet.facingSmooth = fAngle; fleet.facingRate = 0;
+                        } else {
+                            fleet.facingSmooth += Math.sign(dF) * uStep;
+                            fleet.facingRate = Math.sign(dF) * uStep;
+                        }
+                    }
+                    // [v47] 协议期只快转舰体（facingSmooth）；格位冻结（formFacing 管理器），退出帧一步重排
+                } else if (Math.abs(dF) <= headingStep) {
+                    fleet.facingSmooth = fAngle; fleet.facingRate = 0;
+                } else {
+                    const brakeF = Math.sqrt(2 * rateAccel * BRAKE_SAFETY * Math.abs(dF));
+                    const wantF = Math.sign(dF) * Math.min(headingStep, brakeF);
+                    fleet.facingRate += Math.max(-rateAccel, Math.min(rateAccel, wantF - fleet.facingRate));
+                    fleet.facingSmooth += fleet.facingRate;
+                }
+            }
             // [R10-B1-END]
              
             let repulseX = 0; let repulseY = 0;
@@ -4555,7 +5386,9 @@ export class BattleScene extends Phaser.Scene {
                 }
             });
 
-            const fleetSupplyFactor = (this.fleetSupplyPct(fleet) > 30) ? 1.0 : 0.5;
+            // v29：补给从"二值开关(>30→1.0 / 否则 0.5)"改为**连续衰减**——补给是资源，越少越弱
+            //   （40% 以下开始衰减，归零时 0.55），不再是"过线就砍半"的断崖。
+            const fleetSupplyFactor = supplyFactor(this.fleetSupplyPct(fleet));
             // 士气衰减 → 机动下降（100→1.0，0→0.7）
             const flMoraleSpd = (fleet.morale === undefined ? 100 : fleet.morale);
             const moraleSpeedMult = 0.7 + 0.3 * (flMoraleSpd / 100);
@@ -4567,10 +5400,32 @@ export class BattleScene extends Phaser.Scene {
             if (closestEnemyFleet && !isMeleeStance && minFleetDist < approachSlowR) {
                 congestionSlowdown = 0.3 + 0.7 * Math.min(1, Math.max(0, (minFleetDist - approachSlowR * 0.33) / (approachSlowR * 0.67)));
             }
-            const retreatSpeedBonus = isRetreating ? 3.0 : 1.0;
+            // v29：撤退速度按**档位**给（disengage 1.3 / withdraw 2.0 / rout 3.0），并带"脱离时间"
+            //   过渡（从 1.0 平滑升到该档）——旧实现的固定 ×3.0 已降级为溃散（rout）专用。
+            const retreatTierNow: RetreatTier = (fleet as any)._retreatTier ?? 'none';
+            const retreatSpeedBonus = isRetreating
+                ? retreatSpeedMulRamped(retreatTierNow,
+                    (this.time.now - ((fleet as any)._retreatEnteredAt ?? this.time.now)) / 1000)
+                : 1.0;
             // ── 指挥点修正：速度倍率（speed_boost / 黄金狮子咆哮的移速+30%）──
             const cpSpeedMult = this.cpState ? getSpeedMultiplier(this.cpState, fleet.id, fleet.factionId) : 1.0;
-            const fleetBaseSpeed = ((0.30 + (myFac.admiralStats?.mobility || 0) * 0.003) * fleetSupplyFactor * moraleSpeedMult) * retreatSpeedBonus * cpSpeedMult;
+            // [v30] **推力对齐衰减**（取代 v29 的 `turnLoad`）：主引擎只能沿舰首方向推进 ⇒
+            //   舰首与目标方向的夹角越大，前进越慢（对齐度 = cos(夹角)）。
+            //   掉头时对齐度 ≈ −1 ⇒ 航速 = `THRUST_IDLE`(12%) ⇒ **舰队几乎停在原地缓慢转身**。
+            //   撤退时**不施加**：拖刀/撤离本就要求保持航速（且拖刀分支舰首朝敌、位移朝补给，天然"不对齐"）。
+            const thrustAlign = Math.max(0, Math.cos(moveAngle - (fleet.facingSmooth ?? moveAngle)));
+            // [v41b] 掉头协议期：推力压死 ⇒ 航迹弧半径 < 1px = **原地转身**（画圈的位移根源被掐断）
+                // [v42b] **交战时不压推力**：协议压推力是为「脱离/巡航掉头时原地转身」；
+                //   交战中若压死 ⇒ 全队突然静止 = 用户实报「先缩成一团」（战斗中的舰队不该停）。
+            const thrustFactor = (isRetreating || _backing)
+                ? 1
+                : ((fleet as any)._uturn === true && isEngaging !== true
+                    ? FACING_TURN.THRUST
+                    : THRUST_IDLE + (1 - THRUST_IDLE) * Math.sqrt(thrustAlign));
+            // [v33 P1-4.3] 阵型崩溃 → 机动乘区（旧案「机动 −50%」）。
+            //   与撤退速度乘区**叠乘**是期望行为：一支崩溃且正在撤离的舰队应当几乎挪不动。
+            const collapseSpeedMul = collapseMuls((fleet as any)._formationCollapsed === true).speed;
+            const fleetBaseSpeed = ((FLEET_BASE_SPEED + (myFac.admiralStats?.mobility || 0) * 0.003) * fleetSupplyFactor * moraleSpeedMult) * retreatSpeedBonus * cpSpeedMult * thrustFactor * collapseSpeedMul;
 
             // 【C3 修复】排斥力限幅：原敌我排斥力可达 ~3.0/帧，远超自身速度(0.05~0.3)，
             // 会把舰队以数倍极速向后/侧向推开 → 倒车、横移、贴脸低频振荡。
@@ -4585,39 +5440,86 @@ export class BattleScene extends Phaser.Scene {
             // ── P1 地形效果：当前所在格子的移动修正 ──
             const terrainSpeedMul = this.getTerrainSpeedMul(fleet.x, fleet.y);
 
+            // [v34b] **位移方向 = 推力方向 = 舰首朝向**（物理：主引擎只能沿舰首推进）。
+            //   病灶：原实现位移方向用 `moveAngle`（瞬时目标方向），而速度大小由 `thrustFactor`
+            //   （**舰首 vs 目标**的对齐度）决定 ⇒ **方向与大小不自洽**：
+            //     目标方向一变，舰队立刻朝新方向平移，舰首却还在慢慢转
+            //     ⇒ L2 实测 misalign 峰值 57.9°（"横着走"）、位移比舰首**早 78 帧**到位
+            //       （"舰队先快速移动，然后才看到船在慢慢转"，用户 2026-09-20 复报）。
+            //   改为沿舰首推进后：舰首未转过来 ⇒ 舰队沿**旧方向**继续走（有惯性、不横移、不停船）；
+            //   舰首渐转 ⇒ 推力方向渐转 ⇒ 速度矢量划出弧线 ⇒ 转弯 = **位移**而不是原地重排。
+            //
+            //   ⚠ 唯一保留例外：**拖刀**（撤退 + 接敌）—— 舰首朝敌、位移朝补给点，
+            //     这是刻意的分离（"船尾给敌人"实报的修复），不可回归。
+            //
+            //   ⚠ 原方案曾给**中心对称阵型（圆/方）**也保留 `moveAngle`（怕复活 v30 的"圆阵风暴"），
+            //     但 L2 实测（`_probe_turn.mjs`，同一场战斗内对照）证明这会造成**两套行为并存**：
+            //       wedge  ：misalign 12.2° / speedMinRatio 1.018 / 位移与转身帧差 −3（修好）
+            //       square ：misalign 62.0° / speedMinRatio 0.720 / 帧差 +80（**旧病仍在**）
+            //     同一编队里一半舰队利落转弯、另一半横着走，比单一缺陷更难读 ⇒ **统一为沿舰首推进**。
+            //     "风暴"担忧的根因是半径过小（v=0.30 时 R=23px）；现 v=0.90 ⇒ R≈69px（≈2.8 倍舰长），
+            //     且不再掉速刹车，圆阵是"划弧前进"而不是"原地打漩涡"。
+            const thrustDir = ((isRetreating && isEngaging) || _backing) ? moveAngle : (fleet.facingSmooth ?? moveAngle);
+
             // 计算本帧原始速度向量
             let rawVX = 0, rawVY = 0;
             if (fleet.state === 'assembling' && distToTarget < 15) {
                 rawVX = repulseX * dt; rawVY = repulseY * dt;
             } else if (distToTarget < 5) {
                 rawVX = repulseX * dt; rawVY = repulseY * dt;
+            } else if (_backing) {
+                // [v47 BACKING-EXIT] 朝敌倒退脱离：位移沿脱离点方向（舰首保持朝敌），
+                //   速度 = 常规机动的 55% ⇒「缓缓后退」；敌持续贴上来（phase 留在 2）就持续倒退。
+                const backSpeed = fleetBaseSpeed * 0.55;
+                rawVX = (Math.cos(thrustDir) * backSpeed * terrainSpeedMul + repulseX) * dt;
+                rawVY = (Math.sin(thrustDir) * backSpeed * terrainSpeedMul + repulseY) * dt;
             } else if (isEngaging && fleet.state !== 'flaring' && distToTarget < 120 && !isRetreating) {
                 const engageSpeed = 0.05 * retreatSpeedBonus;
-                // [R10-B1] 位移方向改用限速平滑后的航向 fleet.heading（原为瞬时 moveAngle）
-                rawVX = (Math.cos(fleet.heading) * engageSpeed + repulseX) * dt * congestionSlowdown;
-                rawVY = (Math.sin(fleet.heading) * engageSpeed + repulseY) * dt * congestionSlowdown;
+                rawVX = (Math.cos(thrustDir) * engageSpeed + repulseX) * dt * congestionSlowdown;
+                rawVY = (Math.sin(thrustDir) * engageSpeed + repulseY) * dt * congestionSlowdown;
             } else if (fleet.stance !== 'defend') {
-                // [R10-B1] 位移方向改用限速平滑后的航向 fleet.heading（原为瞬时 moveAngle）
-                rawVX = (Math.cos(fleet.heading) * fleetBaseSpeed * terrainSpeedMul + repulseX) * dt * congestionSlowdown;
-                rawVY = (Math.sin(fleet.heading) * fleetBaseSpeed * terrainSpeedMul + repulseY) * dt * congestionSlowdown;
+                rawVX = (Math.cos(thrustDir) * fleetBaseSpeed * terrainSpeedMul + repulseX) * dt * congestionSlowdown;
+                rawVY = (Math.sin(thrustDir) * fleetBaseSpeed * terrainSpeedMul + repulseY) * dt * congestionSlowdown;
             }
 
             // 【待改1】惯性/限速模型：不再直接位移，而是让当前速度平滑逼近"期望位移"，
             // 吸收补给/撤退/地形倍率的逐帧硬切（否则目标一变速度瞬变 → 发飘/瞬移感）。
             const desiredVX = rawVX, desiredVY = rawVY;   // 本帧期望位移（已含 dt 与各倍率）
             if (typeof fleet.vx !== 'number') { fleet.vx = 0; fleet.vy = 0; }
-            const accel = Math.min(1, 0.18 * dt);         // 每帧向期望速度逼近的比例（越小越"厚重"）
+            // [v29] 惯性增强：0.18（τ≈0.08s，几乎瞬时）→ FLEET_ACCEL（τ≈0.27s）⇒ 起步 / 改向有"质量感"。
+            //   这是"像点不像舰"的第二条根因（第一条是角速度无惯量，见本文件顶部 v29 参数块）。
+            const accel = Math.min(1, FLEET_ACCEL * dt);
             fleet.vx += (desiredVX - fleet.vx) * accel;
             fleet.vy += (desiredVY - fleet.vy) * accel;
             fleet.x += fleet.vx;
             fleet.y += fleet.vy;
 
+            // [v47 wheel-and-reform] 阵面朝向（formFacing）唯一真源 —— "原地转向 → 列队重排"的实现体：
+            //   · 未初始化 → 建（= 部署朝向）；
+            //   · wheel 协议期（_uturn）→ **冻结**（舰体原地快转，格位不平移 ⇒ 无公转）；
+            //   · 协议**退出帧** → 一步阶跃到新舰首朝向 ⇒ 全体格位目标此刻才重排；
+            //   · 其余任何时刻（巡航/交战/微调）→ 冻结。
+            //   v42 的"永久冻结"被替换：那会让多次掉头后阵面与航向永久性斜错位（阵型歪的）。
+            //   v31-D 的"低通跟随机首"被替换：格位绕中心连续旋转 = 单位公转 = 画圆（几何恒等式，
+            //   四代方案 v34/v41b/v41c/v41e 全部败在这里）。现在阵面**只经 wheel 改变**，画圆不可构造。
+            {
+                const ff0 = (fleet as any).formFacing;
+                if (typeof ff0 !== 'number') {
+                    (fleet as any).formFacing = fleet.facingSmooth ?? fleet.facingAngle ?? 0;
+                } else if ((fleet as any)._uturnJustEnded === true) {
+                    (fleet as any).formFacing = fleet.facingSmooth ?? ff0;
+                }
+            }
+
+            // [v33 P0-1] 阵型互克：改为 formations.formationCounterMul（单一真源）。
+            //   原实现是本文件内的**第二张** beats 表（楔→纺→圆→方→横），与
+            //   config/formations.ts（楔→横→纺→圆→方）关系相反 ⇒ 战略层与战术层结论不一致。
+            //   收口后：克制方 ×FORMATION_COUNTER_BONUS(1.30)、被克方 ×FORMATION_COUNTERED_PENALTY(0.70)。
+            //   ⚠ 值取 0.70（= 原内联值）而非该常量原来的 0.90 —— 那是从未被消费的死代码，
+            //     这样收口只改"关系"不改"幅度"，把行为变更面压到最小。
             let damageMultiplier = 1.0;
             if (isEngaging && closestEnemyFleet) {
-                const mForm = fleet.formation; const eForm = closestEnemyFleet.formation; 
-                const beats: Record<string, string> = { 'wedge': 'spindle', 'spindle': 'circle', 'circle': 'square', 'square': 'line', 'line': 'wedge' };
-                if (beats[mForm] === eForm) damageMultiplier = 1.3; 
-                else if (beats[eForm] === mForm) damageMultiplier = 0.7;
+                damageMultiplier = formationCounterMul(fleet.formation, closestEnemyFleet.formation);
             }
 
             // [阵型] 格位枚举（单一真源 config/formationLayout.ts）。
@@ -4668,6 +5570,10 @@ export class BattleScene extends Phaser.Scene {
             }
             const formOffsets: FormationCell[] = (fleet as any)._formOffsets || [[0, 0]];
             const formSpacing: number = (fleet as any)._formSpacing ?? FORMATION_SPACING;
+            // [v33 P0-2] 列位侧写（列位数组 + 归一基准）。按 offsets 引用记忆化 ⇒ 每舰队每阵型只算一次。
+            //   基准 = 该阵型在近/中/远三档的**等权平均** ⇒ 整场期望乘区恒 1.0，零净增益
+            //   （旧案矩阵三行均值不等 112.5/102.5/100，直接用等于给全部单位隐性 +5%）。
+            const colProfile = columnProfileCached(fleet.formation || 'wedge', formOffsets);
 
             // [v14 ③1] 本帧 morph 权重（缓入缓出 smoothstep）；非过渡期为 1（直接用目标阵位）
             const morphDurNow: number = (fleet as any)._formMorphDur ?? 0;
@@ -4715,17 +5621,9 @@ export class BattleScene extends Phaser.Scene {
                 }
             };
 
-            // [v21 JIT-2] 呼吸包络（每队每帧一次，下方各单位共用）：
-            //   原 `isStopped ? Math.sin(…) : 0` 在布尔翻转的当帧把目标点阶跃最多 1.2px（sin 相位
-            //   与翻转时刻无关 ⇒ 幅度从 0 跳到 ±1.2）；单位只能靠"猛追"吸收该阶跃 ⇒ 单帧抽动。
-            //   改为 0↔1 指数包络 ⇒ 呼吸渐入渐出，翻转不再产生位移阶跃。判定条件不变。
-            const isStopped = distToTarget < 5 || (isEngaging && fleet.stance !== 'siege' && fleet.state !== 'flaring');
-            const bK = 1 - Math.exp(-dt / JIT_BREATHE_TAU);
-            const bPrev = typeof (fleet as any)._breatheEnv === 'number'
-                ? (fleet as any)._breatheEnv
-                : (isStopped ? 1 : 0);   // 首次出现即取终值：不在部署期额外制造一段"渐入"
-            const breatheEnv = bPrev + ((isStopped ? 1 : 0) - bPrev) * bK;
-            (fleet as any)._breatheEnv = breatheEnv;
+            // [v42b] **呼吸位移已删除**：原实现每舰相位不同（slotIdx×1.7）且**交战中**也激活
+            //   （isStopped 含 isEngaging）⇒ 舰队每帧各自微幅抖动 = 用户实报「摇头晃脑、左晃右晃、
+            //   神经病一样」。整齐队列才是舰队该有的观感。
 
             fleet.units.forEach((u: any, index: number) => {
                 // v3 独立往返：运输舰不参与阵型定位（sprite 由 aux.x/y 独立驱动，见下方 moveAuxShips 同步段）
@@ -4756,15 +5654,16 @@ export class BattleScene extends Phaser.Scene {
                 }
                 // [R10-B1] 阵位旋转改用限速平滑后的舰首朝向（原为瞬时 fAngle ⇒ 大角度转向时
                 //   单位目标位瞬时绕中心旋转、直线 lerp 追过去"穿心" ⇒ 视觉"缩成一团再展开"）
-                const rx = ox * Math.cos(fleet.facingSmooth) - oy * Math.sin(fleet.facingSmooth);
-                const ry = ox * Math.sin(fleet.facingSmooth) + oy * Math.cos(fleet.facingSmooth);
+                // [v31-D] 阵位旋转改用 **formFacing（阵型朝向 = 实际航向的低通）**，
+                //   不再用 `facingSmooth`（舰首朝向）—— 后者会让阵型随舰首转身**绕中心画圆**，
+                //   与"战舰各自缓慢转身"正相反（这正是用户第三次反馈的精确来源）。
+                const _ff = (fleet as any).formFacing ?? fleet.facingSmooth;
+                const rx = ox * Math.cos(_ff) - oy * Math.sin(_ff);
+                const ry = ox * Math.sin(_ff) + oy * Math.cos(_ff);
 
-                // 阵型呼吸：停泊时微幅正弦浮动（[v21 JIT-2] 幅度乘连续包络，见本队 forEach 前的 breatheEnv）
-                const breatheX = Math.sin(time * 0.0012 + slotIdx * 1.7) * 1.2 * breatheEnv;
-                const breatheY = Math.cos(time * 0.0015 + slotIdx * 1.3) * 1.2 * breatheEnv;
 
-                const targetUnitX = fleet.x + rx + breatheX;
-                const targetUnitY = fleet.y + ry + breatheY;
+                const targetUnitX = fleet.x + rx;
+                const targetUnitY = fleet.y + ry;
                 const uDist = Phaser.Math.Distance.Between(u.sprite.x, u.sprite.y, targetUnitX, targetUnitY);
 
                 // [FIX-stance-snap] 限速追踪（替代旧「每帧补剩余距离 8%」比例 lerp）：
@@ -4784,8 +5683,22 @@ export class BattleScene extends Phaser.Scene {
                 }
                  
                 u.sprite.setAlpha(uDist > 320 ? 0.4 : 1.0);
-                // [R10-B1] 2D 精灵旋转与阵位旋转同源（限速平滑后的舰首朝向），保证 2D/3D 一致缓转
-                u.sprite.rotation = fleet.facingSmooth; // 容器整体转向（跟随舰队朝向）
+                // [v47 visHeading] 逐舰物理舰首 = 跟随**自身位移航迹**（限速 UNIT_VIS_TURN_RATE×dt）。
+                //   旧实现 sprite.rotation 全舰队刚性 = facingSmooth，而每舰真实位移方向是"冲向
+                //   移动格位"的方向 —— 转弯/变阵期两者差 60~180° ⇒ 舰首朝前、船体侧滑 = 用户实报
+                //   「转向后所有战舰摇头晃脑边晃边前进」。现在舰首贴着航迹走，物理上不再侧移。
+                //   刚性例外（舰首本就不该跟航迹的姿态）：wheel 原地转向期 / 拖刀 / 顶敌倒退 / 静止。
+                const _ux = u.sprite.x, _uy = u.sprite.y;
+                const _dx = _ux - ((u as any)._px ?? _ux);
+                const _dy = _uy - ((u as any)._py ?? _uy);
+                (u as any)._px = _ux; (u as any)._py = _uy;
+                const _rigid = (fleet as any)._uturn === true
+                    || (isRetreating && isEngaging) || _backing
+                    || (_dx * _dx + _dy * _dy) < 0.02;
+                const _wantH = _rigid ? (fleet.facingSmooth ?? fAngle) : Math.atan2(_dy, _dx);
+                if (typeof (u as any).visHeading !== 'number') (u as any).visHeading = _wantH;
+                (u as any).visHeading = rateLimitAngle((u as any).visHeading, _wantH, UNIT_VIS_TURN_RATE * dt);
+                u.sprite.rotation = (u as any).visHeading;
 
                 // 舰头方向补偿：原图舰头朝上(-Y)，容器+X轴对应舰队前进方向
                 // 需要将原图顺时针转 90°(π/2)，使舰头从"上"转到"右"(容器前进方向)
@@ -4799,7 +5712,7 @@ export class BattleScene extends Phaser.Scene {
                 const auraShape = u.sprite.getByName('aura') as any;
                 if (auraShape) {
                     auraShape.setFillStyle(auraColor, uDist > 320 ? 0.8 : 0.4);
-                    auraShape.rotation = 0; // 光环保持横向
+                    auraShape.rotation = -(u as any).visHeading; // 光环保持世界水平（容器现按逐舰航向旋转）
                 }
 
                 // 尾焰：仅在移动时显示，带闪烁/脉动效果
@@ -4822,9 +5735,10 @@ export class BattleScene extends Phaser.Scene {
                     }
                 }
 
-                // 确保文字永远保持正向可读，不随舰队一起翻转
+                // 确保文字永远保持正向可读：按**本舰显示航向**反向补偿（v47：原 -fAngle 是
+                //   未平滑的瞬时舰队朝向，转向期逐帧摆动 = "文字跟着摇头"的最大观感来源）
                 const textObj = u.sprite.getByName('text') as any;
-                if (textObj) textObj.rotation = -fAngle;
+                if (textObj) textObj.rotation = -(u as any).visHeading;
                 if (isEngaging && time - u.lastAtkTime > (u.atkInterval / dt)) {
                     let targetShip: any = null;
                     if (closestEnemyFleet) {
@@ -4859,19 +5773,38 @@ export class BattleScene extends Phaser.Scene {
                         //   用户实报"提督属性全面碾压却被一轮齐射秒"——齐射同步修复外，属性差异必须可感。
                         //   攻 0.2→0.5、防 0.1→0.2（仍 ÷typeShare 保 N 不变性，量纲同 economy v4）。
                         const supplyDefFactor = 0.3 + 0.7 * Math.max(0, Math.min(1, targetShip.supply / 50));
-                        const effectiveDef = ((targetShip.def + Math.floor(tgtDef * 0.2)) / typeShare) * supplyDefFactor;
-                        // P1 地形：星云内闪避+20%（减伤）
-                        const nebulaDodge = this.getTerrainDodgeMul(closestEnemyFleet.x, closestEnemyFleet.y);
-                        let baseDmg = (((u.atk + Math.floor(admAtk * 0.5) / typeShare) * unitSupplyFactor) - effectiveDef) / nebulaDodge;
-                        if (u.classType === '电子' || u.classType === '无') baseDmg = (u.atk + Math.floor(admAtk * 0.1) / typeShare) * unitSupplyFactor / nebulaDodge;
-                        
+                        // [v33 P1-4.3] 阵型崩溃 → **受击方**防御乘区（旧案「防御 −50%」）。
+                        const tgtCollapseDefMul = collapseMuls((closestEnemyFleet as any)._formationCollapsed === true).def;
+                        const effectiveDef = ((targetShip.def + Math.floor(tgtDef * 0.2)) / typeShare) * supplyDefFactor * tgtCollapseDefMul;
+                        // P1 地形闪避减伤（星云 +20%；表见 config/terrainEffects.ts）
+                        const terrainDodge = this.getTerrainDodgeMul(closestEnemyFleet.x, closestEnemyFleet.y);
+                        let baseDmg = (((u.atk + Math.floor(admAtk * 0.5) / typeShare) * unitSupplyFactor) - effectiveDef) / terrainDodge;
+                        if (u.classType === '电子' || u.classType === '无') baseDmg = (u.atk + Math.floor(admAtk * 0.1) / typeShare) * unitSupplyFactor / terrainDodge;
+
+                        // ── [v33 P0-3] 方向装甲：前 / 侧 / 后（收口替换原"仅 >135° 背击 ×1.5"）──────
+                        //   原实现只有一档背击、且装甲是单值 ⇒ **舰种编成在战术层没有形状差异**
+                        //   （高速战舰与盾战舰除 hp/def 标量差外，挨打方式完全一样）。
+                        //   现按**受击舰自身舰种**的三向装甲取倍率（逐舰而非舰队均值：伤害本就结算在
+                        //   具体 targetShip 上，逐舰粒度更细、可从侧后专打高战的薄侧，且省一次加权遍历）。
+                        //   ⚠ 参考系优先取**实际运动方向**：`formFacing` 是低通平滑值，急转/撤退时会与
+                        //     新航向背离 ⇒ 用它会出"背向敌人却在挨正面的伤"的观感矛盾。
+                        //     速度过低（换向瞬间/停船）才回退，阈值 DIRECTION_ARMOR.MIN_SPD2_FOR_MOTION。
+                        const tgtSpd2 = (closestEnemyFleet.vx || 0) * (closestEnemyFleet.vx || 0)
+                                      + (closestEnemyFleet.vy || 0) * (closestEnemyFleet.vy || 0);
+                        const tgtFacing = tgtSpd2 > 0.25
+                            ? Math.atan2(closestEnemyFleet.vy, closestEnemyFleet.vx)
+                            : ((closestEnemyFleet as any).formFacing ?? closestEnemyFleet.facingAngle);
                         const angleToAttacker = Math.atan2(u.sprite.y - closestEnemyFleet.y, u.sprite.x - closestEnemyFleet.x);
-                        let angleDiff = Math.abs(angleToAttacker - closestEnemyFleet.facingAngle);
+                        let angleDiff = Math.abs(angleToAttacker - tgtFacing);
                         if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff;
-                        
-                        let backstabMulti = 1.0;
-                        if (angleDiff > Math.PI * 0.75) { 
-                            backstabMulti = 1.5;
+
+                        const hitSide = hitSideFromAngle(angleDiff);
+                        let backstabMulti = dirArmorMul(hitSide, targetShip.classType || '无');
+                        // ⚠ 这里**不要**加"背面至少 ×1.5"的保底：那会让 空母 1.34 / 补给 1.32 / 电子 1.44
+                        //   全部被抬到 1.5，把刚在台架上验证过的"装甲偏序"重新抹平
+                        //   —— 与 EXP 从 0.5 改到 0.30 修的是**同一个错误**（clamp/保底吃掉区分度）。
+                        //   CRIT! 提示的阈值是 1.2（既有口径），不为提示而改动数值。
+                        if (backstabMulti >= DIRECTION_CRIT_MIN) {
                             const critText = this.add.text(targetShip.sprite.x, targetShip.sprite.y - 15, 'CRIT!', { fontSize: '10px', color: '#fbbf24', fontStyle: 'bold' }).setOrigin(0.5);
                             this.tweens.add({ targets: critText, y: targetShip.sprite.y - 30, alpha: 0, duration: 800 / dt, onComplete: () => critText.destroy() });
                         }
@@ -4893,7 +5826,31 @@ export class BattleScene extends Phaser.Scene {
                         const adversityMult = (fleet._adversityBuffUntil && this.time.now < fleet._adversityBuffUntil) ? 1.15 : 1.0;
                         // P5 决战时刻buff：+20%伤害
                         const finalMult = fleet._finalBattle ? 1.2 : 1.0;
-                        let finalDmg = Math.max(1, baseDmg * damageMultiplier * backstabMulti * cpDmgMult * cpMoraleMult * adversityMult * finalMult * moraleDmgMult);
+                        // v29：撤退档位 → 火力乘区（脱离接触保留 70% / 撤离 40% / 溃散 0%）。
+                        //   这是"边打边退"与"掉头就跑"的数值区别；旧实现撤退中火力不打折。
+                        const retreatFireMul = isRetreating
+                            ? retreatParams(((fleet as any)._retreatTier ?? 'withdraw') as RetreatTier).fireMul
+                            : 1.0;
+                        // ══ [v33] 四项新增乘区：**先合并再钳制** ══════════════════════════════════
+                        // 为什么合并钳制：既有 9 个乘区各已 playtest，而新加的 4 项若各自独立乘下去，
+                        // 理论上限会被推到 5× 以上（单看每项都"温和"，但乘区是相乘的）——
+                        // 这是"某一帧出现秒杀级伤害"的典型成因（docs/design/loch-web-plan/02 §6.2）。
+                        const bandNowLocal: RangeBand = (fleet as any)._rangeBand ?? 'mid';
+                        const isStrikeUnit = u.classType === '舰载' || u.classType === '突击';
+                        // P0-2 列位 × 距离带（净增益恒 1.0，只对"能否维持理想交战距"敏感）
+                        const colMul = columnMatrixMul(colProfile, slotIdx, bandNowLocal, isStrikeUnit);
+                        // P1-4.5 舰种偏好距离带（命中 +5% / 未命中 −3%）
+                        const bandMul = shipBandMul(u.classType || '无', bandNowLocal);
+                        // P1-4.3 阵型崩溃 → 攻方火力 −50%
+                        const collapseFireMul = collapseMuls((fleet as any)._formationCollapsed === true).fire;
+                        // P1-4.2 受击方拦截减伤（1/(1+rate)；巡航舰防空最高 ⇒ 打掉防空舰即削弱拦截）
+                        //   ⚠ 走 `interceptRateOf`（250ms TTL 缓存）——直接调 `fleetInterceptRate`
+                        //     会逐发遍历受击方全部单位，是 O(N²)/帧。
+                        const interceptMul = interceptDamageMul(this.interceptRateOf(closestEnemyFleet));
+                        const v33Combo = Math.max(TACTICAL_COMBO_CLAMP.MIN, Math.min(TACTICAL_COMBO_CLAMP.MAX,
+                            colMul * bandMul * collapseFireMul * interceptMul));
+
+                        let finalDmg = Math.max(1, baseDmg * damageMultiplier * backstabMulti * cpDmgMult * cpMoraleMult * adversityMult * finalMult * moraleDmgMult * retreatFireMul * v33Combo);
                         // 战损保底：最低造成目标 1% 最大舰数的破甲伤害
                         const minDmg = Math.max(1, Math.floor(targetShip.maxHp * 0.01));
                         finalDmg = Math.max(finalDmg, minDmg);
@@ -5095,7 +6052,8 @@ export class BattleScene extends Phaser.Scene {
                          // [FIX-volley] 同舰炮分支：相位推进，不再全体钉回同一时刻
                          advanceAtkPhase(u, slotIdx);
                          const admAtk = myFac.admiralStats?.attack || 0;
-                         const unitSupplyFactor = u.supply > 30 ? 1.0 : 0.5;
+                         // v29：与舰队速度乘区同口径——补给连续衰减（原为 >30 的二值开关）
+                         const unitSupplyFactor = supplyFactor(u.supply);
                          // 士气衰减（同上）
                          const flMorale2 = (fleet.morale === undefined ? 100 : fleet.morale);
                          const moraleDmgMult = 0.6 + 0.4 * (flMorale2 / 100);
@@ -5335,18 +6293,7 @@ export class BattleScene extends Phaser.Scene {
         
         this.store.fleetsUI = uiData;
 
-        // CRT模式：将迷雾计算的可见性存入标记，然后强制隐藏所有实体sprite
-        // redrawCRTFleets 使用 _fogVisible 标记判断是否绘制线框舰队
-        if (this.mapStyle === 'crt') {
-            this.globalFleets.forEach(fl => {
-                if (fl.units.length > 0) {
-                    fl._fogVisible = fl.units[0].sprite?.visible ?? false;
-                }
-                fl.units.forEach((u: any) => {
-                    if (u.sprite) u.sprite.setVisible(false);
-                });
-            });
-        }
+        // （原「CRT 模式强制隐藏单位 sprite」块已随该模式删除）
 
         // 实时覆盖地块迷雾：不在玩家视野内的地块统一涂暗
         // CRT模式：使用CRT兼容alpha值而非完全跳过
@@ -5366,11 +6313,12 @@ export class BattleScene extends Phaser.Scene {
             }
 
             if (tileVisible) t.explored = true;
-            const isCRT = this.mapStyle === 'crt';
 
+            // ⚠ 以下只写「占位 sprite」的样式。指挥制下 `body.battle3d-mode` 会隐藏整个
+            //   Phaser 画布 ⇒ 本段在正常战斗中不可见，只为 3D overlay 建不起来时的降级显示负责。
             if (!t.explored) {
-                t.sprite.setFillStyle(0x0f172a, isCRT ? 0.01 : 1.0);
-                t.sprite.setStrokeStyle(1, 0x0f172a, isCRT ? 0.01 : 1);
+                t.sprite.setFillStyle(0x0f172a, 1.0);
+                t.sprite.setStrokeStyle(1, 0x0f172a, 1);
                 if (t.text) t.text.setAlpha(0);
             } else {
                 let fillColor = 0x2d3446; let strokeColor = 0x475569; let sWidth = 1;
@@ -5384,27 +6332,23 @@ export class BattleScene extends Phaser.Scene {
                 else if (t.type === 'mine') { fillColor = 0x8B6914; strokeColor = 0xd4a017; }
                 else if (t.type === 'tower') { fillColor = 0x4a3a6a; strokeColor = 0x9a7acc; sWidth = 2; }
 
-                // CRT兼容alpha映射：对象alpha和填充alpha需要同步，避免乘法吞噬
-                const crtAlpha = (a: number) => isCRT ? a * 0.4 : a;
-
                 if (!tileVisible) {
-                    t.sprite.setAlpha(isCRT ? 0.22 : 1.0);
-                    t.sprite.setFillStyle(fillColor, isCRT ? 1.0 : 0.4);
-                    t.sprite.setStrokeStyle(sWidth, strokeColor, isCRT ? 0.5 : 0.4);
-                    if (!isCRT && t.text) t.text.setAlpha(0.25);
+                    t.sprite.setAlpha(1.0);
+                    t.sprite.setFillStyle(fillColor, 0.4);
+                    t.sprite.setStrokeStyle(sWidth, strokeColor, 0.4);
+                    if (t.text) t.text.setAlpha(0.25);
                 } else {
                     if (t.ownerId !== 0 && !t.connected && t.type !== 'castle' && t.type !== 'planet') {
-                        t.sprite.setAlpha(isCRT ? 0.3 : 1.0);
-                        t.sprite.setFillStyle(fillColor, isCRT ? 1.0 : 0.3);
-                        t.sprite.setStrokeStyle(2, 0xff0000, isCRT ? 0.7 : 0.7);
+                        t.sprite.setAlpha(1.0);
+                        t.sprite.setFillStyle(fillColor, 0.3);
+                        t.sprite.setStrokeStyle(2, 0xff0000, 0.7);
                     } else {
-                        const baseAlpha = isCRT ? (t.ownerId !== 0 ? 0.35 : 0.01) : 0.9;
-                        t.sprite.setAlpha(baseAlpha);
+                        t.sprite.setAlpha(0.9);
                         t.sprite.setFillStyle(fillColor, 1.0);
-                        t.sprite.setStrokeStyle(sWidth, strokeColor, isCRT ? 0.6 : 1.0);
+                        t.sprite.setStrokeStyle(sWidth, strokeColor, 1.0);
                     }
 
-                    if (!isCRT && t.text) {
+                    if (t.text) {
                         const txtAlpha = (t.type === 'sea' || t.type === 'ruined' || t.type === 'pending') ? 0.0 : 0.8;
                         t.text.setAlpha(t.type === 'castle' ? 1.0 : txtAlpha);
                     }
@@ -5412,20 +6356,13 @@ export class BattleScene extends Phaser.Scene {
             }
         });
 
-        // 接壤高亮：CRT和hex模式均需运行
+        // 接壤高亮：可扩张空域描边（仅 2D 降级路径可见）
         if (pFac) {
             this.tilesList.forEach(t => {
                 if (t.ownerId === 0 && t.type !== 'sea' && t.type !== 'ruined' && t.type !== 'planet') {
                     if (this.isAdjacentToTeam(t, pFac.team) && pFac.gold >= t.cost) {
                         const glowAlpha = 0.2 + 0.3 * Math.abs(Math.sin(time * 0.002));
-                        if (this.mapStyle === 'crt') {
-                            t.sprite.setAlpha(glowAlpha);
-                            t.sprite.setStrokeStyle(1.5, 0x0ea5e9, glowAlpha * 1.5);
-                        } else {
-                            t.sprite.setStrokeStyle(2, 0x0ea5e9, glowAlpha);
-                        }
-                    } else if (this.mapStyle === 'crt') {
-                        t.sprite.setAlpha(0.01);
+                        t.sprite.setStrokeStyle(2, 0x0ea5e9, glowAlpha);
                     }
                 }
             });
@@ -5974,51 +6911,6 @@ export class BattleScene extends Phaser.Scene {
             }
         }
     }
-
-    // ===== CRT 全息战术投影渲染（委托到 crt/CrtRenderer.ts）=====
-
-    private drawCRTBackground() { drawCRTBackground(this.cameras.main, this.crtGraphics); }
-
-    private renderCRTWireframeMap(mapDataMatrix: any[]) {
-        const ctx: CrtContext = { hexRadius: this.hexRadius, factionMap: this.factionMap, store: this.store };
-        renderCRTWireframeMap(this.crtWireframe, mapDataMatrix, ctx);
-    }
-
-    private updateCRTEffects(time: number) {
-        updateCRTEffects(this, time, this.crtGlowTime, this.crtFleetRedrawTimer,
-            this.crtOverlay, this.store, this.tilesList, this.factionMap,
-            this.globalFleets, this.mapStyle, () => this.redrawCRTFleets());
-    }
-
-    private redrawCRTFleets() {
-        redrawCRTFleets(this.crtFleets, this.crtGlowTime, this.store, this.globalFleets);
-    }
-
-    private drawCRTOverlays() {
-        const cam = this.cameras.main;
-        const g = this.crtOverlay;
-        const zoom = cam.zoom;
-        const vw = (cam.width || 1200) / zoom;
-        const vh = (cam.height || 800) / zoom;
-        const cx = cam.scrollX + vw / 2, cy = cam.scrollY + vh / 2;
-        const left = cx - vw / 2, right = cx + vw / 2, top = cy - vh / 2, bottom = cy + vh / 2;
-        const m = 12, cl = 22;
-
-        g.lineStyle(2.5, CRT_ACCENT, 0.65);
-        g.lineBetween(left + m, top + m + cl, left + m, top + m);
-        g.lineBetween(left + m, top + m, left + m + cl, top + m);
-        g.lineBetween(right - m, top + m + cl, right - m, top + m);
-        g.lineBetween(right - m, top + m, right - m - cl, top + m);
-        g.lineBetween(left + m, bottom - m - cl, left + m, bottom - m);
-        g.lineBetween(left + m, bottom - m, left + m + cl, bottom - m);
-        g.lineBetween(right - m, bottom - m - cl, right - m, bottom - m);
-        g.lineBetween(right - m, bottom - m, right - m - cl, bottom - m);
-
-        if (!this.crtHudLabel) {
-            this.crtHudLabel = this.add.text(0, 0, `TACTICAL DISPLAY // ${this.mapStyle.toUpperCase()} MODE`, {
-                fontSize: '9px', fontFamily: 'monospace', color: '#00cc66',
-            }).setDepth(101).setAlpha(0.6);
-        }
-        this.crtHudLabel.setPosition(left + m + 8, top + m + 6);
-    }
+    // （原 `crt/CrtRenderer.ts` 的委托方法已随「全息战术投影」模式一并删除：
+    //   drawCRTBackground / renderCRTWireframeMap / updateCRTEffects / redrawCRTFleets / drawCRTOverlays）
 }

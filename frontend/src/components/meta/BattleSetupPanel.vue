@@ -56,17 +56,9 @@
           <p class="text-xs text-slate-500 mt-1 note-text">注：敌军将领将由电脑随机抽调并满编。</p>
         </div>
 
-        <!-- 地图风格选择 -->
+        <!-- [2026-09-20] 原「战场制图」下拉（星域棋盘 / 全息战术投影 / 3D 战场 / 指挥制）已删除：
+             后续玩法只有指挥制。舰艇巡览入口保留。 -->
         <div class="control-group" v-if="isSimMode">
-          <label>战场制图</label>
-          <div class="select-wrapper neo-btn">
-            <select v-model="mapStyle" class="neo-select">
-              <option value="hex">星域棋盘（经典六角格）</option>
-              <option value="crt">全息战术投影（CRT复古）</option>
-              <option value="3d">3D 战场（全维沙盘）</option>
-              <option value="command">指挥制（纯宇宙舰队战）</option>
-            </select>
-          </div>
           <button @click="showShipGallery = true" class="neo-btn btn-sm w-full mt-1" style="margin-top:6px;color:#1fd28f;border-color:rgba(31,210,143,0.4)">
             ⬡ 舰艇模型巡览（一次性查看全部已导入战舰）
           </button>
@@ -213,10 +205,7 @@ const isSimMode = computed<boolean>(() => {
   return raw?.value !== undefined ? raw.value : raw;
 });
 
-const mapStyle = ref<'hex' | 'crt' | '3d' | 'command'>((() => {
-  const raw = (settings as any).battlefieldMode;
-  return (raw?.value !== undefined ? raw.value : raw) ?? 'command';
-})());
+// [2026-09-20] 「战场制图」选择已删除：现在只有指挥制（见 settingsStore 的同名注释）。
 
 const safeMapsPool = computed<any[]>(() => {
   const raw = (store as any).mapsPool;
@@ -463,7 +452,7 @@ const launchBattle = () => {
     return;
   }
   if (isSimMode.value) {
-    if (typeof (store as any).launchSimBattle === 'function') (store as any).launchSimBattle(mapStyle.value);
+    if (typeof (store as any).launchSimBattle === 'function') (store as any).launchSimBattle();
   } else {
     if (typeof (store as any).startMatchLaunch === 'function') (store as any).startMatchLaunch();
   }

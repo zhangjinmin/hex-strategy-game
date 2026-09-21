@@ -17,6 +17,13 @@ export interface CombatModifiers {
   ambush: number;      // 奇袭率加值（绝对值）
   casualtyReduce: number; // 伤亡减免乘数
   moraleAura: number;  // 士气光环（绝对值）
+  // ── v33 新增（旧案战术效果里现项目缺的三维，见 types/skill.ts）──
+  /** 阵型崩溃抵抗 0~1（1 = 完全免疫；部分抵抗抬高士气阈值） */
+  collapseResist: number;
+  /** 拦截/防空加值（绝对量，0~balance.INTERCEPT.SKILL_MAX） */
+  intercept: number;
+  /** 射击武器专精乘数（只作用于光线炮/轨道炮类舰种，非全类型） */
+  weaponFire: number;
 }
 
 export interface StrategyModifiers {
@@ -36,6 +43,9 @@ export function computeCombatModifiers(skills: Skill[]): CombatModifiers {
     ambush: 0,
     casualtyReduce: 1.0,
     moraleAura: 0,
+    collapseResist: 0,
+    intercept: 0,
+    weaponFire: 1.0,
   };
 
   for (const skill of skills) {
@@ -48,11 +58,18 @@ export function computeCombatModifiers(skills: Skill[]): CombatModifiers {
           case 'mobility_bonus':  result.mobility *= (1 + effect.value); break;
           case 'command_bonus':   result.command *= (1 + effect.value); break;
           case 'casualty_reduce': result.casualtyReduce *= (1 + effect.value); break;
+          // v33：三维新增（全部走"加值"语义，需与 clamp 一起看）
+          case 'formation_collapse_resist': result.collapseResist += effect.value; break;
+          case 'weapon_fire_bonus':         result.weaponFire *= (1 + effect.value); break;
+          // 拦截按旧案是"防空加值"的绝对量语义；即便配置成百分比也按加值累加，
+          // 以免 0.25 这类小值在 (1+v) 语义下几乎无效。上限在消费侧钳制。
+          case 'intercept_bonus':           result.intercept += effect.value; break;
         }
       } else {
         switch (effect.type) {
           case 'ambush_bonus':    result.ambush += effect.value; break;
           case 'morale_aura':     result.moraleAura += effect.value; break;
+          case 'intercept_bonus': result.intercept += effect.value; break;
         }
       }
     }
@@ -63,6 +80,12 @@ export function computeCombatModifiers(skills: Skill[]): CombatModifiers {
   result.defense = Math.min(result.defense, MAX_MODIFIER);
   result.mobility = Math.min(result.mobility, MAX_MODIFIER);
   result.command = Math.min(result.command, MAX_MODIFIER);
+  // v33：新增维度的钳制口径
+  //   · collapseResist 是"免疫比例"，> 1 无意义（且 1 已 = 完全免疫）
+  //   · intercept 上限由 balance.INTERCEPT.SKILL_MAX 决定（此处不重复引入常量，消费侧钳制）
+  //   · weaponFire 与 attack 同量级，共用 MAX_MODIFIER
+  result.collapseResist = Math.max(0, Math.min(1, result.collapseResist));
+  result.weaponFire = Math.min(result.weaponFire, MAX_MODIFIER);
 
   return result;
 }

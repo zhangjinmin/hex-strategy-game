@@ -9,13 +9,14 @@
  *   3. 星点：低亮度白点，数量克制，不抢网格戏
  *   4. 扫描线 overlay：全屏水平细线 + 缓慢下移的亮扫描带 + 四角取景框
  *
- * 与 renderCRTWireframeMap 的区别：后者画六边形网格（绑定 mapDataMatrix），
- * 本文件画连续空间的扭曲网格，用于 command（指挥制）模式。
+ * （原「与 renderCRTWireframeMap 的区别」一段已随「全息战术投影」模式删除 —— 现在只有本文件这一种渲染。）
  */
 
-import { CRT_ACCENT, CRT_SCAN_COLOR } from './CrtRenderer';
-
 // ===== Tron 扫描风格配色 =====
+/** 强调色（取景框 / 索敌标记等）：亮绿 */
+const CRT_ACCENT = 0x00cc66;
+/** 扫描线颜色：更亮的青绿 */
+const CRT_SCAN_COLOR = 0x00ff88;
 /** 网格主色：青绿（参考图的绿色网面） */
 const TRON_GRID = 0x1fd28f;
 /** 网格亮线（每 4 条一次的加亮主线） */

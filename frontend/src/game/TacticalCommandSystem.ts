@@ -180,7 +180,12 @@ export function fleetIntentText(fleet: any, nameOfFleet?: (fleetId: any) => stri
   // [V18-A · B-0] AI 战前计划 role 前缀（仅 planFactionBattle 写 _planRole 的 AI 舰队有；玩家/无计划舰队不受影响）
   const roleKey = fleet?._planRole as string | undefined;
   const roleLabel = roleKey ? (PLAN_ROLE_LABEL[roleKey] || '') : '';
-  return roleLabel ? `[${roleLabel}] ${base}` : base;
+  // [v31-C] **分舰队战术意图优先**（如「左翼包夹」/「猎杀运输舰」/「示弱诱敌」）——
+  //   比粗粒度的 role 更能说明"这一路要干什么"，也是玩家读懂分兵结果的**唯一可视通道**。
+  //   ⚠ 仅己方（`!enemy`）显示：具体意图属 F-2 脱敏范围（`#60` 裁定），敌方只保留 role 粗意图。
+  const mIntent = fleet?._maneuverIntent as string | undefined;
+  const prefix = (!enemy && mIntent) ? mIntent : roleLabel;
+  return prefix ? `[${prefix}] ${base}` : base;
 }
 
 /** 军议面板：战中改派门槛（准将 rank 8 以上可临机改派；以下只"接令"——部署阶段全员可派） */

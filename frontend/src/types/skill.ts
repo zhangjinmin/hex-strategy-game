@@ -22,7 +22,11 @@ export type SkillEffectType =
   | 'casualty_reduce'   // 伤亡减免
   | 'warp_cooldown'     // 跃迁冷却
   | 'action_cost'       // 行动力消耗
-  | 'growth_bonus';     // 成长加成
+  | 'growth_bonus'      // 成长加成
+  // ── v33 新增（旧案 44 图战术模块整合 P1-4.4；均为百分比，见 utils/skillEffects.ts）──
+  | 'formation_collapse_resist'  // 阵型崩溃抵抗 0~1（旧案「棋手」；1 = 完全免疫）
+  | 'intercept_bonus'            // 拦截/防空加值（绝对量 0~0.25，旧案「拦截强化」/「凹型」语义）
+  | 'weapon_fire_bonus'          // 射击武器专精（旧案「真·神射手」：只作用于光线炮/轨道炮类，非全类型）
 
 /** 单个特技定义 */
 export interface Skill {

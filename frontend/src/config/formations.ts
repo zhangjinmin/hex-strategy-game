@@ -132,8 +132,50 @@ export function layoutFormationSlots(
 
 /** 阵型互克加成倍率（克制方对被克制方） */
 export const FORMATION_COUNTER_BONUS = 1.30;
-/** 被克制方战力惩罚倍率（供战术/战略层引用） */
-export const FORMATION_COUNTERED_PENALTY = 0.90;
+/**
+ * 被克制方倍率。
+ *
+ * ⚠ 本常量此前导出后**全项目零消费**（死代码），原值 0.90；
+ * v33 起战术层改为消费它（见 `formationCounterMul`），值对齐战术层既有口径 **0.70**
+ * —— 目的是把"互克关系"收口为单一真源时**不改动既有战术平衡**。
+ * 战略层（`getFormationCounterBonus`）不消费本常量，故修改它不影响战略层。
+ */
+export const FORMATION_COUNTERED_PENALTY = 0.70;
+
+/**
+ * 互克环的**唯一真源**（v33 收口）。
+ *
+ * 收口原因：本文件与 `BattleScene.ts` 曾各持一张表，且**两者互克关系相反**——
+ *   本文件（+注释）：楔→横→纺→圆→方→楔
+ *   BattleScene（内联）：楔→纺→圆→方→横→楔
+ * ⇒ 同一对"楔 vs 横"，战略层判"楔克横"、战术层判"互不克制"；
+ *   "楔 vs 纺" 则在战术层才成立。玩家在军议/参谋提示看到的信息与实战结算对不上。
+ *
+ * 取本文件口径的依据：① 在 config 层且有文档注释；② 战略层已引用；
+ * ③ 军事直觉更顺——楔形突破薄正面故克横阵、横阵火力密度故克长条纺锤。
+ * 行为变更：战术层 `wedge↔spindle`、`line↔wedge` 两组关系翻转（需台架+真机确认）。
+ */
+export const FORMATION_COUNTERS: Record<FormationType, FormationType> = {
+  wedge: FORMATIONS.wedge.counters,
+  line: FORMATIONS.line.counters,
+  spindle: FORMATIONS.spindle.counters,
+  circle: FORMATIONS.circle.counters,
+  square: FORMATIONS.square.counters,
+};
+
+/**
+ * 战术层互克乘区（攻方 → 守方）。单一入口，禁止再在任何地方内联 beats 表。
+ *   · 攻方克制守方 → FORMATION_COUNTER_BONUS（1.30）
+ *   · 被守方克制   → FORMATION_COUNTERED_PENALTY（0.70）
+ *   · 互不克制     → 1.0
+ * 未知阵型（undefined/新值）一律返回 1.0，不抛错。
+ */
+export function formationCounterMul(attacker: FormationType | string, defender: FormationType | string): number {
+  if (!FORMATION_COUNTERS[attacker as FormationType] || !FORMATION_COUNTERS[defender as FormationType]) return 1.0;
+  if (FORMATION_COUNTERS[attacker as FormationType] === defender) return FORMATION_COUNTER_BONUS;
+  if (FORMATION_COUNTERS[defender as FormationType] === attacker) return FORMATION_COUNTERED_PENALTY;
+  return 1.0;
+}
 
 /**
  * 计算阵型互克加成

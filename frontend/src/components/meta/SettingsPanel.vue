@@ -48,48 +48,6 @@
       </div>
     </div>
 
-    <!-- 战场显示 -->
-    <div class="settings-section">
-      <div class="section-title">
-        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" style="vertical-align:-1px;margin-right:5px;"><polygon points="8,1 14,5 14,11 8,15 2,11 2,5"/></svg>
-        战场显示
-      </div>
-      <div class="setting-row">
-        <span class="setting-label">默认战场模式</span>
-        <div class="mode-switch-group">
-          <button class="mode-btn" :class="{ active: bfMode === 'command' }" @click="setBfMode('command')">
-            <span class="mode-icon"><svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="2"/><path d="M8 2v2"/><path d="M8 12v2"/><path d="M2 8h2"/><path d="M12 8h2"/><circle cx="8" cy="8" r="6" stroke-dasharray="2 2"/></svg></span>
-            <span class="mode-label">指挥模式</span>
-            <span class="mode-desc">纯宇宙扫描投影 · 指挥链作战（默认）</span>
-          </button>
-          <button class="mode-btn" :class="{ active: bfMode === 'hex' }" @click="setBfMode('hex')">
-            <span class="mode-icon"><svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.3"><polygon points="8,1 14,5 14,11 8,15 2,11 2,5"/></svg></span>
-            <span class="mode-label">星域棋盘</span>
-            <span class="mode-desc">经典六角格战术视图</span>
-          </button>
-          <button class="mode-btn" :class="{ active: bfMode === 'crt' }" @click="setBfMode('crt')">
-            <span class="mode-icon"><svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="3"/><line x1="8" y1="0.5" x2="8" y2="2"/><line x1="8" y1="14" x2="8" y2="15.5"/></svg></span>
-            <span class="mode-label">全息战术投影</span>
-            <span class="mode-desc">CRT复古显示器风格</span>
-          </button>
-          <button class="mode-btn" :class="{ active: bfMode === '3d' }" @click="setBfMode('3d')">
-            <span class="mode-icon"><svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M1.5 4.5L8 1l6.5 3.5v7L8 15l-6.5-3.5z"/><path d="M1.5 4.5L8 8l6.5-3.5"/><path d="M8 8v7"/></svg></span>
-            <span class="mode-label">3D 战场</span>
-            <span class="mode-desc">Three.js 全维战术沙盘</span>
-          </button>
-        </div>
-      </div>
-      <div class="setting-row">
-        <span class="setting-label">舰船模型精细度</span>
-        <select class="neo-select" :value="shipDetail" @change="onShipDetailChange">
-          <option value="high">高（原始 ~5 万面）</option>
-          <option value="medium">中（LOD1 ≈20% 三角数）</option>
-          <option value="low">低（LOD2 ≈5% 三角数）</option>
-        </select>
-      </div>
-      <div class="setting-hint">降低舰船模型面数可提升帧率（尤其核显）。轮廓线框各档位均保留 —— 它是 CRT 扫描线风格的主要来源；各档差别只在折角密度（中档只留硬折角）。下一场战斗生效。</div>
-    </div>
-
     <!-- 3D 战场性能 -->
     <div class="settings-section">
       <div class="section-title">
@@ -120,6 +78,15 @@
         </label>
         <span class="setting-value">{{ settings.battle3dShowFps ? 'ON' : 'OFF' }}</span>
       </div>
+      <div class="setting-row">
+        <span class="setting-label">舰船模型精细度</span>
+        <select class="neo-select" :value="shipDetail" @change="onShipDetailChange">
+          <option value="high">高（原始 ~5 万面）</option>
+          <option value="medium">中（LOD1 ≈20% 三角数）</option>
+          <option value="low">低（LOD2 ≈5% 三角数）</option>
+        </select>
+      </div>
+      <div class="setting-hint">降低舰船模型面数可提升帧率（尤其核显）。轮廓线框各档位均保留，差别只在折角密度。下一场战斗生效。</div>
       <div class="setting-hint">核显卡顿时优先调低画质档（中/低会降低 3D 渲染分辨率与抗锯齿）。</div>
       <div class="setting-hint">帧率保护：低于约 45fps 时自动把多余实体退回光点层；跑得动时完全不生效。</div>
       <div class="setting-hint">显示帧率：3D 战场右下角显示实时帧率，用于对比调档前后。画质档下一场战斗生效。</div>
@@ -216,11 +183,9 @@ import { getState, addListener, removeListener, skipToNext, playTrack, getTrackE
 
 const settings = useSettingsStore() as any;
 
-const bfMode = computed<'hex' | 'crt' | '3d' | 'command'>({
-  get: () => settings.battlefieldMode,
-  set: (v) => { settings.battlefieldMode = v; },
-});
-function setBfMode(v: 'hex' | 'crt' | '3d' | 'command') { bfMode.value = v; }
+// [2026-09-20] 原「战场显示」模式选择（bfMode / setBfMode）已随
+//   「星域棋盘 / 全息战术投影 / 3D 战场」三种模式一并删除 —— 现在只有指挥制。
+//   ⚠ 不要再加回来：非指挥模式的代码会让"写了却不显示"的问题重新出现。
 
 // 舰船模型精细度（high 原始 / medium LOD1 / low LOD2）——由战斗 3D 层在创建时读取生效
 const shipDetail = computed<'high' | 'medium' | 'low'>({

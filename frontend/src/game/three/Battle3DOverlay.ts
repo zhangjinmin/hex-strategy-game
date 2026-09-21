@@ -47,6 +47,10 @@ import { SUPPLY_SOURCE_RADIUS, SUPPLY_RELAY_RADIUS, SUPPLY_AUX_RADIUS } from '..
 import { fleetIntentText } from '../TacticalCommandSystem';
 import { useSettingsStore } from '../../store/settingsStore';
 import { N_MAX } from '../../config/shipScaling';
+import { TERRAIN_VISUAL, TERRAIN_EFFECT_TABLE } from '../../config/terrainEffects';
+import { TERRAIN_ZONE, TERRAIN_SCAN, TERRAIN_CONTOUR, CAPTURE_RING } from '../../config/balance';
+import { hexChordHalfWidth, mergeSpans, scanLineY, scanSegCount } from '../../config/terrainScanGeometry';
+import { fbm2D, contourLevels, marchingSquares, chaikin } from '../../config/terrainField';
 // 分舰队阵型标记层：阵位数据必须与 BattleScene 同源（formationOffsets/formationSpacing 单一真源）
 import {
   formationOffsets, halfExtentOf, formationSpacing, formationLayerOffsets, formationFootprint, FORMATION_SPACING,
@@ -54,7 +58,8 @@ import {
 } from '../../config/formationLayout';
 // 纵向两级叠层的单一真源（队内层距 + 队间档距）：与 formationLayout 正交，BattleScene 共用其真源语义
 import {
-  TEAM_LAYERS, TIER_MAX, layerGapFor, layerCountForFootprint, teamGapFor, tierCountFor, tierIndexOf, tierOffsetOf, tierMultipliers,
+  TEAM_LAYERS, TIER_MAX, layerGapFor, layerCountForFootprint, teamGapFor, tierCountFor, tierMultipliers,
+  assignFleetTiers, DETACHED_TIER_OFFSET,
   FORM_ANIM_TAU,
 } from '../../config/fleetTierLayout';
 
@@ -995,24 +1000,11 @@ export class Battle3DOverlay {
   };
 
   // 地形
-  private hexInst: THREE.InstancedMesh | null = null;
-  private wireGeo: THREE.BufferGeometry | null = null;
-  private tileMeta: { t: any; wireStart: number; wireCount: number; lastOwner: number; h: number }[] = [];
+  // （原 `hexInst` / `wireGeo` / `tileMeta`：六棱柱地形实例与其线框，已随「3D 战场」模式删除）
   private hexR = 26;
-  /** 地图跨度（buildTerrain 时计算：max(宽,高)），固定雾参数与相机预设用 */
+  /** 地图跨度（`buildSpaceWorld` 时计算：max(宽,高)），固定雾参数与相机预设用 */
   private mapSpan = 0;
-  private tileByKey = new Map<number, { h: number; idx: number }>();
-  /**
-   * [v12.2 R1] 地形格 key 的整数编码，取代 `"q,r"` 字符串 key。
-   * `heightAtPx` 每帧被调用 **9×存活单位** 次（720 单位 ⇒ 6480 次/帧）；原实现每次查询都
-   * `` `${q},${r}` `` 分配一个临时字符串 ⇒ 每帧数千次字符串分配 + 字符串哈希。整数 key 零分配。
-   * 编码 `(q + 2048) * 8192 + (r + 2048)`：对 `r + 2048 ∈ [0, 8191]`（即 r ∈ [-2048, 6143]）、
-   * `q ≥ -2048` 单调单射 ⇒ 无碰撞。所有地图生成的实际范围远在界内（最大 `random` 图 ±32；
-   * custom 地图来自编辑器，亦在数百内）。运行期只编码、不解码。
-   */
-  private tileKey(q: number, r: number): number {
-    return (q + 2048) * 8192 + (r + 2048);
-  }
+  // （原 `tileByKey` + `tileKey(q,r)` 整数编码：只服务六棱柱 `heightAtPx` 查询，已随之删除）
 
   /**
    * [v12.2 R1] `formationOffsets(formation, n)` 的按 `(formation, n)` memo —— **本单最大的性能项**。
@@ -1235,10 +1227,21 @@ export class Battle3DOverlay {
   private onPointerUp: (e: PointerEvent) => void;
 
   private ready = false;
-  /** 指挥制（command）：纯 3D 宇宙空间，不建六棱柱地形，改画 Tron 式网格平面 + 星域 */
-  private spaceMode = false;
   private spaceBuilt = false;
   private spaceGroup: THREE.Group | null = null;
+  /**
+   * [v36c] 空域地形分区层。指挥制下**唯一可见**的地形呈现（Phaser 画布被
+   * `body.battle3d-mode` 的 CSS 整体隐藏，见 `buildTerrainZones` 注释）。
+   */
+  /** [v38 · G3] 占领进度环（只在 0 < captureProgress < 100 的目标上出现） */
+  private captureGroup: THREE.Group | null = null;
+  private captureRings: Map<any, { mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial }> = new Map();
+  private capturePulseT = 0;
+  /** 探针读数（L2 用）：当前在画的占领环数量 + 脉冲值 */
+  captureStats: { active: number; pulse: number } | null = null;
+  private terrainZoneGroup: THREE.Group | null = null;
+  /** [QA 只读] 分区层构建筑计：供 L2 探针断言"确实建了、且数量对得上"。 */
+  terrainZoneStats: { cells: number; types: number; mode: 'contour' | 'scanline' | 'fill'; fills: number; edges: number; lines: number; tris: number } | null = null;
   /** 构造时间戳：onReady 迟迟不触发时供外部判断降级 */
   readonly createdAt = Date.now();
 
@@ -1269,9 +1272,7 @@ export class Battle3DOverlay {
     this.dprCap = q.dprCap;
     this.msaaSamples = q.msaa;
 
-    // 指挥制检测：tacticalState 或 BattleScene.mapStyle 任一为 'command' 即进入纯宇宙空间模式
-    const ts = store?.tacticalState;
-    this.spaceMode = ts?.mapStyle === 'command' || (scene as any)?.mapStyle === 'command';
+    // ⚠ 2026-09-20：原「六棱柱沙盘 / 纯宇宙」双模式已删除 —— 战斗只有纯宇宙（指挥制）。
 
     const w = container.clientWidth || 1;
     const h = container.clientHeight || 1;
@@ -1351,17 +1352,10 @@ export class Battle3DOverlay {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
-    if (this.spaceMode) {
-        // 指挥制纯宇宙：无"地平线穿帮"问题，放开为全向自由旋转（对齐战略地图手感）
-        this.controls.minPolarAngle = 0.05;
-        this.controls.maxPolarAngle = Math.PI * 0.49;
-    } else {
-        // 俯角限制对齐原型：maxPolar 27°（仰角下限，Q1 拍板值）——防止拉平看穿地平线外的雾；
-        // minPolar 14.4° 防止完全垂直时 UI 拾取失真。
-        this.controls.minPolarAngle = Math.PI * 0.08;
-        this.controls.maxPolarAngle = Math.PI * 0.35;
-    }
-    // 距离上下限在 buildTerrain 按地图跨度定（此处先给安全占位）
+    // 纯宇宙：无"地平线穿帮"问题，放开为全向自由旋转（对齐战略地图手感）
+    this.controls.minPolarAngle = 0.05;
+    this.controls.maxPolarAngle = Math.PI * 0.49;
+    // 距离上下限在 buildSpaceWorld 按地图跨度定（此处先给安全占位）
     this.controls.minDistance = 60;
     this.controls.maxDistance = 3000;
 
@@ -1569,17 +1563,25 @@ export class Battle3DOverlay {
       }
       const tierY = new Map<any, number>();
       const sides: any[] = [];
+      // 档距/档位与 syncShips 第零遍**共用同一个真源函数**（此前两处各抄一份逻辑，
+      //   改一处漏一处会让"探针读数"与"实际渲染"静默分叉 —— 本项目已经踩过一次）。
+      const gapOf = (f: any) => {
+        const v = this.fleetVLayout(f);
+        return teamGapFor(v.spacing, v.layerGap, v.maxH, v.layers);
+      };
       bySide.forEach((list, sid) => {
         let gap = 0;
-        for (const f of list) {
-          const v = this.fleetVLayout(f);
-          const g = teamGapFor(v.spacing, v.layerGap, v.maxH, v.layers);
-          if (g > gap) gap = g;
-        }
-        const tiers = tierCountFor(list.length);
+        for (const f of list) { const g = gapOf(f); if (g > gap) gap = g; }
+        const roots = list.filter((f: any) => f._detachedFrom == null);
+        const tiers = tierCountFor(roots.length || list.length);
         const mults = tierMultipliers(tiers);
-        list.forEach((f, i) => { tierY.set(f, tierOffsetOf(tierIndexOf(i, tiers), tiers) * gap); });
-        sides.push({ factionId: sid, fleets: list.length, tiers, teamGap: gap, mults, ys: mults.map((m) => m * gap) });
+        const tierOf = assignFleetTiers(list, gapOf);
+        tierOf.forEach((y, f) => tierY.set(f, y));
+        sides.push({
+          factionId: sid, fleets: list.length, roots: roots.length, tiers, teamGap: gap,
+          mults, ys: mults.map((m) => m * gap), detachedTierOffset: DETACHED_TIER_OFFSET,
+          fleetYs: list.map((f: any) => +(tierOf.get(f) ?? 0).toFixed(2)),
+        });
       });
 
       const stat = (ks: number[], gap: number) => {
@@ -1818,169 +1820,489 @@ export class Battle3DOverlay {
     return new THREE.Vector3(x, extraY, -y);
   }
 
-  /** 查某像素点所在格的地形高度 */
-  private heightAtPx(px: number, py: number): number {
-    // 指挥制纯宇宙：基准面即 y=0 网格平面，舰船固定巡航高度飞行
-    if (this.spaceMode) return 0;
-    // 点顶六边形：中心距 x = √3·R·(q + r/2)，y = 1.5·R·r（renderHexMap 同源公式）
-    const r3 = this.hexR * 1.5;
-    const rCand = Math.round(py / r3);
-    let best = 0;
-    let bestD = Infinity;
-    for (let r = rCand - 1; r <= rCand + 1; r++) {
-      const qCand = Math.round(px / (this.hexR * SQ3) - r / 2);
-      for (let q = qCand - 1; q <= qCand + 1; q++) {
-        const hit = this.tileByKey.get(this.tileKey(q, r));
-        if (!hit) continue;
-        const wx = this.hexR * (SQ3 * q + SQ3 / 2 * r);
-        const wy = r3 * r;
-        const d = (wx - px) * (wx - px) + (wy - py) * (wy - py);
-        if (d < bestD) { bestD = d; best = hit.h; }
-      }
-    }
-    return best;
-  }
 
-  /** 计算单格 3D 高度（原型三段式移植，世界单位）。
-   *  核心格（planet/fortress/castle）保持自身高度 ± 微扰；
-   *  普通格 = 类型基准 + fbm 连续起伏；空域（sea/ruined）只做缓波。
-   *  关键：fbm 喂的是按 hexR 归一化的坐标（demo 世界坐标 HEX_R=1 的等比尺度），
-   *  直接喂像素坐标会让基波只跨约 2.5 格，退化为逐格随机凸起（实机截图锯齿的根因）。 */
-  private tileHeight(t: any): number {
-    const R = this.hexR;
-    const def = TILE_3D[t.type] || TILE_3D.pending;
-    const nx = t.x / R, ny = t.y / R;              // 像素坐标 → 归一化（≈demo 世界坐标）
-    const n = fbm(nx, ny);                          // ±1
-    const isCore = t.type === 'planet' || t.type === 'fortress' || t.type === 'castle';
-    const isVoid = t.type === 'sea' || t.type === 'ruined';
-    let hk: number;                                 // 相对高度（× R）
-    if (isCore) {
-      hk = def.h + n * 0.22;
-    } else if (isVoid) {
-      hk = def.h + n * 0.46;                        // 空域缓波
-    } else {
-      // 陆地：类型基准 + 山丘隆起（幅度对齐 demo：0.55 主波 + 0.18 次波）
-      hk = def.h + 0.42 + n * 0.55 + 0.18 * fbm(nx * 0.55 + 13.7, ny * 0.55 - 8.3);
-    }
-    return Math.max(0.14 * R, hk * R);
-  }
 
   // ---------- 地形 ----------
-  private buildTerrain() {
-    const bs = this.battleScene;
-    const tiles: any[] = bs.tilesList || []; // any 来源：BattleScene.tilesList
-    if (tiles.length === 0) return;
-    this.hexR = bs.hexRadius || 26;
-    this.cruiseClearance = this.computeCruiseClearance();
-    this.minClearance = this.hexR * 1.8;
-
-    // 记录星球/要塞位置，供舰船 3D 径向避让（tileByKey 尚未填充，高度直接按类型取）
-    this.planetCenters = tiles
-      .filter((t: any) => t.type === 'planet' || t.type === 'fortress')
-      .map((t: any) => {
-        const r = this.hexR * (t.type === 'fortress' ? 2.6 : 1.5);
-        const h = Math.max(0.14 * this.hexR, (TILE_3D[t.type] || TILE_3D.pending).h * this.hexR);
-        return { x: t.x, y: h + r * 0.8, z: -t.y, r };
-      });
-
-    // 相机对准地图中心并按地图尺寸拉远
-    const xs = tiles.map(t => t.x), ys = tiles.map(t => t.y);
-    const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
-    const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
-    const span = Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys), this.hexR * 8);
-    this.mapSpan = span;
-    const dist = Math.max(span * 1.15, this.hexR * 20);
-    this.controls.target.set(cx, 0, -cy);
-    // 35° 俯角
-    this.camera.position.set(cx, dist * Math.sin(CAM_ELEV), -cy + dist * Math.cos(CAM_ELEV));
-    this.controls.minDistance = this.hexR * 3;
-    // 收紧缩放上限：此前 dist*3 在大地图上远超雾远端（near=camD+span*0.32），
-    // 拉太远画面整片没入雾→黑屏（用户实报）。上限=初始视距×1.6，保证最远仍能看清地图轮廓。
-    this.controls.maxDistance = dist * 1.6;
-    this.controls.update();
-    // 首帧前就把裁剪面对齐地图尺度，避免第一帧整片地形被切掉
-    this.syncClipPlanes(this.camera.position.distanceTo(this.controls.target), true);
-
-    const hexGap = this.hexR * HEX_GAP_K;
-    const skirt = this.hexR * SKIRT_K;
-
-    // 六棱柱 InstancedMesh
-    const prism = new THREE.CylinderGeometry(hexGap, hexGap, 1, 6);
-    const mat = new THREE.MeshPhongMaterial({ color: 0xffffff, transparent: true, opacity: 0.62, flatShading: true, shininess: 10 });
-    const inst = new THREE.InstancedMesh(prism, mat, tiles.length);
-    inst.name = 'hexTerrain';
-    const dummy = new THREE.Object3D();
-    const baseColor = new THREE.Color();
-
-    // 线框（顶面 6 边 + 垂直棱，vertexColors）
-    const lp: number[] = [];
-    const lc: number[] = [];
-    const tmpC = new THREE.Color();
-
-    tiles.forEach((t, i) => {
-      const def = TILE_3D[t.type] || TILE_3D.pending;
-      // 高度：三段式 fbm（类型基准 + 世界坐标连续噪声）——消除相邻格突变
-      const h = this.tileHeight(t);
-      t._h3d = h; // 挂回 tile 供 heightAtPx 使用
-      this.tileByKey.set(this.tileKey(t.q, t.r), { h, idx: i });
-
-      const bot = -skirt;
-      dummy.position.set(t.x, (h + bot) / 2, -t.y);
-      dummy.scale.set(1, h - bot, 1);
-      dummy.updateMatrix();
-      inst.setMatrixAt(i, dummy.matrix);
-
-      const hex = t.ownerId > 0 ? factionColor(this.getFac(t.ownerId)) : def.color;
-      // 不可通行地形（海/废墟）：压暗到 45%，与可通行格拉开明暗差，形成"禁区"视觉语义
-      const dimK = (t.type === 'sea' || t.type === 'ruined') ? 0.45 : 0.88;
-      baseColor.setHex(hex).multiplyScalar(dimK);
-      inst.setColorAt(i, baseColor);
-
-      // 线框色 = 阵营/地形色 × 增益
-      tmpC.setHex(hex).multiplyScalar(wireGain(hex));
-      const cr = tmpC.r, cg = tmpC.g, cb = tmpC.b;
-      const wireStart = lc.length / 3;
-      // 顶面 6 边
-      for (let k = 0; k < 6; k++) {
-        const a1 = (k / 6) * Math.PI * 2, a2 = ((k + 1) / 6) * Math.PI * 2;
-        lp.push(t.x + hexGap * Math.sin(a1), h, -t.y + hexGap * Math.cos(a1));
-        lp.push(t.x + hexGap * Math.sin(a2), h, -t.y + hexGap * Math.cos(a2));
-        lc.push(cr, cg, cb, cr, cg, cb);
-      }
-      // 垂直棱（底端渐隐）
-      const db = 0.14;
-      for (let k = 0; k < 6; k++) {
-        const a = (k / 6) * Math.PI * 2;
-        const pxx = t.x + hexGap * Math.sin(a), pzz = -t.y + hexGap * Math.cos(a);
-        lp.push(pxx, h, pzz, pxx, bot, pzz);
-        lc.push(cr, cg, cb, cr * db, cg * db, cb * db);
-      }
-      this.tileMeta.push({ t, wireStart, wireCount: lc.length / 3 - wireStart, lastOwner: t.ownerId ?? 0, h });
-    });
-
-    inst.instanceMatrix.needsUpdate = true;
-    if (inst.instanceColor) inst.instanceColor.needsUpdate = true;
-    this.hexInst = inst;
-    this.scene.add(inst);
-
-    const wg = new THREE.BufferGeometry();
-    wg.setAttribute('position', new THREE.Float32BufferAttribute(lp, 3));
-    wg.setAttribute('color', new THREE.Float32BufferAttribute(lc, 3));
-    this.wireGeo = wg;
-    const wire = new THREE.LineSegments(wg, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.95 }));
-    wire.frustumCulled = false;
-    this.scene.add(wire);
-
-    // 选中环尺寸对齐格子
-    this.selRing.scale.setScalar(hexGap);
-
-    this.buildTerrainMarkers(tiles);
+  /**
+   * 像素点地面高度。
+   *
+   * 纯宇宙战场的地面就是 y=0 的网格基准面（舰船在固定巡航高度飞行）⇒ **恒 0**。
+   * 原实现查六棱柱地形高度，属已删除的「3D 战场」模式；保留同名常量桩是为了
+   * 让 4 处调用点（单位放置 / 舰体基准高 / 补给圈 / 巡航高度）零改动。
+   */
+  private heightAtPx(_px: number, _py: number): number {
+    return 0;
   }
+
+  /**
+   * [v36c] **空域地形分区层** —— 指挥制下唯一真正看得见的地形呈现。
+   *
+   * ── 为什么必须画在 3D 层，而不是 Phaser ──────────────────────────────
+   * `App.vue` 在 overlay 就绪后给 body 加 `battle3d-mode`，其 CSS 为
+   *   `body.battle3d-mode #phaser-canvas-container canvas { visibility: hidden }`。
+   * 2026-09-20 起 `is3dBattle = (gameState === 'game')`（原按 `mapStyle` 分流的判断已随
+   * 三模式一起删除）⇒ **只要 overlay 起来，整个 Phaser 画布就被隐藏**。
+   * 于是 `BattleScene.renderTerrainMarkers()` 的 Phaser 版本只能在这条路径上被看到：
+   * **overlay 建不起来时的降级**（`App.vue` 的 8 秒超时 fallback）。
+   * 2026-09-20 实测：overlay 正常时把 801 个地形斑填成不透明品红，截图里品红像素 = 0
+   * （用户当时实报"界面上什么都没有"即此）⇒ 地形**必须**画在本函数里。
+   *
+   * ── 画法（对齐既有 Tron 语言；纯呈现，不参与任何判定）──────────────
+   * · fill：每个地形格一个六边形扇形三角化，**按地形类型合并**成 6 个 BufferGeometry
+   *   ⇒ 6 个 draw call（而不是 800 个 Object3D）。
+   * · edge：只画"邻居地形不同"的边（同类相邻 = 内部边，跳过）⇒ 相邻同类格自然连成
+   *   一整片**区域**，边界只在区域外缘出现 —— 这正是"空域"该有的读法，
+   *   也避免了"每格一个六边形轮廓"退化成 hex 网格（指挥制刻意隐藏 hex）。
+   *   边界做成**带状网格**而非 LineSegments：WebGL 下 `linewidth` 恒为 1 物理像素，
+   *   远视角会细到看不见。
+   * · 全部 `AdditiveBlending` + `depthWrite:false`，叠在网格/星域上呈"发光空域"。
+   *
+   * ⚠ 本层是纯宇宙战场唯一的地形呈现（原 hex 六棱柱地形已删除，见 `buildTerrain` 处的说明）。
+   */
+    /**
+     * [v38] 空域地形呈现。两种画法**共享同一份数据与颜色真源**，切换只影响画法：
+     * · `'scanline'`（默认）= CRT 扫描线 → `buildTerrainZonesScan`
+     * · `'fill'` = v36c 六边形面填充（回退用）→ `buildTerrainZoneFills`
+     *
+     * ⚠ 这是**唯一**在指挥制下能看见的地形呈现：`buildTerrainMarkers` 只认 `t.type`
+     * （中继/要塞/星球等设施），**完全不认 `t.terrain`**。
+     */
+    private buildTerrainZones(tiles: any[]) {
+        if (this.terrainZoneGroup) return;
+        const withT = (tiles || []).filter((t: any) => t && t.terrain);
+        if (withT.length === 0) return;
+
+        const grp = new THREE.Group();
+        grp.name = 'terrainZones';
+
+        if (TERRAIN_ZONE.MODE === 'contour') this.buildTerrainZonesContour(withT, grp);
+        else if (TERRAIN_ZONE.MODE === 'scanline') this.buildTerrainZonesScan(withT, grp);
+        else this.buildTerrainZoneFills(withT, grp);
+
+        this.scene.add(grp);
+        this.terrainZoneGroup = grp;
+    }
+
+    /**
+     * [v39] 地形 **等高线** 呈现（`TERRAIN_ZONE.MODE === 'contour'`，当前默认）。
+     *
+     * ── 为什么否掉 v38 的扫描线（用户实拍：「太整齐了…就好像是单元格填充纹理…
+     *    就是太密集，还不如一开始的六边形格子好看」）────────────────────────
+     * 扫描线是**规则等距平行线**：平行线只能编码"方向"，**不编码"高度"**。
+     * 我把"起伏"交给它承载是**符号错配** —— 无论如何调参，近景下它必然读作
+     * "单元格填充纹理"（每格 17 条密排直线 = hatch）。
+     * 等高线（iso-line）天生是高度的可视化：**每条线 = 一个高度层**，
+     * 线疏＝坡缓、线密＝坡陡、线弯曲＝地形起伏 —— 拓扑图 / 雷达回波就是这个语言。
+     *
+     * ── 三层结构（缺一层都会出问题）────────────────────────────────────
+     * ① **区域外轮廓**（`chaikin` 平滑）—— 六边形格拼出来的边界天然是"六边形锯齿"，
+     *    近景读作像素化块；切角平滑后读作有机空域轮廓。
+     * ② **内部等高线**（3~6 条，`contourLevels`）—— 只在**本类型格内**取线
+     *    （`marchingSquares` 的 `mask` 参数：四角掩码全同才画）
+     *    ⇒ 轮廓会自动内缩约一格，所以 ① 是必需的，否则区域边界不可读。
+     * ③ **高度分层**：每条等高线的 y = `level × amp`（等高线的定义就是"等高"）
+     *    ⇒ 不必额外造三维形状，分层本身就读作起伏。
+     *
+     * ⚠ 与 `scanline` / `fill` 共享同一份数据、颜色、危险判定（三条画法只差画法）。
+     */
+    private buildTerrainZonesContour(withT: any[], grp: THREE.Group) {
+        const R = this.hexR;
+        const C = TERRAIN_CONTOUR;
+        const tiles: any[] = this.battleScene?.tilesList || [];
+        if (tiles.length === 0) {
+            this.terrainZoneStats = { cells: withT.length, types: 0, mode: 'contour', fills: 0, edges: 0, lines: 0, tris: 0 };
+            return;
+        }
+
+        // ── 世界 bbox（z = −2D 的 y，全 3D 层统一口径）──
+        let bx0 = Infinity, bz0 = Infinity, bx1 = -Infinity, bz1 = -Infinity;
+        for (const t of tiles) { const z = -t.y; if (t.x < bx0) bx0 = t.x; if (t.x > bx1) bx1 = t.x; if (z < bz0) bz0 = z; if (z > bz1) bz1 = z; }
+
+        // ── 采样网格 ──
+        const step = Math.max(1, R * C.GRID_K);
+        const cols = Math.max(4, Math.ceil((bx1 - bx0) / step));
+        const rows = Math.max(4, Math.ceil((bz1 - bz0) / step));
+        const W = cols + 1, H = rows + 1;
+
+        // ── 空间哈希：世界点 → 最近格中心（用于判定该点属于哪种地形）──
+        //   ⚠ 刻意**不做**"世界坐标 → 轴坐标"的解析反变换：那要押注 pointy-top 的
+        //     间距/角度约定，一旦押错就会静默错位。最近格中心对正六边形铺砌恒正确。
+        const cell = R * 2;
+        const hw = Math.ceil((bx1 - bx0) / cell) + 2, hh = Math.ceil((bz1 - bz0) / cell) + 2;
+        const buckets: (number[] | undefined)[] = new Array(hw * hh);
+        tiles.forEach((t: any, i: number) => {
+            const ix = Math.floor((t.x - bx0) / cell), iz = Math.floor((-t.y - bz0) / cell);
+            if (ix < 0 || iz < 0 || ix >= hw || iz >= hh) return;
+            const b = iz * hw + ix;
+            if (!buckets[b]) buckets[b] = [];
+            buckets[b]!.push(i);
+        });
+        const nearestType = (wx: number, wz: number): string | null => {
+            const ix = Math.floor((wx - bx0) / cell), iz = Math.floor((wz - bz0) / cell);
+            let best = -1, bd = Infinity;
+            for (let dz = -1; dz <= 1; dz++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    const cx = ix + dx, cz = iz + dz;
+                    if (cx < 0 || cz < 0 || cx >= hw || cz >= hh) continue;
+                    const arr = buckets[cz * hw + cx];
+                    if (!arr) continue;
+                    for (const i of arr) {
+                        const t = tiles[i];
+                        const d = (t.x - wx) * (t.x - wx) + (-t.y - wz) * (-t.y - wz);
+                        if (d < bd) { bd = d; best = i; }
+                    }
+                }
+            }
+            return best >= 0 ? (tiles[best].terrain ?? null) : null;
+        };
+
+        // ── 噪声高度场 + 类型掩码（一次算好，所有类型共用同一个场）──
+        const types: string[] = [];
+        const typeIndex = new Map<string, number>();
+        for (const t of withT) {
+            const k = t.terrain as string;
+            if (!typeIndex.has(k)) { typeIndex.set(k, types.length + 1); types.push(k); }
+        }
+        const field = new Float64Array(W * H);
+        const mask = new Uint8Array(W * H);
+        for (let r = 0; r < H; r++) {
+            for (let c = 0; c < W; c++) {
+                const wx = bx0 + c * step, wz = bz0 + r * step;
+                field[r * W + c] = fbm2D(wx, wz, R * C.NOISE_CELL_K, C.SEED, C.OCTAVES);
+                const ty = nearestType(wx, wz);
+                mask[r * W + c] = ty ? (typeIndex.get(ty) ?? 0) : 0;
+            }
+        }
+
+        const baseY = R * TERRAIN_ZONE.Y_K;
+        const amp = R * C.HEIGHT_AMP_K;
+        const halfW = R * C.WIDTH_K;
+        const levels = contourLevels(C.LINES, C.HEIGHT_SPAN);
+        let lineTotal = 0, triTotal = 0;
+
+        /** 加一条带状线（在 xz 平面内垂直于线段方向给宽度）→ 顶点 + 顶点色 */
+        const ribbon = (ax: number, az: number, bx2: number, bz2: number, y: number, w: number,
+                        pos: number[], col: number[], cr: number, cg: number, cb: number) => {
+            const dx = bx2 - ax, dz2 = bz2 - az;
+            const len = Math.hypot(dx, dz2) || 1;
+            const nx = (-dz2 / len) * w, nz = (dx / len) * w;
+            pos.push(ax + nx, y, az + nz, bx2 + nx, y, bz2 + nz, bx2 - nx, y, bz2 - nz);
+            pos.push(ax + nx, y, az + nz, bx2 - nx, y, bz2 - nz, ax - nx, y, az - nz);
+            for (let v = 0; v < 6; v++) col.push(cr, cg, cb);
+            triTotal += 2;
+        };
+
+        // 六边形顶点（与 buildTerrainZoneFills 同一约定：θ_k = (π/3)k − π/6）
+        const COS: number[] = [], SIN: number[] = [];
+        for (let k = 0; k < 6; k++) { const a = (Math.PI / 3) * k - Math.PI / 6; COS.push(Math.cos(a)); SIN.push(Math.sin(a)); }
+        const NB: [number, number][] = [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]];
+        const terrAt = new Map<string, string | null>();
+        for (const t of tiles) terrAt.set(`${t.q},${t.r}`, t.terrain ?? null);
+
+        types.forEach((type: string, ti: number) => {
+            const base = TERRAIN_VISUAL[type]?.color ?? 0x7dd3fc;
+            const hazardous = (TERRAIN_EFFECT_TABLE[type]?.dotPct ?? 0) > 0;
+            const rC = ((base >> 16) & 255) / 255, gC = ((base >> 8) & 255) / 255, bC = (base & 255) / 255;
+            const pos: number[] = [], col: number[] = [];
+
+            // ── ② 内部等高线 ──
+            levels.forEach((lv: number, li: number) => {
+                const segs = marchingSquares(field, cols, rows, lv, mask, ti + 1);
+                // 高处的线更亮 ⇒ 峰顶发光，读作高程
+                const t01 = (lv / C.HEIGHT_SPAN + 1) / 2;                 // 0..1
+                const bright = C.LEVEL_BASE_MUL + (C.LEVEL_TOP_MUL - C.LEVEL_BASE_MUL) * t01;
+                const y = baseY + lv * amp;
+                const cr = Math.min(1, rC * bright), cg = Math.min(1, gC * bright), cb = Math.min(1, bC * bright);
+                for (const s of segs) {
+                    ribbon(bx0 + s.c0 * step, bz0 + s.r0 * step, bx0 + s.c1 * step, bz0 + s.r1 * step, y, halfW, pos, col, cr, cg, cb);
+                    lineTotal++;
+                }
+                void li;
+            });
+
+            // ── ① 区域外轮廓（边界边 → 有序环 → Chaikin 平滑）──
+            const myTiles = withT.filter((t: any) => t.terrain === type);
+            const eKey = (x: number, z: number) => Math.round(x * 50) + ',' + Math.round(z * 50);
+            const edges: Array<{ a: string; b: string; ax: number; az: number; bx: number; bz: number }> = [];
+            const adj = new Map<string, number[]>();
+            for (const t of myTiles) {
+                const cx = t.x, cz = -t.y;
+                const vx: number[] = [], vz: number[] = [];
+                for (let k = 0; k < 6; k++) { vx.push(cx + COS[k] * R); vz.push(cz + SIN[k] * R); }
+                for (let k = 0; k < 6; k++) {
+                    const [dq, dr] = NB[k];
+                    if ((terrAt.get(`${t.q + dq},${t.r + dr}`) ?? null) === type) continue;
+                    const k2 = (k + 1) % 6;
+                    const a = eKey(vx[k], vz[k]), b = eKey(vx[k2], vz[k2]);
+                    const idx = edges.length;
+                    edges.push({ a, b, ax: vx[k], az: vz[k], bx: vx[k2], bz: vz[k2] });
+                    if (!adj.has(a)) adj.set(a, []); adj.get(a)!.push(idx);
+                    if (!adj.has(b)) adj.set(b, []); adj.get(b)!.push(idx);
+                }
+            }
+            const used = new Uint8Array(edges.length);
+            for (let i = 0; i < edges.length; i++) {
+                if (used[i]) continue;
+                // 沿边界边串成闭合环
+                const loop: Array<[number, number]> = [];
+                let cur = i, curKey = edges[i].a;
+                const startKey = curKey;
+                let guard = 0;
+                while (cur >= 0 && !used[cur] && guard++ < edges.length + 4) {
+                    used[cur] = 1;
+                    const e = edges[cur];
+                    const fwd = e.a === curKey;
+                    loop.push(fwd ? [e.ax, e.az] : [e.bx, e.bz]);
+                    curKey = fwd ? e.b : e.a;
+                    if (curKey === startKey) break;
+                    cur = -1;
+                    for (const j of (adj.get(curKey) || [])) { if (!used[j]) { cur = j; break; } }
+                }
+                if (loop.length < 3) continue;
+                // Chaikin 平滑（补偿其向心收缩）
+                let sm = chaikin(loop, C.CHAIKIN_ITERS, true);
+                if ((C.OUTLINE_GROW as number) !== 1) {
+                    let mx = 0, mz = 0;
+                    for (const p of sm) { mx += p[0]; mz += p[1]; }
+                    mx /= sm.length; mz /= sm.length;
+                    sm = sm.map((p) => [mx + (p[0] - mx) * C.OUTLINE_GROW, mz + (p[1] - mz) * C.OUTLINE_GROW] as [number, number]);
+                }
+                const oBright = hazardous ? C.OUTLINE_BRIGHT_HAZARD : C.OUTLINE_BRIGHT_ENV;
+                for (let k = 0; k < sm.length; k++) {
+                    const a = sm[k], b = sm[(k + 1) % sm.length];
+                    ribbon(a[0], a[1], b[0], b[1], baseY, halfW, pos, col,
+                        Math.min(1, rC * oBright), Math.min(1, gC * oBright), Math.min(1, bC * oBright));
+                }
+                lineTotal += sm.length;
+            }
+
+            if (pos.length === 0) return;
+            const g = new THREE.BufferGeometry();
+            g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+            g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+            const mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({
+                vertexColors: true, transparent: true,
+                opacity: hazardous ? C.ALPHA_HAZARD : C.ALPHA_ENV,
+                blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+            }));
+            mesh.frustumCulled = false;
+            mesh.name = `terrainContour:${type}`;
+            grp.add(mesh);
+        });
+
+        this.terrainZoneStats = {
+            cells: withT.length, types: types.length, mode: 'contour',
+            fills: 0, edges: 0, lines: lineTotal, tris: triTotal,
+        };
+    }
+    /**
+     * [v38] 地形 **CRT 扫描线**。
+     *
+     * ── 为什么不是"逐格画线"（关键设计决定）────────────────────────────
+     * 若逐格在自己的六边形内裁剪扫描线，相邻同类格各自裁剪 ⇒ 在共享边处各自画一条
+     * 独立线段，而在**上下顶点附近弦长趋于 0** ⇒ 每个格中心线长、上下极短
+     * ⇒ 整片读作"一格格小透镜" —— 换汤不换药，仍是网格语言。
+     *
+     * 故本实现**先按扫描行聚合、再合并区间**：
+     *   ① 把每个地形格在每个扫描行 z 上的**水平弦** `[cx−hw, cx+hw]` 算出来（闭式解，见下）；
+     *   ② 同一 z 行内所有弦**按 x 排序并合并重叠/近邻区间**（`MERGE_GAP_K`）；
+     *   ③ 对每个合并后的区间画**一条贯通线**。
+     * ⇒ 线在同一片空域内部**连续贯通**，只在**区域并集的外缘**停止，
+     *   形状由区域本身给出、**没有任何六边形痕迹**。这是扫描线方案成立的前提。
+     *
+     * 弦半宽闭式解（pointy-top 六边形，顶点角 = (π/3)k − π/6，R = 外接半径）：
+     *   `|dz| ≤ R/2` ⇒ `√3/2·R`（两条竖边之间的整宽，与 dz 无关）
+     *   `R/2 < |dz| ≤ R` ⇒ `√3·(R − |dz|)`（向上下顶点线性收敛）
+     * 自检：dz=R ⇒ 0 ✓；dz=R/2 ⇒ 0.866R ✓（两段在边界处连续）
+     */
+    private buildTerrainZonesScan(withT: any[], grp: THREE.Group) {
+        const R = this.hexR;
+        const S = TERRAIN_SCAN;
+        const Y = R * TERRAIN_ZONE.Y_K;
+
+        const byType = new Map<string, any[]>();
+        for (const t of withT) {
+            const arr = byType.get(t.terrain);
+            if (arr) arr.push(t); else byType.set(t.terrain, [t]);
+        }
+
+        let lineTotal = 0, triTotal = 0;
+
+        byType.forEach((list: any[], type: string) => {
+            const base = TERRAIN_VISUAL[type]?.color ?? 0x7dd3fc;
+            // 危险地形（会持续掉血）线更密 + 更亮。单一真源 = dotPct > 0。
+            const hazardous = (TERRAIN_EFFECT_TABLE[type]?.dotPct ?? 0) > 0;
+            const step = R * S.STEP_K * (hazardous ? S.HAZARD_STEP_MUL : 1);
+            const halfW = R * S.WIDTH_K;
+            const amp = R * S.AMP_K;
+            const lam = R * S.WAVE_LEN_K;
+            const lamZ = R * S.PHASE_Z_K;
+            const segMax = R * S.SEG_LEN_K;
+            const mergeGap = R * S.MERGE_GAP_K;
+            const minChord = R * S.MIN_CHORD_K;
+
+            let zMin = Infinity, zMax = -Infinity;
+            for (const t of list) {
+                const cz = -t.y;
+                if (cz - R < zMin) zMin = cz - R;
+                if (cz + R > zMax) zMax = cz + R;
+            }
+            const nA = Math.ceil((zMax - zMin) / step) + 1;
+
+            // ① 逐格算弦 → 入扫描行桶（弦半宽走纯函数 hexChordHalfWidth，可被台架断言）
+            const buckets: { x0: number; x1: number }[][] = [];
+            for (let i = 0; i < nA; i++) buckets.push([]);
+            for (const t of list) {
+                const cx = t.x, cz = -t.y;
+                const i0 = Math.max(0, Math.floor((cz - R - zMin) / step));
+                const i1 = Math.min(nA - 1, Math.ceil((cz + R - zMin) / step));
+                for (let i = i0; i <= i1; i++) {
+                    const hw = hexChordHalfWidth(R, zMin + i * step - cz);
+                    if (hw < minChord) continue;
+                    buckets[i].push({ x0: cx - hw, x1: cx + hw });
+                }
+            }
+
+            const pos: number[] = [], col: number[] = [];
+            const rC = ((base >> 16) & 255) / 255;
+            const gC = ((base >> 8) & 255) / 255;
+            const bC = (base & 255) / 255;
+
+            for (let i = 0; i < nA; i++) {
+                // ② 同行区间合并（mergeSpans，纯函数）—— 这一步决定"有没有区域感"
+                const merged = mergeSpans(buckets[i], mergeGap);
+                if (merged.length === 0) continue;
+
+                const z = zMin + i * step;
+                // 沿 z 的相位推进 ⇒ 相邻扫描线不同相 ⇒ 读作"一道波在区域里传播"
+                const phase = (z / lamZ) * Math.PI * 2;
+                // 扫描场刷新：每 REFRESH_PERIOD 条一条亮线（用**顶点色**实现 ——
+                //   alpha 是材质级、无法逐线变化，故材质走 vertexColors）。
+                const bright = (i % S.REFRESH_PERIOD === 0) ? S.REFRESH_MUL : 1;
+                const cr = Math.min(1, rC * bright), cg = Math.min(1, gC * bright), cb = Math.min(1, bC * bright);
+                const z0 = z - halfW, z1 = z + halfW;
+
+                // ③ 每个区间画一条贯通线（分段以采样正弦起伏）
+                for (const m of merged) {
+                    const len = m.x1 - m.x0;
+                    if (len < minChord) continue;
+                    const segs = scanSegCount(len, segMax, S.SEG_MAX);
+                    for (let s = 0; s < segs; s++) {
+                        const xa = m.x0 + (len * s) / segs;
+                        const xb = m.x0 + (len * (s + 1)) / segs;
+                        const ya = scanLineY(xa, lam, amp, phase, Y);
+                        const yb = scanLineY(xb, lam, amp, phase, Y);
+                        // 带宽沿 z ⇒ 线细而亮，不"变粗成块"；y 随 x 变 ⇒ 线本身在起伏
+                        pos.push(xa, ya, z0, xb, yb, z0, xb, yb, z1);
+                        pos.push(xa, ya, z0, xb, yb, z1, xa, ya, z1);
+                        for (let v = 0; v < 6; v++) col.push(cr, cg, cb);
+                        triTotal += 2;
+                    }
+                    lineTotal++;
+                }
+            }
+
+            if (pos.length === 0) return;
+            const g = new THREE.BufferGeometry();
+            g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+            g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+            const mesh = new THREE.Mesh(g, new THREE.MeshBasicMaterial({
+                vertexColors: true, transparent: true,
+                opacity: hazardous ? S.ALPHA_HAZARD : S.ALPHA_ENV,
+                blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+            }));
+            mesh.frustumCulled = false;
+            mesh.name = `terrainScan:${type}`;
+            grp.add(mesh);
+        });
+
+        this.terrainZoneStats = {
+            cells: withT.length, types: byType.size, mode: 'scanline',
+            fills: 0, edges: 0, lines: lineTotal, tris: triTotal,
+        };
+    }
+
+    /**
+     * v36c 的六边形面填充（`TERRAIN_ZONE.MODE === 'fill'` 时走这里）。
+     *
+     * 保留原因：用户已判其观感为"彩色拼贴"，但它是**唯一经过 L2 定量验收**的版本
+     * （边映射自检、像素级可见度），作为一键回退基线比"删掉重写"更安全。
+     * 与扫描线的差别仅在**画法**：数据/颜色/危险判定三者同源。
+     */
+    private buildTerrainZoneFills(withT: any[], grp: THREE.Group) {
+        const R = this.hexR;
+
+        // 邻居地形查询表（含"无地形" = null）：边界判定只看**地形 id 是否相同**
+        const terrAt = new Map<string, string | null>();
+        for (const t of (this.battleScene?.tilesList || [])) terrAt.set(`${t.q},${t.r}`, t.terrain ?? null);
+
+        const NB: [number, number][] = [[1, 0], [1, -1], [0, -1], [-1, 0], [-1, 1], [0, 1]];
+        const COS: number[] = [], SIN: number[] = [];
+        for (let k = 0; k < 6; k++) {
+            const a = (Math.PI / 3) * k - Math.PI / 6;
+            COS.push(Math.cos(a)); SIN.push(Math.sin(a));
+        }
+
+        const Y = R * TERRAIN_ZONE.Y_K;
+        const HW = R * TERRAIN_ZONE.EDGE_HALF_WIDTH_K;
+
+        const byType = new Map<string, any[]>();
+        for (const t of withT) {
+            const arr = byType.get(t.terrain);
+            if (arr) arr.push(t); else byType.set(t.terrain, [t]);
+        }
+
+        let fills = 0, edges = 0;
+        byType.forEach((list: any[], type: string) => {
+            const color = TERRAIN_VISUAL[type]?.color ?? 0x7dd3fc;
+            const hazardous = (TERRAIN_EFFECT_TABLE[type]?.dotPct ?? 0) > 0;
+            const fp: number[] = [];
+            const ep: number[] = [];
+            for (const t of list) {
+                const cx = t.x, cz = -t.y;
+                const vx: number[] = [], vz: number[] = [];
+                for (let k = 0; k < 6; k++) { vx.push(cx + COS[k] * R); vz.push(cz + SIN[k] * R); }
+                for (let k = 1; k < 5; k++) {
+                    fp.push(vx[0], Y, vz[0], vx[k], Y, vz[k], vx[k + 1], Y, vz[k + 1]);
+                }
+                if (!hazardous) continue;
+                for (let k = 0; k < 6; k++) {
+                    const [dq, dr] = NB[k];
+                    if ((terrAt.get(`${t.q + dq},${t.r + dr}`) ?? null) === type) continue;
+                    const k2 = (k + 1) % 6;
+                    const ax = vx[k], az = vz[k], bx = vx[k2], bz = vz[k2];
+                    const dx = bx - ax, dz = bz - az;
+                    const len = Math.hypot(dx, dz) || 1;
+                    const nx = (-dz / len) * HW, nz = (dx / len) * HW;
+                    ep.push(ax + nx, Y, az + nz, bx + nx, Y, bz + nz, bx - nx, Y, bz - nz);
+                    ep.push(ax + nx, Y, az + nz, bx - nx, Y, bz - nz, ax - nx, Y, az - nz);
+                }
+            }
+            const mkMesh = (arr: number[], opacity: number, nm: string) => {
+                const g = new THREE.BufferGeometry();
+                g.setAttribute('position', new THREE.Float32BufferAttribute(arr, 3));
+                const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({
+                    color, transparent: true, opacity,
+                    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+                }));
+                m.frustumCulled = false;
+                m.name = `${nm}:${type}`;
+                grp.add(m);
+            };
+            if (fp.length) { mkMesh(fp, TERRAIN_ZONE.FILL_ALPHA, 'terrainZoneFill'); fills++; }
+            if (ep.length) { mkMesh(ep, TERRAIN_ZONE.EDGE_ALPHA, 'terrainZoneEdge'); edges++; }
+        });
+
+        this.terrainZoneStats = {
+            cells: withT.length, types: byType.size, mode: 'fill',
+            fills, edges, lines: 0, tris: 0,
+        };
+    }
 
   /**
    * 指挥制（command）：纯 3D 宇宙空间 —— 对标参考图的 Tron 扫描画面。
    * - 绿色网格平面（细格 + 主线双层）= 空间坐标扫描基准面
-   * - 橙色线框圆柱 + 顶环 = "引力异常区"装饰天体（不参与战斗逻辑）
+   * - （原「橙色线框圆柱 + 顶环」装饰天体已于 2026-09-20 删除，见 buildSpaceWorld 第 2 段注释）
    * - 星域由 buildStars 提供；舰船在 y=0 基准面上方固定巡航高度飞行
    * - 相机全向自由旋转（构造器已放宽 polar 限制）
    */
@@ -2024,27 +2346,17 @@ export class Battle3DOverlay {
     gridMajor.position.set(cx, 0, -cy);
     grp.add(gridMajor);
 
-    // ── 2. 橙色线框引力异常（5-6 个盘状/柱状装饰体）──
-    const wellMat = new THREE.MeshBasicMaterial({ color: 0xff5a1f, wireframe: true, transparent: true, opacity: 0.5 });
-    const wellCount = 5;
-    for (let i = 0; i < wellCount; i++) {
-      const r = this.hexR * (2.2 + Math.random() * 2.2);
-      const h = this.hexR * (0.8 + Math.random() * 1.4);
-      const cyl = new THREE.Mesh(new THREE.CylinderGeometry(r, r * 1.08, h, 14, 3), wellMat);
-      const ang = (i / wellCount) * Math.PI * 2 + Math.random() * 0.9;
-      // v6.8：装饰体散布随网格收敛同步收紧（原 0.18~0.60 半跨会落出 ×1.15 网格）
-      const dist = span * (0.12 + Math.random() * 0.30);
-      cyl.position.set(cx + Math.cos(ang) * dist, h / 2 + this.hexR * 0.2, -cy + Math.sin(ang) * dist);
-      grp.add(cyl);
-      // 顶部轴口环（参考图圆柱顶端的小凸起）
-      const ring = new THREE.Mesh(
-        new THREE.TorusGeometry(r * 0.42, Math.max(1, this.hexR * 0.07), 6, 18),
-        wellMat,
-      );
-      ring.rotation.x = Math.PI / 2;
-      ring.position.set(cyl.position.x, cyl.position.y + h / 2 + this.hexR * 0.28, cyl.position.z);
-      grp.add(ring);
-    }
+    // ── 2. [已删除] 橙色线框"引力异常"装饰体 ──
+    // 2026-09-20 删除（用户：「把这个红色的东西去掉，这个装饰物到底有什么含义，没有作用的就去掉」）。
+    //   它原是 5 个 `CylinderGeometry` wireframe（0xff5a1f，35° 俯角下读作"橙色辐条盘"），
+    //   由 `Math.random()` 独立撒点，**与 `tiles` 无任何关联、不参与任何判定**（原注释自述
+    //   "不参与战斗逻辑"）。删除的三条依据：
+    //     ① **语义冲突且会误导** —— 地形表里有会真正改变移速/索敌的 `gravity`（引力点），
+    //        玩家看到橙色线框盘会以为那是引力点，而真正的引力点现在有自己的扫描线地形呈现；
+    //     ② **位置不可控** —— `dist = span*(0.12~0.42)` 会压在舰队/中继点上，遮挡判读；
+    //     ③ 纯装饰、无信息量，与"指挥制 = 读数界面"的定位相反。
+    //   ⚠ 若将来要恢复"引力异常天体"，正确做法是把它**绑定到 `gravity` 地形格**
+    //     （有数值效果者才配天体），而不是随机撒点。
 
     // ── 3. 相机取景：35° 俯角对准战场中心，距离上下限按跨度 ──
     // v6.8：网格已贴合地图本体（×1.15），相机距离同步收敛（原 1.05 是给 2.6×
@@ -2068,6 +2380,10 @@ export class Battle3DOverlay {
     //   纯宇宙模式下中继补给站/星球没有任何模型，只剩补给圈灰圈（用户实报：
     //   "灰色的中继应该也有个模型表示出来，而不是就是个灰色圈"）。
     this.buildTerrainMarkers(tiles);
+    // [v36c] 空域地形分区（星云/小行星带/引力点/残骸区/机雷区/杰夫粒子云）。
+    //   ⚠ 这是**唯一**在指挥制下能看见的地形呈现：`buildTerrainMarkers` 只认
+    //   `t.type`（中继/要塞/星球等设施），**完全不认 `t.terrain`**。
+    this.buildTerrainZones(tiles);
   }
 
   /**
@@ -2111,6 +2427,87 @@ export class Battle3DOverlay {
     slot.modelVer = reg.version;
   }
 
+    /**
+     * [v38 · G3] **占领进度环** —— 把"我正在占领这个中继/星球"变成看得见的读数。
+     *
+     * ── 为什么必须有（用户原话）────────────────────────────────────────
+     * 「这个中继点我该怎么占领？飞过去吗？我有看到别人占领的时候有动画效果，
+     *   但是我自己的部队右键点击没什么提示」
+     *
+     * ── 现状（诊断结论，带行号）────────────────────────────────────────
+     * · 占领机制**本来就有**：`BattleScene` 的 `processSupplyAndCapture` 里，舰队进入
+     *   目标 2 格内即按帧累加 `tile.captureProgress`，满 100 即易主（含语录 + 横幅 + toast）。
+     * · **右键与占领无关** —— 右键设的是"战术信标"（`targetFlare`），所以玩家右键中继点时
+     *   当然没有任何专属反馈。这是**引导缺失**，不是机制缺失。
+     * · 唯一的进度反馈是"hex 透明度反映剩余 HP"（`BattleScene:1689`）—— 而**指挥制下整个
+     *   Phaser 画布被 `body.battle3d-mode` 隐藏** ⇒ 该反馈**一个像素都看不到**。
+     *   ⇒ 玩家体感就是"点了没反应、飞过去也不知道在不在占"。
+     *
+     * ── 实现要点 ──────────────────────────────────────────────────────
+     * · 只给 `0 < captureProgress < 100` 的目标画环 ⇒ 天然只在"正在被争夺"时出现，无噪音。
+     * · 用 `RingGeometry(..., thetaStart, thetaLength)` 直接表达**进度**（顺时针从 12 点起，
+     *   与"读表"直觉一致）；中继/星球数量级为个位数 ⇒ 每帧重建几何代价可忽略。
+     * · 低进度时**脉冲**，读作"正在写入"，与静态的补给圈（`SUPPLY_RELAY_RADIUS`）区分开。
+     * · 颜色走**争夺色（琥珀）**而非阵营色：本函数不判定"谁在占"，避免与结算逻辑分叉；
+     *   真正的归属变化由 `captureProgress` 归零 + 补给圈换色表达。
+     */
+    private updateCaptureRings(dt: number) {
+        const bs = this.battleScene;
+        if (!bs) return;
+        this.capturePulseT += dt;
+
+        if (!this.captureGroup) {
+            this.captureGroup = new THREE.Group();
+            this.captureGroup.name = 'captureViz';
+            this.scene.add(this.captureGroup);
+        }
+
+        const R = this.hexR;
+        const inner = R * CAPTURE_RING.INNER_K;
+        const outer = R * CAPTURE_RING.OUTER_K;
+        const y = R * CAPTURE_RING.Y_K;
+        const pulse = CAPTURE_RING.PULSE_BASE
+            + CAPTURE_RING.PULSE_AMP * Math.sin(this.capturePulseT * CAPTURE_RING.PULSE_HZ * Math.PI * 2);
+
+        const live = new Set<any>();
+        for (const t of (bs.tilesList || [])) {
+            if (!t || (t.type !== 'planet' && t.type !== 'relay')) continue;
+            const p = Math.max(0, Math.min(100, Number(t.captureProgress) || 0));
+            // 只在"正在被占领"的窗口内显示：0（未开始/已归零）与 100（已易主）都不画
+            if (p <= 0.5 || p >= 100) continue;
+            live.add(t);
+
+            let rec = this.captureRings.get(t);
+            if (!rec) {
+                const mat = new THREE.MeshBasicMaterial({
+                    color: CAPTURE_RING.COLOR, transparent: true, opacity: CAPTURE_RING.ALPHA,
+                    side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
+                });
+                const mesh = new THREE.Mesh(new THREE.BufferGeometry(), mat);
+                mesh.position.set(t.x, y, -t.y);
+                mesh.rotation.x = -Math.PI / 2;
+                mesh.name = 'captureRing';
+                this.captureGroup.add(mesh);
+                rec = { mesh, mat };
+                this.captureRings.set(t, rec);
+            }
+            // 进度弧：从 12 点起顺时针（世界坐标下 rotation.x=-90°，故用 -π/2 作起点）
+            rec.mesh.geometry.dispose();
+            rec.mesh.geometry = new THREE.RingGeometry(inner, outer, 48, 1, -Math.PI / 2, (Math.PI * 2 * p) / 100);
+            rec.mat.opacity = CAPTURE_RING.ALPHA * pulse;
+            rec.mesh.visible = true;
+        }
+
+        // 清理：进度归零 / 已易主 / 目标消失
+        for (const [t, rec] of Array.from(this.captureRings.entries())) {
+            if (live.has(t)) continue;
+            this.captureGroup.remove(rec.mesh);
+            rec.mesh.geometry.dispose();
+            rec.mat.dispose();
+            this.captureRings.delete(t);
+        }
+        this.captureStats = { active: this.captureRings.size, pulse: +pulse.toFixed(3) };
+    }
   /** 每帧：① 设施模型加载状态检查（就地换装）② 已挂载模型的自旋动画推进。
    *  槽位数量 = 特殊地块数（<40）+ 占领点，逐帧线性遍历可忽略；
    *  未配自旋的模型在 advanceScenePropSpin 首行即返回（零开销）。
@@ -2148,7 +2545,6 @@ export class Battle3DOverlay {
     // v6.2：指挥制纯宇宙只立 relay/castle 标记——塔（紫锥）/金矿（黄八面体）是行星地表
     //   建筑，在 Tron 宇宙里悬浮成"紫色圆锥、黄色方块"完全不合逻辑（用户实报）；
     //   星球模型同理（星空宇宙不该散落大量星球），中继补给需求由 relay 承担。
-    const spaceMode = this.spaceMode;
     const mkMat = (hex: number, opts: Partial<THREE.MeshPhongMaterialParameters> = {}) =>
       new THREE.MeshPhongMaterial({ color: hex, emissive: hex, emissiveIntensity: 0.35, shininess: 60, transparent: true, opacity: 0.95, ...opts });
 
@@ -2180,7 +2576,7 @@ export class Battle3DOverlay {
     // v6.10：指挥制下的 fortress——有要塞模型时才渲染（伊谢尔伦要塞用 GLB 是合理宇宙设施；
     //   无模型仍不立标记：纯宇宙散落红色八面体不合逻辑，v6.2 定案保留）。
     //   hasScenePropFor 含 SCENE_PROP_BINDING 绑定回退（不规范命名的模型也能顶上）。
-    const fortressModel = spaceMode && hasScenePropFor('fortress');
+    const fortressModel = hasScenePropFor('fortress');
     // v6.10：要塞模型只摆"要塞群中心格"——要塞是 7 连格，逐格摆模型会变成 7 座并排；
     //   中心格判定 = 六邻格中同为 fortress 的数量最多者（战役图 q=15 / 演习图 q=18 均自适应）。
     let fortressCenterKey = '';
@@ -2199,7 +2595,7 @@ export class Battle3DOverlay {
 
     tiles.forEach((t) => {
       // v6.2：指挥制过滤——只保留 relay（中继补给站）与 castle（司令部信标柱）
-      if (spaceMode && t.type !== 'relay' && t.type !== 'castle' && !(t.type === 'fortress' && fortressModel)) return;
+      if (t.type !== 'relay' && t.type !== 'castle' && !(t.type === 'fortress' && fortressModel)) return;
       // v6.10：要塞群非中心格不摆模型（避免重复堆叠）
       if (t.type === 'fortress' && fortressModel && `${t.q},${t.r}` !== fortressCenterKey) return;
       const h = t._h3d ?? 0.35 * R;
@@ -2266,35 +2662,7 @@ export class Battle3DOverlay {
     return (this.store?.factions || []).find((x: any) => x.id === id);
   }
 
-  /** 每帧 diff：ownerId 变化的格刷新 instanceColor 与线框色 */
-  private refreshTileOwners() {
-    if (!this.hexInst || !this.wireGeo) return;
-    const colAttr = this.wireGeo.attributes.color as THREE.BufferAttribute;
-    const baseColor = new THREE.Color();
-    const tmpC = new THREE.Color();
-    let instDirty = false;
-    this.tileMeta.forEach((meta, i) => {
-      const t = meta.t;
-      const owner = t.ownerId ?? 0;
-      if (owner === meta.lastOwner) return;
-      meta.lastOwner = owner;
-      const def = TILE_3D[t.type] || TILE_3D.pending;
-      const hex = owner > 0 ? factionColor(this.getFac(owner)) : def.color;
-      baseColor.setHex(hex).multiplyScalar(0.88);
-      this.hexInst!.setColorAt(i, baseColor);
-      instDirty = true;
-      tmpC.setHex(hex).multiplyScalar(wireGain(hex));
-      const db = 0.14;
-      let idx = meta.wireStart;
-      for (let k = 0; k < 12; k++) colAttr.setXYZ(idx++, tmpC.r, tmpC.g, tmpC.b);
-      for (let k = 0; k < 6; k++) {
-        colAttr.setXYZ(idx++, tmpC.r, tmpC.g, tmpC.b);
-        colAttr.setXYZ(idx++, tmpC.r * db, tmpC.g * db, tmpC.b * db);
-      }
-    });
-    if (instDirty && this.hexInst.instanceColor) this.hexInst.instanceColor.needsUpdate = true;
-    colAttr.needsUpdate = true;
-  }
+  // （原 `refreshTileOwners()` 只服务六棱柱实例的 owner 着色，已随「3D 战场」模式删除）
 
   // ---------- 舰船 ----------
   /**
@@ -2588,13 +2956,32 @@ export class Battle3DOverlay {
       const m = this.ensureFleetMark(fid, formation, offs, spacingEff, he, a.maxShipLen, a.maxShipW, color);
 
       // 两条基轴（世界）见 markerAxes；顶点直接用世界坐标摆，不做四元数贴合
-      // [R10-B1] 标记底框朝向与舰体同源：优先消费 2D 限速平滑值 facingSmooth（缺省回退权威 facingAngle）
-      const [latX, latZ, depX, depZ] = markerAxes(fleet.facingSmooth ?? fleet.facingAngle ?? 0);
+      // [R10-B1→v41] 底框朝向与**阵位旋转真源**同源：优先 formFacing（v31-D 铁律），再回退 facingSmooth / facingAngle —— 托盘此前在急转中滞后于阵位（用户实报「舰队在后、托盘在前」）
+      const [latX, latZ, depX, depZ] = markerAxes((fleet as any).formFacing ?? fleet.facingSmooth ?? fleet.facingAngle ?? 0);
       // 底板中心 = **足迹包围盒中心**，不是舰队锚点（= index 0 = 旗舰位）：
       // wedge / spindle / line 的主体全在 gx ≤ 0 一侧，居中在锚点上会让底板整体前偏近半个纵深，
       // 舰体从底板后方整片露出去。midU/midV 由 markerSpan 从 offs 反推，单位 = 世界。
-      const cx = fleet.x + latX * m.midU + depX * m.midV;
-      const cz = -fleet.y + latZ * m.midU + depZ * m.midV;
+      // [v41] 底板中心改随**实际单位质心**（平滑跟随），不再锚定指令锚点 fleet.x/y：
+      //   转向/重排中舰模有 chase 限速在追新格位，锚点先到 ⇒ 托盘在前、舰在后（用户实报）。
+      //   质心只算战斗舰（运输/补给舰不参与阵位定位，2 艘即可把中心拉偏 20~40px，v34d 实测）。
+      //   平滑系数 0.25/帧（60fps 约 4 帧收敛），抹掉单帧跳变又不至于明显滞后。
+      let _sx = 0, _sz = 0, _sn = 0;
+      for (const u of (fleet.units || [])) {
+        if (!u || !(u.hp > 0) || !u.sprite) continue;
+        if (u.classType === '补给' || u.classType === '运输') continue;
+        _sx += u.sprite.x; _sz += -u.sprite.y; _sn++;
+      }
+      if (_sn > 0) {
+        _sx /= _sn; _sz /= _sn;
+        const prev = m as any;
+        const k = 0.25;
+        (prev as any)._scx = prev._scx === undefined ? _sx : prev._scx + (_sx - prev._scx) * k;
+        (prev as any)._scz = prev._scz === undefined ? _sz : prev._scz + (_sz - prev._scz) * k;
+      }
+      const hasC = (m as any)._scx !== undefined;
+      // 质心已是实际编队中心 ⇒ 不再叠加 midU/midV（那是「锚点≠包围盒中心」时代的补偿）
+      const cx = hasC ? (m as any)._scx : fleet.x + latX * m.midU + depX * m.midV;
+      const cz = hasC ? (m as any)._scz : -fleet.y + latZ * m.midU + depZ * m.midV;
       const baseY = a.minY - this.cruiseClearance * MARKER_DROP_K;
       writeMarkVerts(m.fill.geometry, m.fillNorm, m.spanX, m.spanY, cx, baseY, cz,
         latX, latZ, depX, depZ);
@@ -3098,32 +3485,19 @@ export class Battle3DOverlay {
     const now = performance.now() / 1000;
 
     // ── 第零遍：队间高度档（WS3）。每方（= factionId，1v1 会战里攻守各一方）的各支分舰队
-    //    按**高度居中分到最多 TIER_MAX=3 档**，档距取该方各队 teamGapFor(...) 的**最大值**
+    //    按**编制血缘**分档：档数只由**根舰队数**决定（根 = 无 `_detachedFrom`），分舰队继承其根的
+    //    档位 ⇒ 同源同层。档距取该方各队 teamGapFor(...) 的**最大值**
     //    （同方统一档距 ⇒ 各档等距、包络整齐；若各队各用各的档距会读到不等距的乱层）。
-    //    这是 demo 的 `stack` 布局（4 队沿 Y 等距叠放）在游戏里的等价物，档数由用户定为 3。
+    //    ⚠ [v34c] 此前档数按**舰队对象总数**算、档位按**数组序号** round-robin ⇒ 一次分兵会让
+    //      母队从 0 掉到 −64.8（T=2 的对称档）而分舰队出现在 +64.8，即用户实报的
+    //      "分出来的舰队漂浮在最上面一层"。真源与推导见 config/fleetTierLayout.assignFleetTiers。
     //    ⚠ 只施加在 3D 视觉层：BattleScene 的 2D 逻辑/命中/寻路保持平面，高度不参与命中判定。
-    const fleetTierY = new Map<any, number>();
-    {
-      const bySide = new Map<any, any[]>();
-      for (const fleet of fleets) {
-        const us: any[] = fleet.units || [];
-        if (us.length === 0) continue;
-        const arr = bySide.get(fleet.factionId);
-        if (arr) arr.push(fleet); else bySide.set(fleet.factionId, [fleet]);
-      }
-      bySide.forEach((list) => {
-        let gap = 0;
-        for (const f of list) {
-          const v = this.fleetVLayout(f);
-          const g = teamGapFor(v.spacing, v.layerGap, v.maxH, v.layers);
-          if (g > gap) gap = g;
-        }
-        const tiers = tierCountFor(list.length);
-        list.forEach((f, i) => {
-          fleetTierY.set(f, tierOffsetOf(tierIndexOf(i, tiers), tiers) * gap);
-        });
-      });
-    }
+    const aliveFleets: any[] = [];
+    for (const fleet of fleets) if ((fleet.units || []).length > 0) aliveFleets.push(fleet);
+    const fleetTierY = assignFleetTiers(aliveFleets, (f: any) => {
+      const v = this.fleetVLayout(f);
+      return teamGapFor(v.spacing, v.layerGap, v.maxH, v.layers);
+    });
     // 供 __b3dFocus（取景调试口）读同一份档位真源，避免它自己再算一遍
     this.lastTierY = fleetTierY;
 
@@ -3194,7 +3568,9 @@ export class Battle3DOverlay {
         // grow 每帧显式归零：第三遍只对"拿到实体"的舰重设 grow；未获实体者须保持纯光点（0），
         // 否则会残留上一帧实体期的暗化值 → 光点被 (1−grow) 压暗甚至不可见。
         vv.grow = 0;
-        vv.yaw = Math.atan2(-Math.cos(fa), Math.sin(fa));
+        // [v47] 逐舰显示航向 visHeading 为真源（2D 层每舰物理朝向）；缺失回退舰队朝向（运输舰/旧帧）
+        const _faU = (typeof u.visHeading === 'number' ? u.visHeading : fa);
+        vv.yaw = Math.atan2(-Math.cos(_faU), Math.sin(_faU));
       }
     }
 
@@ -3335,7 +3711,8 @@ export class Battle3DOverlay {
       //  · 仅"无朝向"兜底分支保留角速度限速（防御性：该分支实际不可达，面向噪声移动向量）。
       //  舰首局部 -z，rotation.y=θ 后鼻向 = (-sinθ, -cosθ)；像素 forward=(cos fa, sin fa) → 世界 (cos fa, -sin fa)
       let targetYaw: number;
-      const fa = fleet.facingSmooth ?? fleet.facingAngle;
+      // [v47] 真源 = 逐舰 visHeading（2D 层限速后的物理航迹朝向）；缺失回退舰队朝向
+      const fa = (typeof (u as any).visHeading === 'number' ? (u as any).visHeading : (fleet.facingSmooth ?? fleet.facingAngle));
       const hasFacing = (typeof fa === 'number' && Number.isFinite(fa));
       if (hasFacing) {
         targetYaw = Math.atan2(-Math.cos(fa), Math.sin(fa));
@@ -3757,6 +4134,22 @@ export class Battle3DOverlay {
         wrap.appendChild(btn);
         stanceBtns.push(btn);
       }
+      // [v31-C] **「分兵」按钮**：玩家主动拆分（按战法把这支舰队拆成多路）。
+      //   与姿态按钮同属一个操作界面 ⇒ 不必记忆快捷键（用户实报"没看到操作界面、没有提示"）。
+      //   点击直接对**本浮标对应的舰队**生效（无需先选中），与快捷键 `X` 共用同一入口。
+      const splitBtn = document.createElement('button');
+      splitBtn.className = 'b3d-bb-btn';
+      splitBtn.textContent = '分兵';
+      splitBtn.title = '按战法把这支舰队拆成多路（快捷键 X）';
+      splitBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+      splitBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const fid = fleet?.id;
+        if (fid === undefined) return;
+        const fn = (this.battleScene as any)?.splitFleetById;
+        if (typeof fn === 'function') fn.call(this.battleScene, fid);
+      });
+      wrap.appendChild(splitBtn);
       root.appendChild(wrap);
     }
 
@@ -3892,9 +4285,9 @@ export class Battle3DOverlay {
   }
 
   // ---------- 指挥制后勤战 3D 可视化 ----------
-  /** 像素地面高度：指挥制纯宇宙模式无地形，恒 0；3D 沙盘模式走 heightAtPx */
-  private groundYAt(xPix: number, yPix: number): number {
-    return this.spaceMode ? 0 : this.heightAtPx(xPix, yPix);
+  /** 像素地面高度：纯宇宙无地形，恒 0（原「3D 沙盘走 heightAtPx」分支已删除） */
+  private groundYAt(_xPix: number, _yPix: number): number {
+    return 0;
   }
 
   /** 水平圆圈（XZ 平面 LineLoop），半径以世界单位计 */
@@ -4765,45 +5158,27 @@ export class Battle3DOverlay {
       const selFid = this.pickFleetAtScreen(e.clientX, e.clientY);
       if ((this.battleScene as any).applyFleetSelectByPick?.(selFid)) return;
     }
-    if (this.spaceMode) {
-      // 指挥制：无六棱柱可拾取，射线对准 y=0 基准面 → 最近地块 → 中继给 BattleScene
-      if (!this.spaceBuilt) return;
-      const rect = this.renderer.domElement.getBoundingClientRect();
-      this.ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      this.ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-      this.raycaster.setFromCamera(this.ndc, this.camera);
-      const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
-      const hitPt = new THREE.Vector3();
-      if (!this.raycaster.ray.intersectPlane(plane, hitPt)) return;
-      const px = hitPt.x, py = -hitPt.z;
-      const tiles: any[] = (this.battleScene as any).tilesList || [];
-      let best: any = null, bestD = Infinity;
-      for (const t of tiles) {
-        const d = (t.x - px) * (t.x - px) + (t.y - py) * (t.y - py);
-        if (d < bestD) { bestD = d; best = t; }
-      }
-      if (!best || bestD > this.hexR * this.hexR * 4) return;
-      this.selRing.position.set(best.x, this.hexR * 0.15, -best.y);
-      this.selRing.visible = true;
-      this.syncTileClick(best, button);
-      return;
-    }
-    if (!this.hexInst) return;
+    // 指挥制：无六棱柱可拾取，射线对准 y=0 基准面 → 最近地块 → 中继给 BattleScene
+    if (!this.spaceBuilt) return;
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     this.ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this.ndc, this.camera);
-    const hits = this.raycaster.intersectObject(this.hexInst);
-    if (!hits.length || hits[0].instanceId === undefined) return;
-    const meta = this.tileMeta[hits[0].instanceId];
-    if (!meta) return;
-
-    // 选中高亮环
-    this.selRing.position.set(meta.t.x, meta.h + this.hexR * 0.04, -meta.t.y);
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const hitPt = new THREE.Vector3();
+    if (!this.raycaster.ray.intersectPlane(plane, hitPt)) return;
+    const px = hitPt.x, py = -hitPt.z;
+    const tiles: any[] = (this.battleScene as any).tilesList || [];
+    let best: any = null, bestD = Infinity;
+    for (const t of tiles) {
+      const d = (t.x - px) * (t.x - px) + (t.y - py) * (t.y - py);
+      if (d < bestD) { bestD = d; best = t; }
+    }
+    if (!best || bestD > this.hexR * this.hexR * 4) return;
+    this.selRing.position.set(best.x, this.hexR * 0.15, -best.y);
     this.selRing.visible = true;
-
-    // 接入 BattleScene 原有点击逻辑（见 syncTileClick 注释）
-    this.syncTileClick(meta.t, button);
+    this.syncTileClick(best, button);
+    return;
   }
 
   /**
@@ -4883,26 +5258,29 @@ export class Battle3DOverlay {
     const dt = Math.min(this.clock.getDelta(), 0.05);
 
     // 首帧同步地形（等 BattleScene create() 完成）
-    if (!this.hexInst && !this.spaceBuilt) {
+    // 首帧建世界（等 BattleScene create() 完成）
+    if (!this.spaceBuilt) {
       const bs = this.battleScene;
       if (bs && bs.tilesList && bs.tilesList.length > 0) {
-        if (this.spaceMode) this.buildSpaceWorld();
-        else this.buildTerrain();
-        if ((this.hexInst || this.spaceBuilt) && !this.ready) {
+        this.buildSpaceWorld();
+        if (this.spaceBuilt && !this.ready) {
           this.ready = true;
           this.opts.onReady?.();
         }
       }
     } else {
-      this.refreshTileOwners();
       // v6.10：设施模型就绪后就地换装（中继站/基地/要塞等）；v21：并推进其自旋动画
       this.updateSceneProps(dt);
+      this.updateCaptureRings(dt);
       this.syncShips(dt);
       this.updateBillboards();
-      // 后勤可视化仅指挥制（spaceMode）：hex/crt 路径保持零改动
-      if (this.spaceMode) this.updateSupplyViz();
-      // 提督扮演 C：意图线同样仅指挥制（任务/意图体系只在该模式启用）
-      if (this.spaceMode) this.updateIntentLines();
+      this.updateSupplyViz();
+      this.updateIntentLines();
+      this.updateFlames(dt);
+      drainFx3d().forEach(e => this.handleFx(e));
+      this.updateFx(dt);
+      this.updateBoats(dt);
+      this.updateCaptures();
       this.updateFlames(dt);
       drainFx3d().forEach(e => this.handleFx(e));
       this.updateFx(dt);

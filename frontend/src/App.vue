@@ -8,10 +8,6 @@
       <GameHeader />
       <div id="phaser-canvas-container" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;"></div>
 
-      <div v-if="showCRTBorder" class="crt-monitor-border">
-        <span class="crt-corner tr"></span>
-        <span class="crt-corner bl"></span>
-      </div>
 
       <div class="fleet-ui-layer">
         <div v-for="fleet in fleetsUI" :key="fleet.id"
@@ -42,6 +38,27 @@
       </div>
 
       <GameFooter />
+
+      <!-- [v36c] 空域地形图例。地形此前只存在于"世界里的颜色"里，界面无任何解释
+           ⇒ 用户实报"地图里说有各种空域地形，界面上什么都没有"。 -->
+      <div class="terrain-legend" :class="{ 'tl-collapsed': !terrainLegendOpen }">
+        <div class="tl-head" @click="terrainLegendOpen = !terrainLegendOpen">
+          <span class="tl-title">空域地形</span>
+          <span class="tl-toggle">{{ terrainLegendOpen ? '−' : '+' }}</span>
+        </div>
+        <template v-if="terrainLegendOpen">
+          <div v-if="!terrainEnabled" class="tl-off">地形效果已关闭（仅显示，无数值影响）</div>
+          <div v-for="row in terrainLegend" :key="row.id" class="tl-row">
+            <span class="tl-dot" :style="{ background: row.color, boxShadow: '0 0 6px ' + row.color }"></span>
+            <span class="tl-name">{{ row.label }}</span>
+            <span class="tl-desc">{{ row.desc }}</span>
+          </div>
+        </template>
+          <!-- [v38 · G3] 占领机制的操作引导。此前玩家右键中继点毫无反馈（右键 = 设战术信标，
+               不参与占领），而唯一的进度反馈是隐藏的 Phaser 画布 ⇒ 读作"这游戏没法占领"。 -->
+          <div class="tl-hint">中继点 / 星球：舰队靠近 <b>2 格内</b>即自动累计占领进度，<b>无需点击</b>。
+            进度以琥珀色圆环显示在目标上方（右键是"设战术信标"，不参与占领）。</div>
+      </div>
 
       <!-- 3D 战场视角预设（27° 侧视 / 正俯视）：3D 就绪后显示 -->
       <div v-if="is3dBattle && battle3dReady" class="view-preset-group">
@@ -135,6 +152,10 @@ import ForcePassDialog from './components/meta/ForcePassDialog.vue';
 import { commandBridge } from './services/CommandBridge';
 import { initMusic, unlockAudio, setEnabled, setVolume } from './services/MusicManager';
 import { Battle3DOverlay } from './game/three/Battle3DOverlay';
+// [v36c] 战场地形图例：数据由 `terrainEffects` 的**效果表推导**（不手抄），
+//   保证图例文案与实装数值永不脱节。
+import { terrainLegendRows } from './config/terrainEffects';
+import { TERRAIN_RULES } from './config/balance';
 
 const store = useGameStore();
 const settings = useSettingsStore();
@@ -224,31 +245,25 @@ const handleCaptureResolve = (action: string) => {
 const gameState = computed<'title' | 'menu' | 'editor' | 'game' | 'strategy' | 'sim'>(() => (store.gameState as any).value ?? store.gameState);
 const isDataLoaded = computed<boolean>(() => (store.isDataLoaded as any).value ?? store.isDataLoaded);
 const gameOver = computed<boolean>(() => (store.gameOver as any).value ?? store.gameOver);
-const showCRTBorder = computed<boolean>(() => {
-  const ts = (store.tacticalState as any)?.value ?? (store.tacticalState as any);
-  return gameState.value === 'game' && ts?.mapStyle === 'crt';
-});
 
 // ===== 3D 战场覆盖层 =====
-// mapStyle === '3d' 时：创建 Three.js 覆盖层（BattleScene 逻辑引擎照常运行）。
-// 关键时序：**收到 overlay.onReady（3D 地形真正建成）后才加 battle3d-mode 隐藏 2D 画布**；
-// 若 3D 一直没就绪（第二局 Phaser 重建慢/场景字段缺失等），8 秒后降级销毁 overlay，
-// 2D 画布保持可见 —— 任何情况下都不会出现"两块画布都不可见"的黑屏。
-const is3dBattle = computed<boolean>(() => {
-  const ts = (store.tacticalState as any)?.value ?? (store.tacticalState as any);
-  // 3D 模式与指挥制都走 Three.js 覆盖层：
-  //   '3d'      = 六棱柱地形沙盘；
-  //   'command' = 纯 3D 宇宙空间（Tron 式网格平面 + 星域，相机自由旋转，见 Battle3DOverlay spaceMode）。
-  return gameState.value === 'game' && (ts?.mapStyle === '3d' || ts?.mapStyle === 'command');
-});
-// 提督扮演：军议面板仅指挥制挂载
-const isCommandBattle = computed<boolean>(() => {
-  const ts = (store.tacticalState as any)?.value ?? (store.tacticalState as any);
-  return gameState.value === 'game' && ts?.mapStyle === 'command';
-});
+// 战斗（演习 / 战役）一律走 Three.js 覆盖层；BattleScene 只作逻辑引擎 + 降级显示。
+// ⚠ 2026-09-20：原 `hex`（星域棋盘）/ `crt`（全息战术投影）/ `3d`（3D 战场）三模式已删除，
+//   `tacticalState.mapStyle` 字段不再存在 —— 不要再按模式分流渲染。
+const is3dBattle = computed<boolean>(() => gameState.value === 'game');
+// 提督扮演：军议面板（战斗期间常驻挂载）
+const isCommandBattle = computed<boolean>(() => gameState.value === 'game');
 // store 体量过大导致 pinia ref 解包类型推断在个别属性上失效，沿用既有防御式读取口径
 const warRoomOpen = computed<boolean>(() => (store.warRoomOpen as any).value ?? store.warRoomOpen);
 const setWarRoomOpen = (v: boolean) => { (store as any).warRoomOpen = v; };
+// [v36c] 战场地形图例。用户实报"地图里说有各种空域地形，界面上什么都没有"——
+//   地形此前只有"世界里的颜色"，没有任何地方解释它是什么、有什么影响。
+//   行数据由 `terrainEffects.terrainLegendRows()` 从效果表**推导**（改数值 ⇒ 图例自动跟随）。
+const terrainLegend = terrainLegendRows();
+const terrainEnabled = TERRAIN_RULES.BATTLE_ENABLED;
+// 默认展开；折叠态只留标题条，避免长期占用左下角视野。
+const terrainLegendOpen = ref(true);
+
 const battle3dReady = ref(false);
 let battle3dOverlay: Battle3DOverlay | null = null;
 let battle3dReadyTimer: number | null = null;
@@ -269,25 +284,58 @@ const clear3dReadyTimer = () => {
 //   置 visible=false 即跳过该场景渲染（本轮性能优化的最大单项）。
 //   注：安装版 Phaser 的 SceneManager **没有** setVisible（只有 isVisible），必须走 scene.sys.setVisible()。
 const setBattleSceneVisible = (visible: boolean) => {
-  try {
-    const bs = getGameInstance()?.scene.getScene('BattleScene');
-    bs?.sys?.setVisible(visible);
-  } catch { /* 未就绪 / headless 时忽略 */ }
+  // [FIX-2D白渲染] 旧实现一次性调用：enter3dMode 早于 BattleScene.create() 时
+  //   getScene 返回 undefined → 静默跳过 → 2D 场景（7000+ 对象）在画布已被 CSS
+  //   隐藏的情况下每帧照常全量渲染，实测吃掉 ~65ms/帧（画质调最低也救不回来，
+  //   用户实报 20fps）。改为轮询直到场景存在（上限 ~5s），每次成功都按当前
+  //   battle3d-mode 真值收敛，乱序/迟到调用均安全。
+  const apply = () => {
+    try {
+      const bs = getGameInstance()?.scene.getScene('BattleScene');
+      if (!bs?.sys) return false;
+      bs.sys.setVisible(visible);
+      return true;
+    } catch { return false; }
+  };
+  if (apply()) return;
+  let tries = 0;
+  const iv = setInterval(() => {
+    if (apply() || ++tries > 20) clearInterval(iv);
+  }, 250);
 };
 
-const destroyBattle3dOverlay = () => {
+/** 销毁 3D 层**实例**（不触碰画布可见性 —— 可见性由 enter3dMode / fallbackTo2D 单独管）。 */
+const dispose3dOverlay = () => {
   clear3dReadyTimer();
   battle3dReady.value = false;
   if (battle3dOverlay) {
     battle3dOverlay.destroy();
     battle3dOverlay = null;
   }
-  document.body.classList.remove('battle3d-mode');
-  // 恢复 BattleScene 的 2D 渲染（降级回退 / 离开 3D 战斗时必须还原，否则 2D 画布会空）
-  setBattleSceneVisible(true);
   // QA 只读调试口句柄，destroy 后必须清空——否则台架/调试脚本读到已销毁实例的闭包，
   // 会误判 overlay 仍存活（QA-2 §6.4）。
   (window as any).__b3dOverlay = null;
+};
+
+/**
+ * 进入 3D 呈现：隐藏 2D 画布。
+ *
+ * ⚡ [2026-09-20] 必须**立刻**调用，不能等 overlay 的 `onReady` —— 旧实现等到 onReady
+ *   （约 1~2.5 秒）才隐藏画布，而那 1~2.5 秒里 Phaser 画布可见、画的是一整块六角格棋盘
+ *   （用户实报："战场加载的时候会有一瞬间出现棋盘的内容"）。
+ *   现在 2D 画布只在「3D 8 秒内建不起来」时由 `fallbackTo2D` 重新显示。
+ */
+const enter3dMode = () => {
+  document.body.classList.add('battle3d-mode');
+  // [v12 P2] 同步让 Phaser 停画 BattleScene（逻辑照跑，见 setBattleSceneVisible 注释）
+  setBattleSceneVisible(false);
+};
+
+/** 降级 / 离开战斗：恢复 2D 画布，保证任何情况下都不会"两块画布都不可见"。 */
+const fallbackTo2D = () => {
+  dispose3dOverlay();
+  document.body.classList.remove('battle3d-mode');
+  setBattleSceneVisible(true);
 };
 
 const tryCreate3dOverlay = (attempt: number) => {
@@ -302,40 +350,40 @@ const tryCreate3dOverlay = (attempt: number) => {
     if (attempt < 10) setTimeout(() => tryCreate3dOverlay(attempt + 1), 100);
     return;
   }
-  destroyBattle3dOverlay();
+  dispose3dOverlay();
   const ov = new Battle3DOverlay(container, bs, store, {
     onReady: () => {
-      // 3D 已确认渲染出地形：现在才隐藏 2D 画布
+      // 3D 已确认渲染出地形：只标记就绪（供视角预设按钮显示）。
+      // ⚠ 画布可见性**不在这里切** —— 见 enter3dMode 的注释。
       if (battle3dOverlay === ov) {
         clear3dReadyTimer();
         battle3dReady.value = true;
-        document.body.classList.add('battle3d-mode');
-        // [v12 P2] 同步让 Phaser 停画 BattleScene（逻辑照跑，见 setBattleSceneVisible 注释）
-        setBattleSceneVisible(false);
       }
     },
   });
   battle3dOverlay = ov;
   // [QA 只读调试口 v6] 独立验证用：暴露 overlay 实例（纯读取，不参与渲染逻辑）。
   // 供 _v6_dot_lattice_probe.cjs 逐档隔离光点层/标记层、读 drawRange/相机距离做像素级证据。
-  // （destroy 时置 null，见 destroyBattle3dOverlay）
+  // （销毁时置 null，见 dispose3dOverlay）
   (window as any).__b3dOverlay = ov;
   // 降级兜底：8 秒内 3D 没就绪 → 销毁 overlay，回退 2D 渲染
   battle3dReadyTimer = window.setTimeout(() => {
     if (battle3dOverlay === ov && is3dBattle.value) {
       console.warn('[App.vue] 3D overlay not ready in 8s, falling back to 2D');
-      destroyBattle3dOverlay();
+      fallbackTo2D();
     }
   }, 8000);
 };
 
-// mapStyle 切到 3d 时挂 overlay；离开 game / 切回其他模式时销毁
+// 进入 / 离开战斗时挂 / 卸 3D 覆盖层
 watch(is3dBattle, (on) => {
   if (on) {
-    // 等 mountGame 完成（watch(gameState) 里 Phaser 挂载有 100ms 重试）
+    // ⚡ 先隐藏 2D 画布（消除棋盘闪现），再等 mountGame 完成
+    //   （watch(gameState) 里 Phaser 挂载有 100ms 重试）
+    enter3dMode();
     setTimeout(() => tryCreate3dOverlay(1), 300);
   } else {
-    destroyBattle3dOverlay();
+    fallbackTo2D();
   }
 });
 
@@ -412,7 +460,7 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeyDown);
   window.removeEventListener('resize', handleResize);
-  destroyBattle3dOverlay();
+  fallbackTo2D();
 });
 
 // 监听设置变化 → 同步到音乐播放器
@@ -465,34 +513,6 @@ watch(gameState, (newState, oldState) => {
 
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
-
-.crt-monitor-border {
-  position: fixed;
-  top: 10px; left: 10px; right: 10px; bottom: 10px;
-  border: 1.5px solid rgba(0, 204, 102, 0.35);
-  pointer-events: none;
-  z-index: 1001;
-}
-.crt-monitor-border::before,
-.crt-monitor-border::after {
-  content: '';
-  position: absolute;
-  width: 22px; height: 22px;
-  border-color: rgba(0, 204, 102, 0.6);
-  border-style: solid;
-  border-width: 0;
-}
-.crt-monitor-border::before {
-  top: -1px; left: -1px;
-  border-top-width: 2.5px; border-left-width: 2.5px;
-}
-.crt-monitor-border::after {
-  bottom: -1px; right: -1px;
-  border-bottom-width: 2.5px; border-right-width: 2.5px;
-}
-.crt-corner { position: absolute; width: 22px; height: 22px; border: 0 solid rgba(0,204,102,0.6); }
-.crt-corner.tr { top: -1px; right: -1px; border-top-width: 2.5px; border-right-width: 2.5px; }
-.crt-corner.bl { bottom: -1px; left: -1px; border-bottom-width: 2.5px; border-left-width: 2.5px; }
 
 *, *::before, *::after { box-sizing: border-box; font-family: 'Inter', sans-serif; }
 
@@ -664,7 +684,6 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
    逻辑引擎（BattleScene）照常运行，仅隐藏 2D 呈现；GameHeader 读 store 数据不受影响 */
 body.battle3d-mode #phaser-canvas-container canvas { visibility: hidden; }
 body.battle3d-mode .fleet-ui-layer { display: none; }
-body.battle3d-mode .crt-monitor-border { display: none; }
 
 .map-legend {
   position: absolute; bottom: 80px; left: 20px; top: auto; display: flex; flex-direction: column; gap: 8px;
@@ -673,6 +692,25 @@ body.battle3d-mode .crt-monitor-border { display: none; }
 .legend-title { font-size: 12px; font-weight: 800; color: var(--color-text-primary); border-bottom: 1px solid var(--overlay-border); padding-bottom: 6px; margin-bottom: 4px; }
 .legend-item { font-size: 11px; color: var(--color-text-secondary); display: flex; align-items: center; gap: 8px; }
 .legend-item .icon { font-family: monospace; font-size: 14px; font-weight: bold; width: 16px; text-align: center; }
+
+/* [v36c] 空域地形图例（战场左下角）。独立命名，避免与战略地图的 .map-legend 耦合 */
+.terrain-legend {
+  position: absolute; bottom: 78px; left: 20px; z-index: 10;
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 10px 12px; min-width: 216px;
+  background: rgba(10, 16, 28, 0.82); backdrop-filter: blur(8px);
+  border: 1px solid rgba(34, 211, 238, 0.28); border-radius: 10px;
+  pointer-events: auto;
+}
+.terrain-legend .tl-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer; }
+.terrain-legend .tl-title { font-size: 11px; font-weight: 900; letter-spacing: 1px; color: #22d3ee; }
+.terrain-legend .tl-toggle { font-size: 12px; font-weight: 900; color: var(--color-text-secondary); width: 12px; text-align: center; }
+.terrain-legend .tl-row { display: flex; align-items: center; gap: 7px; font-size: 10px; line-height: 1.3; }
+.terrain-legend .tl-dot { width: 9px; height: 9px; border-radius: 2px; flex: 0 0 auto; }
+.terrain-legend .tl-name { color: var(--color-text-primary); font-weight: 800; width: 62px; flex: 0 0 auto; }
+.terrain-legend .tl-desc { color: var(--color-text-secondary); font-weight: 600; }
+.terrain-legend .tl-off { font-size: 10px; color: var(--color-warning); font-weight: 800; }
+.terrain-legend.tl-collapsed { min-width: 0; }
 
 .ui-footer { 
   position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
