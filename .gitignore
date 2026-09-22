@@ -28,6 +28,7 @@ Thumbs.db
 
 # --- WorkBuddy project metadata (not game source) ---
 .workbuddy/
+.worktrees/
 
 # --- Agent 会话草稿与 QA 截图（2026-09-18 清理后追加，防复发）---
 /_*
