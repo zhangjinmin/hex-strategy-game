@@ -59,6 +59,8 @@ import {
     type AdmiralDoctrine, type RetreatTier,
 } from '../retreatDoctrine';
 import { aggression, supplyDecision, turnDiscipline, approachLateralOffset } from '../combatDoctrine';
+import { advanceManeuver, maneuverOrder, updateContact, type ContactState, type ManeuverState } from '../combatControl';
+import { escortDestination } from '../tacticalTasks';
 // [v31-C] 分舰队编成 / 战法（纯计算）—— **迂回 · 包抄 · 诱饵 · 后勤战的共同抽象**：
 //   四项玩法都是"多路协同"，而多路协同的前提是"力量可分解"（见 docs/.../24-tactical-architecture-rebuild.md §2）
 import {
@@ -1062,7 +1064,7 @@ export class BattleScene extends Phaser.Scene {
                 role = 'assault';
                 const tgt = enemyFleets[0];
                 mission = buildMission('attack_fleet', {
-                    targetId: tgt.factionId,
+                    targetId: tgt.id,
                     targetName: this.factionMap.get(tgt.factionId)?.name || '敌舰队',
                 });
             } else if (isLast && (personality === 'cautious' || diff === 'easy')) {
@@ -1647,13 +1649,8 @@ export class BattleScene extends Phaser.Scene {
             }
 
             fl.units.forEach((u: any) => {
-                let inSupply = inSupplyByDistance;
-
-
-                if (inSupply) {
+                if (inSupplyByDistance) {
                     u.supply = Math.min(100, (u.supply !== undefined ? u.supply : 100) + 5);
-                    // 补给充足 → 士气回升
-                    fl.morale = Math.min(100, (fl.morale === undefined ? 100 : fl.morale) + 1);
                 } else {
                     // 动态后勤流失率：困难模式敌人自带补给压缩技术(流失极慢)，简单模式流失极快
                     let drainRate = 2;
@@ -1662,22 +1659,26 @@ export class BattleScene extends Phaser.Scene {
                     }
 
                     u.supply = Math.max(0, (u.supply !== undefined ? u.supply : 100) - drainRate);
-
-                    // ===== 断粮三段式惩罚（用户要求：先掉士气，再掉生命）=====
-                    if (fl.morale === undefined) fl.morale = 100;
-                    // v29：士气衰减随补给度**连续加剧**（30% 附近 −1.0/帧，归零时 −2.0/帧），
-                    //   取代旧的恒定 −1.5 —— 体现"越打越弱"而非"过线即恒定掉士气"。
-                    const moraleDrain = moraleDrainPerTick(u.supply);
-                    if (moraleDrain > 0) {
-                        fl.morale = Math.max(0, fl.morale - moraleDrain);
-                    }
-                    // 阶段2：士气归零 且 补给仍为 0 → 才开始扣结构生命
-                    //        （士气未归零时只表现为战力/机动衰减，见伤害与速度计算处）
-                    if (u.supply <= 0 && fl.morale <= 0) {
-                        u.hp -= u.maxHp * 0.02;
-                    }
                 }
             });
+
+            // 后勤损耗属于舰队状态，不能随显示舰艇数量重复结算。先更新全舰补给，
+            // 再按舰队平均补给只更新一次士气；士气归零后才允许断粮舰承受结构损失。
+            const activeUnits = fl.units.filter((u: any) => u.hp > 0);
+            const averageSupply = activeUnits.length > 0
+                ? activeUnits.reduce((sum: number, u: any) => sum + (u.supply ?? 100), 0) / activeUnits.length
+                : 100;
+            if (fl.morale === undefined) fl.morale = 100;
+            if (inSupplyByDistance) {
+                fl.morale = Math.min(100, fl.morale + 1);
+            } else {
+                fl.morale = Math.max(0, fl.morale - moraleDrainPerTick(averageSupply));
+                if (fl.morale <= 0) {
+                    activeUnits.forEach((u: any) => {
+                        if (u.supply <= 0) u.hp -= u.maxHp * 0.02;
+                    });
+                }
+            }
 
             if (currentTile && currentTile.ownerId !== 0 && currentTile.ownerId !== fac.id 
                 && currentTile.type !== 'planet' && currentTile.type !== 'castle'
@@ -2388,7 +2389,7 @@ export class BattleScene extends Phaser.Scene {
         const dist = (x: number, y: number) => Phaser.Math.Distance.Between(fleet.x, fleet.y, x, y);
 
         if (m.type === 'attack_fleet') {
-            const tgt = this.globalFleets.find((fl: any) => fl.id === m.targetId || fl.factionId === m.targetId);
+            const tgt = this.globalFleets.find((fl: any) => fl.id === m.targetId);
             if (!tgt || !tgt.units || tgt.units.length === 0) { clearMission(); return; } // 目标已歼灭 → 任务完成
             if (!this.isStanceLocked(fleet)) fleet.stance = 'siege';   // [V18-B · B2] L2 写前检查 L1 锁
             fleet._missionDest = { x: tgt.x, y: tgt.y };
@@ -2416,11 +2417,16 @@ export class BattleScene extends Phaser.Scene {
             fleet._missionDest = { x: hx, y: hy };
             if (!this.isStanceLocked(fleet)) fleet.stance = dist(hx, hy) < 120 ? 'defend' : 'search'; // [V18-B · B2] L2 写前检查 L1 锁；到位转驻守，未到先机动
         } else if (m.type === 'support_fleet') {
-            const tgt = this.globalFleets.find((fl: any) => fl.id === m.targetId || fl.factionId === m.targetId);
+            const tgt = this.globalFleets.find((fl: any) => fl.id === m.targetId);
             if (!tgt || !tgt.units || tgt.units.length === 0) { clearMission(); return; }
-            fleet._missionDest = { x: tgt.x, y: tgt.y };
-            // 协同：远离时靠拢，到位后与友军同姿态作战
-            if (!this.isStanceLocked(fleet)) fleet.stance = dist(tgt.x, tgt.y) > 350 ? 'search' : (tgt.stance || 'search'); // [V18-B · B2] L2 写前检查 L1 锁
+            const escort = escortDestination(
+                { x: tgt.x, y: tgt.y, facing: tgt.facingSmooth ?? tgt.facingAngle ?? 0 },
+                fleet,
+                Math.max(180, this.getIdealEngageDist(fleet) * 0.6),
+            );
+            fleet._missionDest = escort;
+            // 协同舰队驻在友军后方，既能掩护撤离也不会与主队重叠。
+            if (!this.isStanceLocked(fleet)) fleet.stance = dist(escort.x, escort.y) > 100 ? 'search' : 'defend'; // [V18-B · B2] L2 写前检查 L1 锁
         } else if (m.type === 'retreat_supply') {
             if (!this.isStanceLocked(fleet)) fleet.stance = 'fallback'; // [V18-B · B2] L2 写前检查 L1 锁；既有撤退状态机：自动找补给点、驻留重组
             const supply = this.fleetSupplyPct(fleet);
@@ -4829,8 +4835,8 @@ export class BattleScene extends Phaser.Scene {
                 } else if (nearAux) {
                     // [v41] 双向会合（**仅当船还远**）：舰队转向运输舰，缩短断粮暴露时间。
                     //   船已在附近时走 S0-船近停等（决策层），寻路侧配合 = 不进本分支，原地停船。
-                    fleet._regrouping = false;
-                    fleetTargetX = nearAux.x; fleetTargetY = nearAux.y;
+                    fleet._regrouping = true;
+                    fleetTargetX = fleet.x; fleetTargetY = fleet.y;
                 } else if (nearestSupply && !supplyChainLive) {
                     fleetTargetX = nearestSupply.x; fleetTargetY = nearestSupply.y;
                     // 已到达补给点 → 标记重组状态，等待恢复
@@ -5069,6 +5075,7 @@ export class BattleScene extends Phaser.Scene {
                     prevAction: (fleet as any)._supplyAction,
                     aggression: (_facD as any)._aggression ?? 0.5,
                     holdingGround: fleet.stance === 'defend' || fleet.stance === 'siege',
+                    engaged: !!(closestEnemyFleet && minFleetDist < 250),
                 });
                 (fleet as any)._supplyAction = _sup.action;
                 (fleet as any)._supplyRule = _sup.rule;
@@ -5263,6 +5270,31 @@ export class BattleScene extends Phaser.Scene {
                 fleet.facingAngle = fAngle;
             }
 
+            // 战术控制器是大机动唯一入口：接战锁定时只能倒退脱离；脱战后才会
+            // 依次制动、原地转舰首、重编队、恢复巡航。旧逻辑仍负责小范围索敌和火控。
+            const prevContact: ContactState = (fleet as any)._combatContact ?? {
+                engaged: false, releaseAfter: 2, secondsSinceContact: 2,
+            };
+            const contact = updateContact(prevContact, isEngaging, Math.min(delta, 100) / 1000 * dt);
+            (fleet as any)._combatContact = contact;
+            const prevControl: ManeuverState = (fleet as any)._combatControl ?? { phase: 'cruise', phaseSeconds: 0 };
+            const headingError = Math.abs(Math.atan2(
+                Math.sin(fAngle - (fleet.facingSmooth ?? fAngle)),
+                Math.cos(fAngle - (fleet.facingSmooth ?? fAngle)),
+            ));
+            const reformed = prevControl.phase === 'reform' && prevControl.phaseSeconds >= 1.25;
+            const control = advanceManeuver(prevControl, {
+                engaged: contact.engaged,
+                retreatRequested: isRetreating || fleet.stance === 'fallback',
+                headingError,
+                stopped: Math.hypot(fleet.vx ?? 0, fleet.vy ?? 0) < 0.02,
+                reformed,
+            }, Math.min(delta, 100) / 1000 * dt);
+            const controlOrder = maneuverOrder(control.phase);
+            (fleet as any)._combatControl = control;
+            (fleet as any)._uturn = controlOrder.rotateInPlace;
+            (fleet as any)._uturnJustEnded = prevControl.phase === 'turn' && control.phase === 'reform';
+
             // [R10-B1] FIX-3 限速航向角：把"本帧瞬时确定的方向"平滑为有限角速度。两个同速率平滑器：
             //   · `fleet.heading`      = 平滑后的**位移航向**（moveAngle）⇒ 驱动位移方向 ⇒ 舰队走弧线，
             //     不再是"位移瞬变 + 舰首慢追"的错位（R1 复盘的"横移"主因）；
@@ -5310,16 +5342,8 @@ export class BattleScene extends Phaser.Scene {
                 //   也删除 line/circle/square 豁免（双标：被豁免的阵型继续走弧线画圆）。
                 //   阵面重排改由下方 formFacing 三态管理器统一执行：协议期冻结、**退出帧一步阶跃**、
                 //   每舰限速直线落位 = "掉头 → 列队重组成新阵型"。
-                {
-                    const dGoal = Math.abs(Math.atan2(Math.sin(fAngle - fleet.facingSmooth), Math.cos(fAngle - fleet.facingSmooth)));
-                    // [v41e] **拖刀例外**保留：撤退+接敌时舰首朝敌 / 位移朝补给是既有设计，协议会破坏它。
-                    const _noProto = isRetreating === true && isEngaging === true;
-                    const ut = (fleet as any)._uturn === true;
-                    const nu = !_noProto && (ut ? dGoal > FACING_TURN.EXIT_RAD : dGoal > FACING_TURN.ENTER_RAD);
-                    (fleet as any)._uturn = nu;
-                    // 下降沿（本帧协议结束）：formFacing 管理器据此做唯一一次阵面阶跃
-                    (fleet as any)._uturnJustEnded = ut && !nu;
-                }
+                // `_uturn` 由上方 combatControl 的 turn 阶段写入。不可在这里按单帧
+                // 航向差重新判定，否则脱离接触中的舰队会绕过接战锁而重新获得掉头许可。
                 const dF = Math.atan2(Math.sin(fAngle - fleet.facingSmooth), Math.cos(fAngle - fleet.facingSmooth));
                 if ((fleet as any)._uturn === true) {
                     // 协议期：快档、无惯量、formFacing 同步（阵位/托盘/位移一个真源 ⇒ 整阵绕锚点刚性转）
@@ -5480,6 +5504,11 @@ export class BattleScene extends Phaser.Scene {
             } else if (fleet.stance !== 'defend') {
                 rawVX = (Math.cos(thrustDir) * fleetBaseSpeed * terrainSpeedMul + repulseX) * dt * congestionSlowdown;
                 rawVY = (Math.sin(thrustDir) * fleetBaseSpeed * terrainSpeedMul + repulseY) * dt * congestionSlowdown;
+            }
+
+            if (controlOrder.motion === 'hold') {
+                rawVX = 0;
+                rawVY = 0;
             }
 
             // 【待改1】惯性/限速模型：不再直接位移，而是让当前速度平滑逼近"期望位移"，

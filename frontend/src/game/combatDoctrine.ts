@@ -133,6 +133,8 @@ export interface SupplySituation {
   aggression: number;
   /** 阵地命令（驻守/攻坚 ⇒ 不许擅自脱离） */
   holdingGround: boolean;
+  /** 正在实际火力接触中；低补给不得直接覆盖接战/脱离控制。 */
+  engaged?: boolean;
 }
 
 export interface SupplyOrder {
@@ -156,9 +158,10 @@ export interface SupplyOrder {
  *  | 5 | 补给 < 75 且 运输舰在途 | hold | 原地接战等补给，不追也不逃 |
  *  | 6 | 补给 < 75 且 敌正转向脱离 且 大胆 | **pursue** | 敌露背后，机不可失 |
  *  | 7 | 补给 < 75 且 我方占优 且 极大胆(≥0.75) | **pursue** | 优势时不给敌人喘息 |
- *  | 8 | 补给 < 75 且 谨慎(≤0.35) | return | 谨慎提督见黄就回 |
- *  | 9 | 补给 < 75 且 仍在补给网内 | hold | 网内补给可持续，不必回港 |
- *  | 10| 补给 < 75（已脱离补给网） | return | 无锚定、无增援 ⇒ 回 |
+ *  | 8 | 补给 < 75 且仍在交战 | hold | 后勤只能请求撤离，不能现场掉头 |
+ *  | 9 | 补给 < 75 且 谨慎(≤0.35) | return | 脱战后的谨慎提督返航 |
+ *  | 10| 补给 < 75 且仍在补给网内 | hold | 网内补给可持续，不必回港 |
+ *  | 11| 补给 < 75（已脱离补给网） | return | 脱战后无锚定、无增援 ⇒ 回 |
  *  | 11| 其余（补给充足） | hold | 正常作战 |
  */
 export function supplyDecision(s: SupplySituation): SupplyOrder {
@@ -209,13 +212,16 @@ function decideSupplyRaw(s: SupplySituation): SupplyOrder {
   if (s.ourAdvantage && aggr >= 0.75) {
     return { action: 'pursue', rule: 'S7-压倒优势', reason: '优势时不给敌人喘息' };
   }
+  if (s.engaged) {
+    return { action: 'hold', rule: 'S8-交战保持', reason: '补给转黄但仍在交战——保持接敌，由脱离控制器决定何时撤离' };
+  }
   if (aggr <= 0.35) {
-    return { action: 'return', rule: 'S8-谨慎提督', reason: '补给转黄且性格谨慎 ⇒ 返航' };
+    return { action: 'return', rule: 'S9-谨慎提督', reason: '补给转黄且已脱战、性格谨慎 ⇒ 返航' };
   }
   if (s.inSupplyChain) {
-    return { action: 'hold', rule: 'S9-仍在补给网', reason: '补给网内可持续回补，不必回港' };
+    return { action: 'hold', rule: 'S10-仍在补给网', reason: '补给网内可持续回补，不必回港' };
   }
-  return { action: 'return', rule: 'S10-脱离补给网', reason: '补给转黄且已脱离补给网、无增援 ⇒ 回' };
+  return { action: 'return', rule: 'S11-脱离补给网', reason: '补给转黄且已脱战、脱离补给网、无增援 ⇒ 回' };
 }
 
 // ══════════════════════════════════════════════════════════════════════
