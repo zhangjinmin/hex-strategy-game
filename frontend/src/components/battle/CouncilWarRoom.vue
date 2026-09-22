@@ -1,8 +1,9 @@
 <template>
-  <div class="war-room" v-if="visible" @mouseenter="setCountdownPaused(true)" @mouseleave="setCountdownPaused(false)">
+  <div class="war-room" v-if="visible" :class="{ embedded: props.embedded }"
+       @mouseenter="setCountdownPaused(true)" @mouseleave="setCountdownPaused(false)">
     <div class="wr-header">
       <span class="wr-title">◤ 军议 · 作战会议 ◢</span>
-      <button class="wr-close" @click="setWarRoomOpen(false)">×</button>
+      <button v-if="!props.embedded" class="wr-close" @click="setWarRoomOpen(false)">×</button>
     </div>
 
     <!-- 总指挥确认卡（V18-A · P1）：部署阶段可[确认]/[换人]（本场一次性覆盖，不进存档） -->
@@ -66,6 +67,10 @@ import { MISSION_TYPES, buildMission, canReassignMission, type MissionType, type
 const store = useGameStore();
 const missionTypes = MISSION_TYPES;
 
+/** [G4] 嵌入模式：由「战前军议全屏层」内嵌渲染 —— 去掉侧栏定位与关闭按钮，可见性交给父层。
+ *  这样任务指派的实现只有一份（本组件），不会与全屏层各写一套后互相漂移。 */
+const props = defineProps<{ embedded?: boolean }>();
+
 // 本 store 体量过大，pinia setup-store 的 ref 解包类型推断在部分属性上失效（类型层面仍显示 Ref），
 // 沿用 App.vue 的防御式读取口径；运行时 pinia 恒已解包。
 const unwrap = <T>(x: any): T => (x && typeof x === 'object' && 'value' in x ? x.value : x) as T;
@@ -75,7 +80,9 @@ const deployPhase = computed<boolean>(() => unwrap<boolean>(store.battleDeployPh
 const supremeId = computed<number | null>(() => unwrap<number | null>(store.supremeCommanderId));
 // [2026-09-20] 原先还要求 `tacticalState.mapStyle === 'command'`；该字段已随
 //   「星域棋盘 / 全息战术投影 / 3D 战场」三模式一起删除 —— 现在战斗只有指挥制。
-const visible = computed(() => warRoomOpen.value);
+// [G4] 独立模式在**部署期不再显示**：部署期的任务指派已统一由「战前军议全屏层」（内嵌本组件）承担，
+//   两处同时出现等于同一功能两个入口。战中仍按 warRoomOpen 显示侧栏。
+const visible = computed(() => (props.embedded ? true : (warRoomOpen.value && !deployPhase.value)));
 const setWarRoomOpen = (v: boolean) => { (store as any).warRoomOpen = v; };
 // [#74 · A2] 部署倒计时（单一数据源 store.deployCountdownSec）：悬停本面板时暂停计时
 const setCountdownPaused = (v: boolean) => { (store as any).deployCountdownPaused = v; };
@@ -191,6 +198,20 @@ const issue = (fac: any) => {
   border-radius: 8px; padding: 10px 12px; color: #e2e8f0;
   font-size: 12px; backdrop-filter: blur(4px);
 }
+/* [G4] 嵌入模式（战前军议全屏层内）：脱离侧栏定位，撑满父容器、去掉自身底板 */
+.war-room.embedded {
+  position: static; right: auto; top: auto; width: auto; max-width: none;
+  max-height: none; overflow: visible; background: none; border: none;
+  backdrop-filter: none; padding: 0; margin: 0;
+}
+/* 嵌入后舰队卡片横向铺开（战场上多支舰队时一屏看全，不必纵向滚动） */
+.war-room.embedded .wr-fleets {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 6px;
+}
+.war-room.embedded .wr-fleet { margin-bottom: 0; }
+/* 嵌入模式：外层的「战前军议」已给出分区标题与开战倒计时 ⇒ 去掉重复的表头与提示行 */
+.war-room.embedded .wr-header { display: none; }
+.war-room.embedded .wr-hint { display: none; }
 .wr-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .wr-title { font-weight: 900; color: #22d3ee; font-size: 13px; letter-spacing: 1px; }
 .wr-close {

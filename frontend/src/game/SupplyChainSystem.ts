@@ -260,11 +260,14 @@ export function moveAuxShips(auxShips: AuxShip[], dt: number): void {
     while (diff < -Math.PI) diff += Math.PI * 2;
     const MAX_TURN = 0.12 * dt;   // 每帧最大转向弧度
     aux.heading += Math.max(-MAX_TURN, Math.min(MAX_TURN, diff));
-    // [v21 JIT-1] 单帧位移不越过目标：旧式固定步长在 d 略大于死区时会越过目标点 ⇒ 下一帧
-    //   方向 180° 反相（掉头）⇒ 逐帧往复。`min(步长, d)` 保证单调趋近、无越冲折返。
-    const step = Math.min(AUX_SPEED * dt, d);
-    aux.x += (dx / d) * step;
-    aux.y += (dy / d) * step;
+    // 位置必须由舰首航向消费，而不是由目标方向直接消费。此前 heading 已限速，
+    // 但 x/y 仍按 dx/dy 直线推进，目标在侧面时就会出现“舰身朝 A、横向滑向 B”。
+    // 对齐不足时先转向；对齐后只沿当前舰首推进，故航迹和船体方向始终一致。
+    const alignment = Math.max(0, Math.cos(diff));
+    if (alignment <= 0.01) return;
+    const step = Math.min(AUX_SPEED * dt * alignment, d);
+    aux.x += Math.cos(aux.heading) * step;
+    aux.y += Math.sin(aux.heading) * step;
   });
 }
 

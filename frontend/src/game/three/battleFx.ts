@@ -184,6 +184,12 @@ export interface LaserEntry {
   /** [v13 ①] 由单 Mesh 放宽为 Object3D：普通激光为「细核+柔晕」双层 Group。 */
   mesh: THREE.Object3D;
   life: number; max: number;
+  /** [v56 性能] true = 本条目由 buildLaserEntry 用**共享单位几何 + 材质池**构建，
+   *  disposeLaserEntry 时回收进池、不得按"每束自建几何/材质"的旧口径释放。
+   *  未打标（如雷神之锤光束的自定义几何条目）保持旧释放语义。 */
+  pooled?: boolean;
+  /** [v56 性能] 池化条目的双层材质引用（免 traverse 查找）；普通激光恒为 [coreMat, haloMat]。 */
+  mats?: THREE.MeshBasicMaterial[];
 }
 
 export interface HitEntry { sprite: THREE.Sprite; life: number; max: number }
@@ -278,6 +284,86 @@ void main() {
 /** 护盾单次涟漪时长（秒） */
 export const SHIELD_DUR = 0.85;
 
+// ══════════════════════════════════════════════════════════════════════════════
+// [v56 性能] 齐射热点去 churn —— 共享几何 / 贴图缓存 / 对象池 / 暂存向量
+//
+// 实测（_probe_v56_perf.mjs，SwiftShader 同机前后对比口径）：齐射单波 120 激光 + 60 命中
+// 的逐发构建 ≈ 27ms（每发 2 个 CylinderGeometry + 2 材质 + 命中闪光每发一次 canvas→GPU
+// 贴图上传），过期回收帧再尖峰 ≈ 98ms —— 这就是"双方齐射帧率爆降"的根因。
+// 现在：激光/导弹几何 = 单位尺寸单例 + mesh.scale 定长定粗（与旧几何逐点等价）；
+// 命中闪光贴图按颜色缓存（阵营色就几种）；条目对象 + 材质进池复用；热点路径零 new/clone。
+// ══════════════════════════════════════════════════════════════════════════════
+
+/** 单位圆柱（半径 1、高 1、5 段、轴 = Y）：激光 core/halo 共用，mesh.scale = (半径, 长, 半径) */
+let _unitBeamGeo: THREE.BufferGeometry | null = null;
+function unitBeamGeo(): THREE.BufferGeometry {
+  if (!_unitBeamGeo) _unitBeamGeo = new THREE.CylinderGeometry(1, 1, 1, 5);
+  return _unitBeamGeo;
+}
+
+/** 导弹三件套单位几何（齐射共享 → 全局单例；尖端比 7:12 = 0.0035:0.006 固定不变） */
+let _missBodyGeo: THREE.BufferGeometry | null = null;
+function missBodyGeo(): THREE.BufferGeometry {
+  if (!_missBodyGeo) {
+    const g = new THREE.CylinderGeometry(1, 7 / 12, 1, 6);
+    g.rotateX(Math.PI / 2);
+    g.translate(0, 0, 0.5);
+    _missBodyGeo = g;
+  }
+  return _missBodyGeo;
+}
+let _missEngineGeo: THREE.BufferGeometry | null = null;
+function missEngineGeo(): THREE.BufferGeometry {
+  if (!_missEngineGeo) _missEngineGeo = new THREE.SphereGeometry(1, 8, 6);
+  return _missEngineGeo;
+}
+let _missTrailGeo: THREE.BufferGeometry | null = null;
+function missTrailGeo(): THREE.BufferGeometry {
+  if (!_missTrailGeo) {
+    const g = new THREE.CylinderGeometry(0.35, 1, 1, 8, 1, true);
+    g.rotateX(Math.PI / 2);
+    g.translate(0, 0, 0.5);
+    _missTrailGeo = g;
+  }
+  return _missTrailGeo;
+}
+
+/** 命中闪光贴图按颜色缓存（canvas→GPU 上传每色只做一次） */
+const hitTexCache = new Map<number, THREE.CanvasTexture>();
+function hitTexOf(color: number): THREE.CanvasTexture {
+  let tex = hitTexCache.get(color);
+  if (tex) return tex;
+  const cv = document.createElement('canvas');
+  cv.width = 32; cv.height = 32;
+  const ctx = cv.getContext('2d')!;
+  const grad = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.35, `rgba(${(color >> 16) & 255},${(color >> 8) & 255},${color & 255},0.9)`);
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 32, 32);
+  tex = new THREE.CanvasTexture(cv);
+  hitTexCache.set(color, tex);
+  return tex;
+}
+
+/** 条目对象池（激光 / 命中闪光 / 导弹）。池满直接走释放分支，不会无界增长。 */
+const POOL_CAP = 384;
+const laserFree: LaserEntry[] = [];
+const hitFree: HitEntry[] = [];
+const missileFree: MissileEntry[] = [];
+
+/** [v56 性能] 喷口光斑几何缓存（键 = 全部几何输入参数）：同型舰共享一份，
+ *  消灭"编队实体化/换档迁移"时逐舰重建两层光斑几何的尖峰（近景卡顿源之一）。
+ *  命中的几何打 `__b3dShared`（disposeShipGroup 见此标记跳过释放）。 */
+const enginePortGeoCache = new Map<string, THREE.BufferGeometry>();
+
+/** 热点路径暂存向量（模块内单线程 rAF 使用，禁止跨帧持有） */
+const _upY = new THREE.Vector3(0, 1, 0);
+const _fwdZ = new THREE.Vector3(0, 0, -1);
+const _v1 = new THREE.Vector3();
+const _v2 = new THREE.Vector3();
+
 export const easeOutBack = (x: number): number => {
   const c1 = 1.70158, c3 = c1 + 1;
   return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2);
@@ -314,7 +400,8 @@ export function shieldFire(
   s: ShieldEntry, hitPoint: THREE.Vector3, incomingDir: THREE.Vector3,
   shipLen: number, color: number, hexR: number,
 ): void {
-  const outward = incomingDir.clone().negate().normalize();
+  // [v56 性能] 暂存向量取代逐次 clone/new（齐射期受击密集，原实现每次 2 个临时 Vector3）
+  const outward = _v1.copy(incomingDir).negate().normalize();
   // v6.4：系数整体收紧（1.15/0.35/1.55 → 0.85/0.28/1.15）——贴舰皮薄罩，护盾只包住舰体
   const L = Math.max(shipLen, hexR * 0.5);
   const R1 = L * 0.85;
@@ -323,7 +410,7 @@ export function shieldFire(
   s.R0 = L * 0.28; s.R1 = R1; s.R2 = L * 1.15;
   s.mesh.visible = true;
   s.mesh.position.copy(hitPoint).addScaledVector(outward, -s.R0 * 0.25);
-  s.mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), outward);
+  s.mesh.quaternion.setFromUnitVectors(_upY, outward);
   s.mesh.scale.setScalar(s.R0);
   // v6.4：去掉 wireGain 提亮——阵营原色本身就够辨识，提亮是"太深太艳"的主因之一；
   // 再压 0.85 倍让盾色整体淡一档
@@ -403,51 +490,79 @@ export function buildDashedBeamGeo(len: number, coreR: number, hexR: number): { 
  *  ⚠ 分段只在**几何**里做（N 个短柱 merge 成 1 个 BufferGeometry，整组再旋转到射向）
  *   ⇒ draw call 与旧实现**逐位相同**（仍是 core + halo 两个 Mesh）。
  *
+ * [v56 性能] 齐射期逐发自建几何/材质 = 帧率爆降根因 ⇒ 改为**单位圆柱单例 + mesh.scale**
+ *   （scale = (半径, 长, 半径)，与旧 CylinderGeometry(半径,半径,len,5) 顶点逐位等价）
+ *   + 条目/材质对象池。输出形态与 v24「连续直线」完全一致。
+ *
  * @returns 未加入 scene 的条目；长度 < 1 时返回 null（与旧实现同样的早退）
  */
 export function buildLaserEntry(
   from: THREE.Vector3, to: THREE.Vector3, color: number, hexR: number, power?: number,
 ): LaserEntry | null {
-  const dir = new THREE.Vector3().subVectors(to, from);
+  const dir = _v2.subVectors(to, from);
   const len = dir.length();
   if (len < 1) return null;
   const heavy = power !== undefined && power >= 2;
   const coreR = (heavy ? 0.004 : 0.005) * hexR;
   // [v24 激光回退] 用户复核后判定"断续读起来像虚线、不如原来" ⇒ **改回连续直线**（恢复 v13 形态）。
-  //   这里的"连续"= 单段柱体、中心在原点（Group 再整体旋转到射向），与 v13 逐位同构。
-  //   ⚠ 断续实现 `buildDashedBeamGeo` 仍在本文导出保留（不删），若将来想再切回，把下面两行换成它返回的
-  //     `segGeo.core / segGeo.halo` 即可 —— 只是 buildLaserEntry 内部一处改动。
-  const coreGeo = new THREE.CylinderGeometry(coreR, coreR, len, 5);
-  const haloGeo = new THREE.CylinderGeometry(coreR * 2.6, coreR * 2.6, len, 5);
-  const group = new THREE.Group();
-  const coreMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
-  coreMat.userData.baseOpacity = 0.95;
-  group.add(new THREE.Mesh(coreGeo, coreMat));
-  const haloMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false });
-  haloMat.userData.baseOpacity = 0.22;
-  group.add(new THREE.Mesh(haloGeo, haloMat));
-  group.position.copy(from).addScaledVector(dir, 0.5);
-  group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
-  return { mesh: group, life: 0.3, max: 0.3 };
+  //   ⚠ 断续实现 `buildDashedBeamGeo` 仍在本文导出保留（不删），若将来想再切回，
+  //     把两层的几何换回它返回的 `segGeo.core / segGeo.halo`（并放弃 scale 定长）即可。
+  let L = laserFree.pop();
+  if (!L) {
+    const group = new THREE.Group();
+    const coreMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false });
+    coreMat.userData.baseOpacity = 0.95;
+    const haloMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false });
+    haloMat.userData.baseOpacity = 0.22;
+    group.add(new THREE.Mesh(unitBeamGeo(), coreMat));
+    group.add(new THREE.Mesh(unitBeamGeo(), haloMat));
+    L = { mesh: group, life: 0.3, max: 0.3, pooled: true, mats: [coreMat, haloMat] };
+  }
+  const mats = L.mats!;
+  const haloMat = mats[1];
+  haloMat.color.setHex(color);
+  mats[0].opacity = 0.95;
+  haloMat.opacity = 0.22;
+  const kids = (L.mesh as THREE.Group).children;
+  (kids[0] as THREE.Mesh).scale.set(coreR, len, coreR);
+  (kids[1] as THREE.Mesh).scale.set(coreR * 2.6, len, coreR * 2.6);
+  L.mesh.position.copy(from).addScaledVector(dir, 0.5);
+  L.mesh.quaternion.setFromUnitVectors(_upY, _v1.copy(dir).normalize());
+  L.life = 0.3; L.max = 0.3;
+  return L;
 }
 
-/** 激光淡出推进（Group 内逐 mesh 按 userData.baseOpacity 同步淡出）。
- *  返回 true 表示已过期 —— 调用方负责 remove + 逐 mesh dispose 几何/材质。 */
+/** 激光淡出推进（池化条目直接按 mats 淡出；非池化条目沿用逐 mesh 遍历）。
+ *  返回 true 表示已过期 —— 调用方负责 remove + disposeLaserEntry。 */
 export function laserStep(L: LaserEntry, dt: number): boolean {
   L.life -= dt;
   const fade = Math.max(0, L.life / L.max);
-  L.mesh.traverse((o) => {
-    const mesh = o as THREE.Mesh;
-    if (!(mesh as any).isMesh) return;
-    const mat = mesh.material as THREE.MeshBasicMaterial;
-    const base = (mat.userData && mat.userData.baseOpacity != null) ? mat.userData.baseOpacity : 0.95;
-    mat.opacity = fade * base;
-  });
+  if (L.mats) {
+    for (const mat of L.mats) {
+      const base = (mat.userData && mat.userData.baseOpacity != null) ? mat.userData.baseOpacity : 0.95;
+      mat.opacity = fade * base;
+    }
+  } else {
+    L.mesh.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      if (!(mesh as any).isMesh) return;
+      const mat = mesh.material as THREE.MeshBasicMaterial;
+      const base = (mat.userData && mat.userData.baseOpacity != null) ? mat.userData.baseOpacity : 0.95;
+      mat.opacity = fade * base;
+    });
+  }
   return L.life <= 0;
 }
 
-/** 逐 mesh 释放激光的几何 + 材质（无跨束共享：每条激光自建 geometry/material） */
+/** 激光回收。[v56 性能] 池化条目回池复用（共享几何/材质不释放）；
+ *  非池化条目（雷神之锤光束等自定义几何）维持逐 mesh 释放几何 + 材质的旧语义。 */
 export function disposeLaserEntry(L: LaserEntry): void {
+  if (L.pooled && L.mats) {
+    if (laserFree.length < POOL_CAP) { laserFree.push(L); return; }
+    // 池满兜底：只释放材质，单位圆柱是模块单例不可释放
+    for (const m of L.mats) m.dispose();
+    return;
+  }
   L.mesh.traverse((o) => {
     const mesh = o as THREE.Mesh;
     if (!(mesh as any).isMesh) return;
@@ -479,75 +594,87 @@ export function disposeLaserEntry(L: LaserEntry): void {
 export function buildMissileSalvo(
   from: THREE.Vector3, to: THREE.Vector3, color: number, count: number, hexR: number,
 ): MissileEntry[] {
-  const dir = new THREE.Vector3().subVectors(to, from);
+  const dir = _v2.subVectors(to, from);
   const len = dir.length();
   if (len < 1) return [];
-  const perp = new THREE.Vector3(-dir.z, 0, dir.x).normalize();
-  // 齐射共享几何（每帧该齐射新建；回收不 dispose，随场景 traverse 兜底）
+  const perp = _v1.set(-dir.z, 0, dir.x).normalize();
+  // [v56 性能] 三件套几何全部走单位尺寸单例（旧实现每组齐射新建 3 个几何）；
+  //   弹体 scale = (rTail, rTail, bodyLen) 与旧 CylinderGeometry(rTail, rTip, bodyLen,6)
+  //   逐位等价（尖端比固定 7:12）。材质/条目走对象池，齐射不再产生几何与贴图 churn。
   const bodyLen = hexR * 0.13;
-  const rTip = hexR * 0.0035;              // 弹尖半径
-  const rTail = hexR * 0.006;              // 弹尾半径
+  const rTail = hexR * 0.006;              // 弹尾半径（弹尖 = 7/12 × rTail）
   const trailLen = hexR * 0.42;
   const trailR = hexR * 0.004;
-  // 弹体：细锥，尖在 z=0、尾在 z=bodyLen（CylinderGeometry 经 rotateX(π/2) 后 top→+z、bottom→−z）
-  const bodyGeo = new THREE.CylinderGeometry(rTail, rTip, bodyLen, 6);
-  bodyGeo.rotateX(Math.PI / 2);
-  bodyGeo.translate(0, 0, bodyLen / 2);
-  const engineGeo = new THREE.SphereGeometry(1, 8, 6);
-  // 拖尾：单位锥（z∈[0,1]，近端 r=1、远端 r=0.35），mesh.scale 缩到 trailR / trailLen
-  const trailGeo = new THREE.CylinderGeometry(0.35, 1, 1, 8, 1, true);
-  trailGeo.rotateX(Math.PI / 2);
-  trailGeo.translate(0, 0, 0.5);
+  const norm = _v2.copy(dir).normalize();  // ⚠ dir 就是 _v2：先归一再逐枚使用（下面不再动 dir）
+  const nx = norm.x, ny = norm.y, nz = norm.z;
+  const px = perp.x, py = perp.y, pz = perp.z;
+  const dur = Math.min(1.6, Math.max(0.55, len / (hexR * 26)));   // v6.3：更快（26×hexR/s），光矢应一闪而至
   const out: MissileEntry[] = [];
   for (let m = 0; m < count; m++) {
-    const group = new THREE.Group();
-    const bodyMat = new THREE.MeshBasicMaterial({
-      color: 0xffffff, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false });
-    const body = new THREE.Mesh(bodyGeo, bodyMat);
-    group.add(body);
-    const flameMat = new THREE.MeshBasicMaterial({
-      color, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false });
-    const engine = new THREE.Mesh(engineGeo, flameMat);
+    let M = missileFree.pop();
+    if (!M) {
+      const group = new THREE.Group();
+      const bodyMat = new THREE.MeshBasicMaterial({
+        color: 0xffffff, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false });
+      const body = new THREE.Mesh(missBodyGeo(), bodyMat);
+      group.add(body);
+      const flameMat = new THREE.MeshBasicMaterial({
+        color: 0xffffff, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false });
+      const engine = new THREE.Mesh(missEngineGeo(), flameMat);
+      group.add(engine);
+      const trailMat = new THREE.ShaderMaterial({
+        uniforms: { uFade: { value: 0 }, uColor: { value: new THREE.Color(0xffffff) } },
+        vertexShader: [
+          'varying float vZ;',
+          'void main(){',
+          '  vZ = position.z;',                     // 原始几何 z∈[0,1]（scale 前）
+          '  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
+          '}',
+        ].join('\n'),
+        fragmentShader: [
+          'varying float vZ; uniform vec3 uColor; uniform float uFade;',
+          'void main(){',
+          '  float a = pow(1.0 - vZ, 1.5) * 0.38 * uFade;',
+          '  gl_FragColor = vec4(uColor, a);',
+          '}',
+        ].join('\n'),
+        transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
+      });
+      const trail = new THREE.Mesh(missTrailGeo(), trailMat);
+      group.add(trail);
+      M = {
+        mesh: group, flame: engine, bodyMat, flameMat, trailMat,
+        from: new THREE.Vector3(), to: new THREE.Vector3(),
+        t: 0, dur: 1, delay: 0, seed: 0,
+        perp: new THREE.Vector3(), color: 0xffffff, hitFlashDone: false,
+      };
+    }
+    const g = M.mesh;
+    const engine = M.flame;
     engine.position.z = bodyLen;
     engine.scale.setScalar(hexR * 0.006);
-    group.add(engine);
-    const trailMat = new THREE.ShaderMaterial({
-      uniforms: { uFade: { value: 0 }, uColor: { value: new THREE.Color(color) } },
-      vertexShader: [
-        'varying float vZ;',
-        'void main(){',
-        '  vZ = position.z;',                     // 原始几何 z∈[0,1]（scale 前）
-        '  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
-        '}',
-      ].join('\n'),
-      fragmentShader: [
-        'varying float vZ; uniform vec3 uColor; uniform float uFade;',
-        'void main(){',
-        '  float a = pow(1.0 - vZ, 1.5) * 0.38 * uFade;',
-        '  gl_FragColor = vec4(uColor, a);',
-        '}',
-      ].join('\n'),
-      transparent: true, blending: THREE.AdditiveBlending, depthWrite: false,
-    });
-    const trail = new THREE.Mesh(trailGeo, trailMat);
+    const trail = g.children[2] as THREE.Mesh;
     trail.position.z = bodyLen;
     trail.scale.set(trailR, trailR, trailLen);
-    group.add(trail);
+    M.bodyMat.color.setHex(0xffffff);
+    M.bodyMat.opacity = 0.8;
+    M.flameMat.color.setHex(color);
+    M.flameMat.opacity = 0.85;
+    M.trailMat.uniforms.uFade.value = 0;
+    (M.trailMat.uniforms.uColor.value as THREE.Color).setHex(color);
     // 出膛即定向：local -z → 飞行方向（弹尖朝前、拖尾在后）
-    group.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, -1), dir.clone().normalize());
-    group.visible = false;
-    out.push({
-      mesh: group, flame: engine, bodyMat, flameMat, trailMat,
-      from: from.clone().addScaledVector(perp, (m - count / 2 + 0.5) * hexR * 0.22),
-      to: to.clone(),
-      t: 0,
-      dur: Math.min(1.6, Math.max(0.55, len / (hexR * 26))),   // v6.3：更快（26×hexR/s），光矢应一闪而至
-      delay: m * 0.05,
-      seed: m * 2.5,                              // v13：确定性呼吸相位（不再用 Math.random）
-      perp: perp.clone(),
-      color,
-      hitFlashDone: false,
-    });
+    g.quaternion.setFromUnitVectors(_fwdZ, _v1.set(nx, ny, nz));
+    g.visible = false;
+    M.from.copy(from).addScaledVector(_v1.set(px, py, pz), (m - count / 2 + 0.5) * hexR * 0.22);
+    M.to.copy(to);
+    M.t = 0;
+    M.dur = dur;
+    M.delay = m * 0.05;
+    M.seed = m * 2.5;                              // v13：确定性呼吸相位（不再用 Math.random）
+    M.perp.set(px, py, pz);
+    M.color = color;
+    M.hitFlashDone = false;
+    out.push(M);
   }
   return out;
 }
@@ -566,8 +693,8 @@ export function missileStep(M: MissileEntry, dt: number, hexR: number): { hit: b
   M.mesh.visible = true;
   M.t += dt / M.dur;
   const p = Math.min(1, M.t);
-  const base = new THREE.Vector3().lerpVectors(M.from, M.to, p);
-  M.mesh.position.copy(base);
+  // [v56 性能] 暂存向量插值（原逐帧 new Vector3）
+  M.mesh.position.copy(_v1.lerpVectors(M.from, M.to, p));
   // v13：确定性呼吸（无 Math.random）+ 出膛淡入
   const el = M.t * M.dur;
   const fadeIn = Math.min(1, el / 0.07);
@@ -580,9 +707,12 @@ export function missileStep(M: MissileEntry, dt: number, hexR: number): { hit: b
   return { hit, done: p >= 1 };
 }
 
-/** 回收导弹：从场景移除 + 释放材质（几何为齐射共享，**不** dispose） */
+/** 回收导弹：从场景移除 + 回池复用（[v56 性能] 几何为单位单例、材质随条目进池，均不 dispose） */
 export function disposeMissileEntry(scene: THREE.Scene, M: MissileEntry): void {
   scene.remove(M.mesh);
+  M.mesh.visible = false;
+  if (missileFree.length < POOL_CAP) { missileFree.push(M); return; }
+  // 池满兜底：释放材质（几何是模块单例不可释放）
   M.mesh.traverse((o) => {
     const mesh = o as THREE.Mesh;
     if (!(mesh as any).isMesh) return;
@@ -594,26 +724,27 @@ export function disposeMissileEntry(scene: THREE.Scene, M: MissileEntry): void {
 // 命中小闪光
 // ══════════════════════════════════════════════════════════════════════════════
 
-/** 命中小闪光（Sprite 加法混合，0.25s）。返回未加入 scene 的条目。 */
+/** 命中小闪光（Sprite 加法混合，0.25s）。返回未加入 scene 的条目。
+ *  [v56 性能] 原实现每发新建 canvas + CanvasTexture（= 每次命中一次 GPU 贴图上传），
+ *  齐射期命中密集直接爆帧 ⇒ 贴图按颜色缓存、Sprite/材质进池复用。视觉逐位不变。 */
 export function buildHitEntry(at: THREE.Vector3, color: number, hexR: number): HitEntry {
   const size = hexR * 0.55;
-  const cv = document.createElement('canvas');
-  cv.width = 32; cv.height = 32;
-  const ctx = cv.getContext('2d')!;
-  const grad = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
-  grad.addColorStop(0, 'rgba(255,255,255,1)');
-  grad.addColorStop(0.35, `rgba(${(color >> 16) & 255},${(color >> 8) & 255},${color & 255},0.9)`);
-  grad.addColorStop(1, 'rgba(0,0,0,0)');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, 32, 32);
-  const tex = new THREE.CanvasTexture(cv);
-  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
-  sp.position.copy(at);
-  sp.scale.setScalar(size);
-  return { sprite: sp, life: 0.25, max: 0.25 };
+  let H = hitFree.pop();
+  if (!H) {
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+    H = { sprite: sp, life: 0.25, max: 0.25 };
+  }
+  const sm = H.sprite.material as THREE.SpriteMaterial;
+  sm.map = hitTexOf(color);
+  sm.opacity = 1;
+  H.sprite.visible = true;
+  H.sprite.position.copy(at);
+  H.sprite.scale.setScalar(size);
+  H.life = 0.25; H.max = 0.25;
+  return H;
 }
 
-/** 命中闪光推进。返回 true 表示已过期（调用方 remove + dispose 贴图/材质）。 */
+/** 命中闪光推进。返回 true 表示已过期（调用方 disposeHitEntry）。 */
 export function hitStep(H: HitEntry, dt: number, hexR: number): boolean {
   H.life -= dt;
   (H.sprite.material as THREE.SpriteMaterial).opacity = Math.max(0, H.life / H.max);
@@ -621,11 +752,12 @@ export function hitStep(H: HitEntry, dt: number, hexR: number): boolean {
   return H.life <= 0;
 }
 
-/** 回收命中闪光 */
+/** 回收命中闪光。[v56 性能] 回池复用；贴图为按颜色共享的缓存，**不**随条目释放。 */
 export function disposeHitEntry(scene: THREE.Scene, H: HitEntry): void {
   scene.remove(H.sprite);
-  (H.sprite.material as THREE.SpriteMaterial).map?.dispose();
-  (H.sprite.material as THREE.SpriteMaterial).dispose();
+  H.sprite.visible = false;
+  if (hitFree.length < POOL_CAP) { hitFree.push(H); return; }
+  (H.sprite.material as THREE.SpriteMaterial).dispose();   // map 是共享缓存，不 dispose
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1971,6 +2103,11 @@ function buildFanPlate(pts: { x: number; y: number }[], thick: number): THREE.Bu
  *    加色混合下顶点色趋黑 = 不可见 ⇒ 硬多边形边收成柔和的光，且**超出开口的部分自动不可见**
  *    （用户实报"外面一圈穿模、不够精致"就是这么修的）。 */
 export function buildEnginePortGeo(L: number, ports: EnginePort[], s: number, rMul: number, pScale?: number, edgeFade?: number): THREE.BufferGeometry {
+  // [v56 性能] 同型舰的喷口几何完全同参 ⇒ 缓存共享（编队实体化时不再逐舰重建）
+  const cacheKey = `${L.toFixed(4)}|${s.toFixed(5)}|${rMul}|${pScale ?? ''}|${edgeFade ?? ''}|` +
+    ports.map((p) => `${p.x},${p.y},${p.z},${p.hx},${p.hy},${p.round ? 1 : 0},${p.outlineScale ?? 1},${p.q ? p.q.join('/') : ''},${p.outline ? p.outline.join(',') : ''}`).join(';');
+  const hitGeo = enginePortGeoCache.get(cacheKey);
+  if (hitGeo) return hitGeo;
   const thick = Math.max(1e-3, L * 0.018);
   const cNear = new THREE.Color(1, 1, 1);
   const cFar = new THREE.Color(1, 0.9, 0.62);
@@ -2059,6 +2196,9 @@ export function buildEnginePortGeo(L: number, ports: EnginePort[], s: number, rM
   const nonIdx = parts.map((g) => (g.index ? g.toNonIndexed() : g));
   const merged = mergeGeometries(nonIdx, false) || nonIdx[0];
   parts.forEach((g) => g.dispose());
+  // [v56 性能] 入缓存 + 打共享标记（disposeShipGroup 见 __b3dShared 跳过释放）
+  (merged as any).__b3dShared = true;
+  enginePortGeoCache.set(cacheKey, merged);
   return merged;
 }
 /** [v22 尾焰] 一次性装配「喷口光斑（白核）+ 暖晕」两层，材质每舰一份。

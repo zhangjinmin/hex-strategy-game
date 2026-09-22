@@ -33,6 +33,7 @@ import {
   type EnginePort, type LaserEntry, type HitEntry, type ShieldEntry, type MissileEntry,
 } from './battleFx';
 import { drainFx3d, type Fx3dEvent } from '../battle3dFx';
+import { projectFleetRepresentation } from '../combatRepresentation';
 import {
   SHIP_CLASS_ALIAS, FLAGSHIP_MODEL_ALIAS,
   acquireShipModelByFiles, setShipModelDetail, type ShipModelReg,
@@ -487,6 +488,9 @@ const PERF_WARMUP_FRAMES = 180;
 /** 每次调整的幅度（1 帧内最多改 1 步）与调整间隔（秒） */
 const PERF_STEP = 0.85;
 const PERF_ADJUST_INTERVAL = 0.5;
+/** [v56 性能] 动态分辨率系数下限：帧时持续超预算时把渲染分辨率逐步收到 60%（≈像素量 36%），
+ *  流畅后自动回升到 1（= 画质档 dprCap 满分辨率）。0.6 是"明显降载但 UI 级文字仍可读"的经验下限。 */
+const DPR_SCALE_MIN = 0.6;
 
 // ── [v12.1 C1/C2] 帧时压力降档 + 实体池逐帧限流 / 换档分帧迁移 ────────────────
 // 用户实机反馈"帧数很低 / 打着打着就卡 / 舰队整体移动明显卡顿"的方向性修复：
@@ -1178,6 +1182,10 @@ export class Battle3DOverlay {
   private battle3dQuality: 'high' | 'medium' | 'low' = 'high';
   private dprCap = 2;
   private msaaSamples = 4;
+  /** [v56 性能] 动态分辨率系数（1 = 满分辨率）。帧时持续超预算时由 updatePerfGovernor
+   *  逐步收到 DPR_SCALE_MIN，流畅后自动回升 —— 填充率瓶颈（近景透明舰体 + 齐射加色特效
+   *  铺满屏）下这是最直接的帧率杠杆，且远景恢复流畅即回到满清晰度。 */
+  private dprScale = 1;
   // ── [v12 P3] 显示帧率：极简 FPS DOM 读数（默认关；开启时才建元素）──
   private fpsOn = false;
   private fpsEl: HTMLDivElement | null = null;
@@ -1290,8 +1298,8 @@ export class Battle3DOverlay {
     //   · powerPreference:'high-performance' —— 双显卡机器优先请求独显；单核显无副作用。
     this.renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, powerPreference: 'high-performance' });
     this.renderer.setSize(w, h);
-    // [v12 P3] dpr 上限取自画质档（high=2 = 现状）
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, this.dprCap));
+    // [v12 P3] dpr 上限取自画质档（high=2 = 现状）；[v56] 统一走 effDpr()（×动态分辨率系数）
+    this.renderer.setPixelRatio(this.effDpr());
     this.renderer.domElement.style.position = 'absolute';
     this.renderer.domElement.style.top = '0';
     this.renderer.domElement.style.left = '0';
@@ -1307,8 +1315,8 @@ export class Battle3DOverlay {
     this.initFpsReadout();
 
     // ── CRT 后处理：离屏 MSAA 渲染 + 全屏合成（对齐原型观感）──
-    // [v12 P3] dpr 上限与 MSAA 采样数取自画质档（high: dpr≤2 + 4× = 现状逐位不变）
-    const dpr = Math.min(window.devicePixelRatio, this.dprCap);
+    // [v12 P3] dpr 上限与 MSAA 采样数取自画质档（high: dpr≤2 + 4× = 现状逐位不变）；[v56] 同源 effDpr()
+    const dpr = this.effDpr();
     this.rt = new THREE.WebGLRenderTarget(
       Math.max(1, Math.floor(w * dpr)), Math.max(1, Math.floor(h * dpr)), { samples: this.msaaSamples });
     this.crtU.tDiffuse.value = this.rt.texture;
@@ -1451,6 +1459,8 @@ export class Battle3DOverlay {
       // [WS7] 实体池预算与帧时 EMA（未开 perfGovernor 时 = MAX_MESHES / 0）
       meshBudget: this.lastStats.meshBudget,
       frameMs: +this.lastStats.frameMs.toFixed(2),
+      // [v56 性能] 动态分辨率系数（1 = 满分辨率；<1 = governor 收缩中）
+      dprScale: +this.dprScale.toFixed(3),
     });
 
     // [验收·WS7] 性能兜底调试口：开/关 + 即时读数。纯读取/单点开关，不改渲染路径。
@@ -3517,6 +3527,13 @@ export class Battle3DOverlay {
     }
     for (const fleet of fleets) {
       const units: any[] = fleet.units || [];
+      // A model is a representative of aggregate combat strength, not an
+      // independent truth source.  Build this projection once per fleet so
+      // 30% fleet HP visibly means roughly 30% of the deployed formation.
+      const visualCapacity = (fleet as any)._visualCapacity ?? units.length;
+      (fleet as any)._visualCapacity = visualCapacity;
+      const representation = projectFleetRepresentation(units, visualCapacity);
+      const visibleIndexes = new Set(representation.visibleIndexes);
       // [R10-B1] 哨兵朝向与舰体同源：优先 2D 限速平滑值 facingSmooth（缺省回退权威 facingAngle），
       //   使"点团微网格跟随舰体"在转向期也随舰首缓转（而非瞬时跳）
       const fa = fleet.facingSmooth ?? fleet.facingAngle ?? 0;
@@ -3531,7 +3548,7 @@ export class Battle3DOverlay {
       const tierY = fleetTierY.get(fleet) ?? 0;
       for (let ui = 0; ui < units.length; ui++) {
         const u = units[ui];
-        if (!u.sprite || u.hp <= 0) continue;
+        if (!u.sprite || u.hp <= 0 || !visibleIndexes.has(ui)) continue;
         // unit 无稳定 id：用 fleetId + sprite 容器引用做 key（sprite 生命周期=unit 生命周期）
         const key = `${fleet.factionId}:${u.sprite._b3dKey || (u.sprite._b3dKey = Math.random().toString(36).slice(2))}`;
         const shipLen = this.shipLenOf(u, fleet);
@@ -5276,11 +5293,10 @@ export class Battle3DOverlay {
       this.updateBillboards();
       this.updateSupplyViz();
       this.updateIntentLines();
-      this.updateFlames(dt);
-      drainFx3d().forEach(e => this.handleFx(e));
-      this.updateFx(dt);
-      this.updateBoats(dt);
-      this.updateCaptures();
+      // [v56 性能] 修复 v37 重构引入的**双重调用块**：updateFlames / drainFx3d / updateFx /
+      // updateBoats / updateCaptures 曾被连续跑两遍（pre_refactor_backup 为单份）——
+      // 既白烧一倍每帧 CPU，又让激光/导弹/护盾/尾焰按 2 倍速播放（寿命减半）。
+      // 删除重复块后特效步进回到 battleFx 设计时长（激光 0.3s / 护盾 0.85s / 命中 0.25s）。
       this.updateFlames(dt);
       drainFx3d().forEach(e => this.handleFx(e));
       this.updateFx(dt);
@@ -5347,11 +5363,26 @@ export class Battle3DOverlay {
     if (this.perfCooldown > 0) return;
     const cur = this.lastStats.meshBudget;
     let next = cur;
-    if (this.frameEmaMs > PERF_BUDGET_MS) next = Math.max(MESH_BUDGET_MIN, Math.round(cur * PERF_STEP));
-    else if (this.frameEmaMs < PERF_COMFORT_MS && cur < MAX_MESHES) {
-      next = Math.min(MAX_MESHES, Math.max(cur + 1, Math.round(cur / PERF_STEP)));
+    let changed = false;
+    if (this.frameEmaMs > PERF_BUDGET_MS) {
+      next = Math.max(MESH_BUDGET_MIN, Math.round(cur * PERF_STEP));
+      // [v56 性能] 超预算 ⇒ 分辨率系数同步收缩（像素量按平方降），补 meshBudget 收完仍不够的缺口
+      if (this.dprScale > DPR_SCALE_MIN) {
+        this.dprScale = Math.max(DPR_SCALE_MIN, this.dprScale * 0.85);
+        this.resize();
+        changed = true;
+      }
+    } else if (this.frameEmaMs < PERF_COMFORT_MS) {
+      // [v56 性能] 流畅 ⇒ 分辨率先逐级回升（步长 1.12 比收缩 0.85 更缓，防振荡）
+      if (this.dprScale < 1) {
+        this.dprScale = Math.min(1, this.dprScale * 1.12);
+        this.resize();
+        changed = true;
+      }
+      if (cur < MAX_MESHES) next = Math.min(MAX_MESHES, Math.max(cur + 1, Math.round(cur / PERF_STEP)));
     }
-    if (next !== cur) { this.lastStats.meshBudget = next; this.perfCooldown = PERF_ADJUST_INTERVAL; }
+    if (next !== cur) { this.lastStats.meshBudget = next; changed = true; }
+    if (changed) this.perfCooldown = PERF_ADJUST_INTERVAL;
   }
 
   // ---------- 公开方法 ----------
@@ -5397,6 +5428,12 @@ export class Battle3DOverlay {
     this.camera.updateProjectionMatrix();
   }
 
+  /** [v56 性能] 当前有效像素比 = min(devicePixelRatio, 画质档 dprCap) × 动态系数 dprScale。
+   *  renderer.setPixelRatio 与离屏 RT 尺寸必须同源走这里，防止两处发散。 */
+  private effDpr(): number {
+    return Math.min(window.devicePixelRatio, this.dprCap) * this.dprScale;
+  }
+
   resize() {
     const w = this.container.clientWidth, h = this.container.clientHeight;
     if (w === 0 || h === 0) return;
@@ -5405,7 +5442,10 @@ export class Battle3DOverlay {
     this.renderer.setSize(w, h);
     // 离屏 RT 与 CRT 扫描线频率都要跟新尺寸走
     // [v12 P3] dpr 上限与创建时同源（this.dprCap），保证 resize 后分辨率档位不发散
-    const dpr = Math.min(window.devicePixelRatio, this.dprCap);
+    // [v56 性能] 动态分辨率生效点：dprScale 变化后由 updatePerfGovernor 调本方法重建 RT 尺寸，
+    //   renderer 像素比必须同帧同步，否则合成阶段出现拉伸/采样发散。
+    const dpr = this.effDpr();
+    this.renderer.setPixelRatio(dpr);
     this.rt.setSize(Math.max(1, Math.floor(w * dpr)), Math.max(1, Math.floor(h * dpr)));
     this.crtU.uRes.value.set(w, h);
   }

@@ -7,11 +7,24 @@
           <div class="faction-name" :class="{'text-player': f.type === 'player', 'text-ally': f.type === 'ai' && f.team === 1, 'text-red': f.team === 2}">
             [{{ f.team === 1 ? '我方' : '敌军' }}] {{ f.name }}
           </div>
-          <div class="hp-bar-container">
-            <div class="hp-bar-fill" :class="f.team === 1 ? 'bg-cyan' : 'bg-red'" :style="{ width: Math.max(0, f.hp) + '%' }"></div>
+          <!-- [v57] 面板信息密度升级：舰况/士气/补给三细条 + 编制行；「军费」已随经济项目移除 -->
+          <div class="stat-row" v-if="f.active">
+            <span class="stat-k">舰况</span>
+            <div class="hp-bar-container"><div class="hp-bar-fill" :class="f.team === 1 ? 'bg-cyan' : 'bg-red'" :style="{ width: clampPct(f.hp) + '%' }"></div></div>
+            <span class="stat-v">{{ Math.round(clampPct(f.hp)) }}</span>
+          </div>
+          <div class="stat-row" v-if="f.active">
+            <span class="stat-k">士气</span>
+            <div class="hp-bar-container"><div class="hp-bar-fill bg-gold" :style="{ width: clampPct(f.morale) + '%' }"></div></div>
+            <span class="stat-v">{{ Math.round(clampPct(f.morale)) }}</span>
+          </div>
+          <div class="stat-row" v-if="f.active">
+            <span class="stat-k">补给</span>
+            <div class="hp-bar-container"><div class="hp-bar-fill bg-green" :style="{ width: clampPct(f.supply) + '%' }"></div></div>
+            <span class="stat-v">{{ Math.round(clampPct(f.supply)) }}</span>
           </div>
           <div class="mini-gold" v-if="f.active">
-            建制: <span class="text-cyan">{{ f.unitCount }}/{{ getShipLimit(f.rank) }}</span> | 军费: {{ Math.floor(f.gold) }}
+            编制 <span class="text-cyan">{{ f.unitCount }}/{{ getShipLimit(f.rank) }}</span>
           </div>
           <div class="mini-gold text-red" v-else>舰队已溃散</div>
         </div>
@@ -20,13 +33,7 @@
     <GameControls />
   </div>
 
-  <div class="battle-dialog-overlay" :class="{'show': battleDialog.visible}">
-    <img :src="getPortrait(battleDialog.imageId)" class="dialog-portrait" @error="handleImgError" />
-    <div class="dialog-content neo-card">
-      <div class="dialog-name text-gold">{{ battleDialog.name }}</div>
-      <div class="dialog-text">{{ battleDialog.text }}</div>
-    </div>
-  </div>
+  <!-- [v58] 右侧立绘对话框已删：会被军议任务指令侧栏遮挡，闲聊改走旗舰位置浮动气泡（BattleScene.showFleetDialogue） -->
 </template>
 
 <script setup lang="ts">
@@ -35,11 +42,6 @@ import { useGameStore, getPortrait } from '../../store/gameStore';
 import GameControls from './GameControls.vue';
 
 const store = useGameStore();
-
-const battleDialog = computed(() => {
-  const raw = (store as any).battleDialog;
-  return raw?.value !== undefined ? raw.value : (raw || { imageId: '', name: '', text: '', visible: false });
-});
 
 const factionsList = computed<any[]>(() => {
   const raw = (store as any).factions;
@@ -53,6 +55,9 @@ const getShipLimit = (rank: any) => {
   if (typeof (store as any).getShipLimit === 'function') return (store as any).getShipLimit(r);
   return 4;
 };
+
+/** [v57] 面板数值防溢出：镜像字段可能 undefined（尚未同步）或超界，统一夹到 0-100 */
+const clampPct = (v: any) => Math.max(0, Math.min(100, Number(v) || 0));
 
 const handleImgError = (e: Event) => {
   (e.target as HTMLImageElement).src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="40"><rect width="32" height="40" fill="%231e293b"/></svg>';
@@ -75,19 +80,19 @@ const handleImgError = (e: Event) => {
 .mini-portrait { width: 36px; height: 48px; object-fit: cover; border-radius: 4px; border: 1px solid rgba(255,255,255,0.2); flex-shrink: 0; }
 .info-content { display: flex; flex-direction: column; width: 140px; }
 .faction-name { font-size: 12px; font-weight: 900; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.hp-bar-container { width: 100%; height: 4px; background: var(--color-border); border-radius: 2px; overflow: hidden; margin-bottom: 4px; }
+/* [v57] 三细条行：标签 + 条 + 数值，扫读式提高面板信息密度 */
+.stat-row { display: flex; align-items: center; gap: 4px; margin-bottom: 2px; }
+.stat-k { width: 22px; flex-shrink: 0; font-size: 9px; color: var(--color-text-secondary); font-weight: 800; letter-spacing: 1px; }
+.stat-v { width: 20px; flex-shrink: 0; text-align: right; font-size: 9px; color: var(--color-text-secondary); font-family: monospace; font-weight: 800; }
+.hp-bar-container { flex: 1; min-width: 0; height: 3px; background: var(--color-border); border-radius: 2px; overflow: hidden; }
 .hp-bar-fill { height: 100%; transition: width 0.3s; }
 .bg-cyan { background: var(--color-cyan); }
 .bg-red { background: var(--color-empire); }
+.bg-gold { background: var(--color-warning, #f59e0b); }
+.bg-green { background: #22c55e; }
 .mini-gold { color: var(--color-text-secondary); font-size: 11px; font-family: monospace; font-weight: 800; }
 .text-cyan { color: var(--color-cyan); }
-
-.battle-dialog-overlay { position: absolute; top: 100px; right: -400px; display: flex; align-items: flex-end; gap: 10px; z-index: 20; transition: right 0.4s cubic-bezier(0.16, 1, 0.3, 1); pointer-events: none; }
-.battle-dialog-overlay.show { right: 20px; }
-.dialog-portrait { width: 80px; height: 100px; object-fit: cover; border-radius: 4px; border: 2px solid var(--color-warning); box-shadow: 0 4px 15px rgba(0,0,0,0.5); background: var(--neo-surface); }
-.dialog-content { padding: 12px 16px; min-width: 220px; max-width: 300px; background: var(--overlay-surface); backdrop-filter: blur(4px); border-left: 3px solid var(--color-warning); }
-.dialog-name { font-size: 14px; font-weight: 900; margin-bottom: 6px; border-bottom: 1px solid var(--overlay-border); padding-bottom: 4px; }
-.dialog-text { font-size: 13px; color: var(--color-text-primary); font-weight: 800; line-height: 1.4; }
+/* [v58] .battle-dialog-overlay 立绘对话框样式已随模板删除（banter 改走旗舰浮动气泡） */
 
 @media (max-width: 768px) {
   .faction-infos { max-width: calc(100% - 30px); }  .side-info { width: calc(50% - 5px); }
@@ -97,7 +102,5 @@ const handleImgError = (e: Event) => {
      142px = 卡片区上限 132px + 10px 间距。 */
   .ui-header > :deep(.game-controls),
   .game-controls { top: 142px; }
-  .battle-dialog-overlay { top: auto; bottom: 80px; right: -100%; flex-direction: row-reverse; }
-  .battle-dialog-overlay.show { right: 10px; }
 }
 </style>

@@ -54,10 +54,6 @@
             <span class="tl-desc">{{ row.desc }}</span>
           </div>
         </template>
-          <!-- [v38 · G3] 占领机制的操作引导。此前玩家右键中继点毫无反馈（右键 = 设战术信标，
-               不参与占领），而唯一的进度反馈是隐藏的 Phaser 画布 ⇒ 读作"这游戏没法占领"。 -->
-          <div class="tl-hint">中继点 / 星球：舰队靠近 <b>2 格内</b>即自动累计占领进度，<b>无需点击</b>。
-            进度以琥珀色圆环显示在目标上方（右键是"设战术信标"，不参与占领）。</div>
       </div>
 
       <!-- 3D 战场视角预设（27° 侧视 / 正俯视）：3D 就绪后显示 -->
@@ -68,6 +64,9 @@
 
       <!-- 提督扮演：军议面板（仅指挥制）+ 关闭态的开启按钮（显著化：任务指令唯一入口） -->
       <CouncilWarRoom v-if="isCommandBattle" />
+      <!-- [G4] 战前部署「入场仪式」全屏层（立绘 / 致辞 / 对阵）—— 纯叠加，不改既有部署逻辑；
+           可见性由组件内部按 store.battleDeployPhase 判定 -->
+      <BattleIntroOverlay v-if="isCommandBattle" />
       <button v-if="isCommandBattle && !warRoomOpen" class="war-room-toggle" @click="setWarRoomOpen(true)">⚔ 军议 · 任务指令</button>
 
       <SettlementModal v-if="gameOver" />
@@ -147,6 +146,7 @@ import OpeningBriefing from './components/meta/OpeningBriefing.vue';
 import { useSettingsStore } from './store/settingsStore';
 import CommandPanel from './components/battle/CommandPanel.vue';
 import CouncilWarRoom from './components/battle/CouncilWarRoom.vue';
+import BattleIntroOverlay from './components/battle/BattleIntroOverlay.vue';
 import BattleLogPanel from './components/battle/BattleLogPanel.vue';
 import ForcePassDialog from './components/meta/ForcePassDialog.vue';
 import { commandBridge } from './services/CommandBridge';

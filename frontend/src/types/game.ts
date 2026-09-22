@@ -13,6 +13,10 @@ export interface Faction {
   maxHp: number;
   gold: number;
   goldRate: number;
+  /** [v57] 战术面板镜像（BattleScene updateUI 同步段聚合写入，口径与 hp 相同）：
+   *  morale = 该阵营各舰队 fl.morale 按舰数加权均值；supply = 存活舰 u.supply 算术均值。 */
+  morale?: number;
+  supply?: number;
   color: number;
   cssColor: string;
   active: boolean;

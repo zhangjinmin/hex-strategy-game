@@ -21,7 +21,9 @@ import { createBandwidthState, updateBandwidthState, getLinkStatus, hasChannel, 
 import { commandBridge } from '../../services/CommandBridge';
 // 3D 战场覆盖层特效桥：只推送事件，2D 特效代码零改动（3D 模式下 2D 层被隐藏）
 import { pushFx3d } from '../battle3dFx';
-import { updateSupplyChain, collectAuxShips, moveAuxShips, isSupplyUnit, SUPPLY_SOURCE_RADIUS, SUPPLY_RELAY_RADIUS, SUPPLY_AUX_RADIUS, type SupplyNode, type FleetSupplyInfo } from '../SupplyChainSystem';
+import { updateSupplyChain, collectAuxShips, moveAuxShips, isSupplyUnit, AUX_SPEED, SUPPLY_SOURCE_RADIUS, SUPPLY_RELAY_RADIUS, SUPPLY_AUX_RADIUS, type SupplyNode, type FleetSupplyInfo } from '../SupplyChainSystem';
+import { advanceFormationFacing, headingDistance, moveTowardsAtSpeed } from '../fleetKinematics';
+import { combatUnits, hasCombatUnits, targetableUnits } from '../combatRoster';
 // 提督扮演：总指挥判定 / 直接命令拦截 / 任务指令（仅指挥制启用）
 import { pickSupremeCommander, isDirectCommandAllowed, DIRECT_COMMAND_TYPES, buildMission, ROLE_LABEL, PLAN_ROLE_LABEL, type Mission } from '../TacticalCommandSystem';
 // 兵力折算：舰种 HP 表（单一真源）与 500:1 比例尺，正反映射共用
@@ -61,6 +63,11 @@ import {
 import { aggression, supplyDecision, turnDiscipline, approachLateralOffset } from '../combatDoctrine';
 import { advanceManeuver, maneuverOrder, updateContact, type ContactState, type ManeuverState } from '../combatControl';
 import { escortDestination } from '../tacticalTasks';
+import {
+    visibilityOf, noteIncomingFire, activeAttacker, fireGate,
+    pickTarget, idealEngageDistFrom, strikeRangeFrom, chooseFormation, stabilizeCombatFormation, shouldFlank,
+    type TargetCandidate, type Clarity,
+} from '../aiDirector';
 // [v31-C] 分舰队编成 / 战法（纯计算）—— **迂回 · 包抄 · 诱饵 · 后勤战的共同抽象**：
 //   四项玩法都是"多路协同"，而多路协同的前提是"力量可分解"（见 docs/.../24-tactical-architecture-rebuild.md §2）
 import {
@@ -199,12 +206,11 @@ const FORM_FACING_MIN_SPD2 = 0.02 * 0.02;
  *  `Math.min(uDist, …)` 本身已保证不越冲 ⇒ 阈值只需大于浮点噪声即可。 */
 const UNIT_CHASE_EPS = 0.02;
 
+/** 阵位移动的硬速度上限（px/帧 @ dt=1）：目标越远也不得加速。 */
+const UNIT_FORMATION_SPEED = 0.9;
+
 /** [v21 JIT] 阵型呼吸幅度的渐入/渐出时间常数（帧 × 倍率，与位移同基准）。 */
 const JIT_BREATHE_TAU = 8;
-
-/** [v21 JIT] 运输舰 sprite 跟随独立航行坐标的时间常数（帧 × 倍率）。取小值 = 快速贴合：
- *  独立坐标本身由 moveAuxShips 逐帧连续推进，无需低通，此处只需吸收"抵达死区"的残留。 */
-const JIT_AUX_TAU = 2;
 
 /** 把当前角 cur 以不超过 maxStep 的步长逼近目标角 target（角差先 wrap 到 [-π, π]）。
  *  与 Battle3DOverlay.approachAngle **同式**（wrap 用 atan2(sin,cos) ⇒ 跨 ±π 环回正确）；
@@ -257,6 +263,9 @@ export class BattleScene extends Phaser.Scene {
     // P4 名场面
     private duelCooldown: number = 0;            // 一骑讨冷却（避免频繁触发）
     private lastDuelPair: string = '';           // 上次对决的舰队对
+    // [v57] 战中提督闲聊调度：nextBanterAt=0 表示尚未排程（开战 25s 后第一句）；lastBanterText 防连续重复
+    private nextBanterAt: number = 0;
+    private lastBanterText: string = '';
     private adversityTriggered: Set<number> = new Set(); // 已触发逆境宣言的舰队
     // P3 战术部署阶段
     private deployPhase: boolean = false;        // 开局部署是否进行中
@@ -573,6 +582,7 @@ export class BattleScene extends Phaser.Scene {
             if (this.deployPhase) {
                 if (newForm) {
                     this.deployFormation = newForm;
+                    (this.store as any).deployFormation = newForm;   // [G4] 同步全屏军议层高亮
                     this.updateDeployText();
                     return;
                 }
@@ -581,6 +591,7 @@ export class BattleScene extends Phaser.Scene {
                     const seq = ['search', 'siege', 'defend'];
                     const i = seq.indexOf(this.deployTactic);
                     this.deployTactic = seq[(i + 1) % seq.length];
+                    (this.store as any).deployTactic = this.deployTactic;   // [G4] 同步全屏军议层高亮
                     this.updateDeployText();
                     return;
                 }
@@ -906,6 +917,9 @@ export class BattleScene extends Phaser.Scene {
         // 提督扮演：镜像部署阶段 → 军议面板（指挥制下自动展开，战前分配初始任务）
         (this.store as any).battleDeployPhase = true;
         (this.store as any).warRoomOpen = true;
+        // [G4] 镜像部署选项目 → 全屏军议层（单一真源仍是本类的 deployFormation / deployTactic）
+        (this.store as any).deployFormation = this.deployFormation;
+        (this.store as any).deployTactic = this.deployTactic;
         // 玩家舰队摆好初始阵型（默认楔形）
         const pFac = this.store.factions.find((f: any) => f.type === 'player');
         const pFleet = this.globalFleets.find((f: any) => f.factionId === pFac?.id);
@@ -1875,17 +1889,14 @@ export class BattleScene extends Phaser.Scene {
      *  → 玩家看到信标动画却无舰队响应（= 幽灵信标），且旧信标已被无条件销毁。
      *  新顺序：选舰队 → 无舰队守卫 → 门控三分支 → 各分支动作；被拒时**不建视觉**（旧信标天然保留）。 */
     private deployFlare(x: number, y: number, factionId: number) {
-        // ── 先选舰队（原前置段，逐字等价）──
-        const myFleets = this.globalFleets.filter(fl => fl.factionId === factionId);
-        let nearest: any = null; let minDist = 999999;
-        myFleets.forEach(fl => {
-            const d = Phaser.Math.Distance.Between(fl.x, fl.y, x, y);
-            if (d < minDist) { minDist = d; nearest = fl; }
-        });
+        // ── 玩家专属命令：只允许发给已选中的己方舰队 ──
+        const myFleets = this.globalFleets.filter(fl => fl.factionId === factionId && fl.units?.length > 0);
+        const nearest: any = this.battleSelectedFleetId == null ? null
+            : myFleets.find((fl: any) => fl.id === this.battleSelectedFleetId) ?? null;
 
-        // ── 无己方舰队：toast + return（不建视觉）──
+        // 不允许按距离猜收件人：这会令一次给吉尔菲尔斯的命令改变莱因哈特的航向。
         if (!nearest) {
-            this.store.triggerToast("⌁ 附近无可接收信标的己方舰队，未投放信标。");
+            this.store.triggerToast("⌁ 请先选中要接收信标的己方舰队，未投放信标。");
             return;
         }
 
@@ -2435,7 +2446,42 @@ export class BattleScene extends Phaser.Scene {
     }
 
     // ===== 指令调度器绑定 =====
+    /** [G4] 战前军议全屏层下达的部署动作。取值域与键盘路径共用（阵型 5 种 / 姿态 3 种），
+     *  非法值一律忽略 ⇒ 前端传错不会把 `deployFormation` 写成垃圾值。
+     *  ⚠ 仅在 `deployPhase` 内生效：开战后到达的动作全部丢弃（防止界面残留点击把已开的战再开一次）。 */
+    private onDeployAction(action: string, value?: any) {
+        if (!this.deployPhase) return;
+        if (action === 'formation') {
+            const allowed = ['wedge', 'line', 'spindle', 'circle', 'square'];
+            if (typeof value === 'string' && allowed.includes(value)) {
+                this.deployFormation = value;
+                (this.store as any).deployFormation = value;   // UI 回读
+                this.updateDeployText();
+            }
+            return;
+        }
+        if (action === 'tactic') {
+            const allowed = ['search', 'siege', 'defend'];
+            if (typeof value === 'string' && allowed.includes(value)) {
+                this.deployTactic = value;
+                (this.store as any).deployTactic = value;
+                this.updateDeployText();
+            }
+            return;
+        }
+        if (action === 'start') {
+            this.startBattleAfterDeploy();
+        }
+    }
+
     private setupCommandDispatcher() {
+        // [G4] 战前军议全屏层 → 「部署动作」通道（阵型 / 旗舰姿态 / 开战）。
+        //   与键盘路径（1-5 / T / 回车）等价，两条路径都回写 store 镜像供 UI 回读。
+        if (typeof (this.store as any).setPhaserDeployDispatcher === 'function') {
+            (this.store as any).setPhaserDeployDispatcher((action: string, value?: any) => {
+                this.onDeployAction(action, value);
+            });
+        }
         if (typeof this.store.setPhaserCommandDispatcher === 'function') {
             this.store.setPhaserCommandDispatcher((id: number, type: string, payload: any) => {
                 // 提督扮演：id 兼容 fleet.id（billboard）与 factionId/commanderId（军议面板只知阵营 id）
@@ -2838,26 +2884,15 @@ export class BattleScene extends Phaser.Scene {
         this.showBattleBanner('增援抵达', '各舰队完成整编补给', '#06b6d4');
     }
 
-    private getIdealEngageDist(fleet: any): number {        const units = fleet.units || [];
-        if (units.length === 0) return 140;
-
-        // 统计舰种
-        let battleships = 0, cruisers = 0, destroyers = 0, carriers = 0;
-        units.forEach((u: any) => {
-            const cls = u.classType || '';
-            if (cls === '战列' || cls === 'battleship') battleships++;
-            else if (cls === '巡洋' || cls === 'cruiser') cruisers++;
-            else if (cls === '驱逐' || cls === 'destroyer') destroyers++;
-            else if (cls === '航母' || cls === 'carrier' || cls === '突击') carriers++;
-        });
-
-        // 主力舰种决定理想距离（v5 超视距化：银英设定战斗在视距外展开，整体放大 4~5 倍）
-        // 武器射程层次：激光（战列/高战/空母）远程 850~920 / 导弹（巡洋）中程 760 / 舰载机（驱逐+突击）近程 620
-        if (carriers > 0) return 880;              // 航母 → 远距释放（舰载机抛射后撤）
-        if (battleships >= 3) return 800;          // 战列为主 → 远程主炮对射
-        if (cruisers >= 3) return 700;             // 巡洋为主 → 导弹中程
-        if (destroyers >= 3) return 560;           // 驱逐为主 → 近程缠斗（仍非贴脸）
-        return 720;                                // 默认
+    private getIdealEngageDist(fleet: any): number {
+        // [v55] 委托 aiDirector.idealEngageDistFrom（数据驱动）。旧实现手抄舰种名
+        //   （'航母'/'carrier'）而 config 真键是 '空母' ⇒ 计数恒 0、全落默认 720；
+        //   纯 '舰载' 舰队 720 > 其射程 640 = "站得比打得远"永不接战。
+        //   现按 u.range/u.atk 聚合（排除补给舰），真源 = config/gameData.ts，零手抄舰种名。
+        const ships = (fleet.units || [])
+            .filter((u: any) => (u.classType || '') !== '补给')
+            .map((u: any) => ({ range: u.range || 0, atk: u.atk || 0 }));
+        return idealEngageDistFrom(ships);
     }
 
     /**
@@ -3252,7 +3287,7 @@ export class BattleScene extends Phaser.Scene {
             if (!pFac || fleet.factionId !== pFac.id) return;
 
             // 舰队被歼灭：释放频道与标记
-            if (fleet.units.length === 0) {
+            if (!hasCombatUnits(fleet)) {
                 releaseChannel(bw, fleet.id);
                 const marker = this.commMarkers.get(fleet.id);
                 if (marker) { marker.destroy(); this.commMarkers.delete(fleet.id); }
@@ -4395,7 +4430,9 @@ export class BattleScene extends Phaser.Scene {
             }
         });
 
-            if (fleet.units.length === 0) {
+            // 后勤舰不构成战斗编制；最后一艘战斗舰沉没即视为该舰队失能，
+            // 不要求玩家继续击沉补给运输舰才能结束战斗。
+            if (!hasCombatUnits(fleet)) {
                 const fac = this.factionMap.get(fleet.factionId);
                 if (fac) {
                     // ── 舰队全灭：提督诀别台词（isDefeat=true 固定坐标气泡）──
@@ -4429,14 +4466,13 @@ export class BattleScene extends Phaser.Scene {
             // 视野内敌人按距离分级：近(<50%视野)=完全可见，中(50-80%)=识别类型，远(80-100%)=模糊
             let visibleEnemies: { ef: any; dist: number; clarity: 'full' | 'partial' | 'fuzzy' }[] = [];
             this.globalFleets.forEach(ef => {
-                if (ef.units.length > 0) {
+                if (hasCombatUnits(ef)) {
                     const efFac = this.factionMap.get(ef.factionId);
                     if (efFac && efFac.team !== myFac.team && efFac.active) {
                         const d = Phaser.Math.Distance.Between(fleet.x, fleet.y, ef.x, ef.y);
-                        if (d < visionRange) {
-                            let clarity: 'full' | 'partial' | 'fuzzy' = 'full';
-                            if (d > visionRange * 0.8) clarity = 'fuzzy';   // 视野边缘：只能感知"有东西"
-                            else if (d > visionRange * 0.5) clarity = 'partial'; // 中距：识别舰队类型
+                        // [v55] 分级收口 aiDirector.visibilityOf（原内联三元判断的单一真源）
+                        const clarity = visibilityOf(d, visionRange);
+                        if (clarity) {
                             visibleEnemies.push({ ef, dist: d, clarity });
                         }
                     }
@@ -4449,6 +4485,35 @@ export class BattleScene extends Phaser.Scene {
                 closestEnemyFleet = clearEnemies[0].ef;
                 minFleetDist = clearEnemies[0].dist;
             }
+
+            // [v55 受击必还击] 8s 内攻击过我方的敌舰 = "已暴露攻击者"。即使视野 fuzzy /
+            //   正撤退 / 信标任务在身，攻击者位置已暴露 ⇒ 可锁定还击（aiDirector 不变量）。
+            //   台账在伤害结算处写入（noteIncomingFire），此处只读。
+            const atkId = activeAttacker(fleet, this.time.now);
+            let attackerFleet: any = null;
+            if (atkId != null) {
+                const cand: any = this.globalFleets.find((ef: any) => ef.id === atkId && hasCombatUnits(ef));
+                if (cand) {
+                    const cf = this.factionMap.get(cand.factionId);
+                    if (cf && cf.active && cf.team !== myFac.team) attackerFleet = cand;
+                }
+            }
+            const underFire = attackerFleet !== null;
+            const attackerDist = attackerFleet
+                ? Phaser.Math.Distance.Between(fleet.x, fleet.y, attackerFleet.x, attackerFleet.y)
+                : null;
+            // 无清晰目标时攻击者直接顶上为交战对象（被超视距/fuzzy 打击 ⇒ 连目标都锁不上 的修复）
+            if (attackerFleet && !closestEnemyFleet) {
+                closestEnemyFleet = attackerFleet;
+                minFleetDist = attackerDist ?? minFleetDist;
+            }
+
+            // 本舰队战斗舰射程画像（排除补给舰——射程 300 不该拉低/抬高还击半径口径）。
+            //   数据真源 = u.range（config/gameData.ts），aiDirector 只做聚合，**不手抄舰种名**。
+            const shipProfiles = combatUnits(fleet)
+                .map((u: any) => ({ range: u.range || 0, atk: u.atk || 0 }));
+            // 自卫/拖刀还击半径 = 本舰队最远武器射程（替换 250px 硬编码 ⇒ 敌在 300~880px 不再白嫖）
+            const strikeRange = Math.max(250, strikeRangeFrom(shipProfiles));
 
             // P4a 一骑讨：双方舰队极近距离接触（<95px）→ 名场面镜头+对决台词（冷却30秒/同一对只触发一次）
             if (closestEnemyFleet && minFleetDist < 95 && this.time.now > this.duelCooldown) {
@@ -4656,33 +4721,36 @@ export class BattleScene extends Phaser.Scene {
                 if (closestEnemyFleet && minFleetDist < engageDist) {
                     // === 阶段C：聚焦火力 — 多目标时优先补刀残血/威胁最大 ---
                     // 从visibleEnemies中选择最优目标（不只看最近的）
-                    let bestTarget = closestEnemyFleet;
-                    let bestScore = -Infinity;
-                    // [FIX-2.2 · #73] 目标滞回：读 _lastTargetFleetId（原只写不读）。取证 §2.1-(ii)：两个近等分
-                    //   目标会帧间交替当选 ⇒ fAngle 帧间反相 ⇒ 限速 1.5°/帧 追不上 ⇒ 左右摆。**评分公式不变**，
-                    //   仅当「旧目标仍在候选集，且新最优未比它领先 >10%」时沿用旧目标；真正切换才更新台账。
+                    // [v55] 目标选择统一走 aiDirector.pickTarget（评分 + 滞回 + 复仇加权）。
+                    //   候选 = 清晰目标（fuzzy 识别不了不能锁定）**+ 攻击者**（被它打了=位置已暴露，
+                    //   即使 fuzzy 也可还击——「受击必还击」目标侧）。评分公式与整合前逐项一致，
+                    //   仅新增 attacker 加权（30000）：谁打我我打谁，但低于任务指定目标（100000）。
                     const prevTargetId = (fleet as any)._lastTargetFleetId;
-                    let prevScore = -Infinity;
-                    let prevInCandidates = false;
-                    let prevEf: any = null;
-                    visibleEnemies.forEach(ve => {
-                        const ePower = this.calculateFleetPower(ve.ef);
-                        const eHpPct = ve.ef.units.reduce((s: number, u: any) => s + u.hp, 0) / Math.max(1, ve.ef.units.reduce((s: number, u: any) => s + u.maxHp, 0));
-                        // 补刀残血优先 + 距离惩罚 + 威胁加成
-                        let score = (1 - eHpPct) * 300 - ve.dist + ePower * 0.1;
-                        // 提督扮演：attack_fleet 任务指定目标绝对优先（mission 仅指挥制可写入）
-                        if (fleet.mission?.type === 'attack_fleet' && (ve.ef.id === fleet.mission.targetId || ve.ef.factionId === fleet.mission.targetId)) score += 100000;
-                        if (ve.ef.id === prevTargetId) { prevInCandidates = true; prevScore = score; prevEf = ve.ef; }
-                        if (score > bestScore) { bestScore = score; bestTarget = ve.ef; }
-                    });
-                    // 滞回：旧目标仍在候选且最优未领先 >10% ⇒ 沿用旧目标；否则切换并更新台账
-                    if (prevInCandidates && prevEf && prevScore >= bestScore - Math.abs(bestScore) * 0.1) {
-                        bestTarget = prevEf;
-                    } else {
-                        (fleet as any)._lastTargetFleetId = bestTarget.id;
+                    const candById = new Map<string | number, any>();
+                    const cands: TargetCandidate[] = [];
+                    const pushCand = (ef: any, dist: number, isAttacker: boolean) => {
+                        if (candById.has(ef.id)) return;
+                        candById.set(ef.id, ef);
+                        const ePower = this.calculateFleetPower(ef);
+                        const eHpPct = ef.units.reduce((s: number, u: any) => s + u.hp, 0) / Math.max(1, ef.units.reduce((s: number, u: any) => s + u.maxHp, 0));
+                        cands.push({
+                            id: ef.id, hpPct: eHpPct, dist, power: ePower,
+                            missionPriority: !!(fleet.mission?.type === 'attack_fleet'
+                                && (ef.id === fleet.mission.targetId || ef.factionId === fleet.mission.targetId)),
+                            attacker: isAttacker,
+                        });
+                    };
+                    clearEnemies.forEach(ve => pushCand(ve.ef, ve.dist, ve.ef.id === atkId));
+                    if (attackerFleet && !candById.has(attackerFleet.id)) {
+                        pushCand(attackerFleet, attackerDist ?? minFleetDist, true);
                     }
-                    closestEnemyFleet = bestTarget;
-                    minFleetDist = Phaser.Math.Distance.Between(fleet.x, fleet.y, closestEnemyFleet.x, closestEnemyFleet.y);
+                    const pick = pickTarget(cands, prevTargetId);
+                    const pickedEf = pick.target ? candById.get(pick.target.id) : null;
+                    if (pickedEf) {
+                        closestEnemyFleet = pickedEf;
+                        minFleetDist = Phaser.Math.Distance.Between(fleet.x, fleet.y, closestEnemyFleet.x, closestEnemyFleet.y);
+                        if (!pick.keptPrev) (fleet as any)._lastTargetFleetId = closestEnemyFleet.id;
+                    }
 
                     // 威胁评估：战斗力和血量的比较加权
                     const myPower = this.calculateFleetPower(fleet);
@@ -4718,21 +4786,38 @@ export class BattleScene extends Phaser.Scene {
                     if (canEngage) {
                         fleet.state = 'engaging';
                         fleet._lastTargetFleetId = closestEnemyFleet.id;
-                        // 阵型选择（由engaging逻辑进一步细化）
-                        if (alliesOnTarget >= 2) {
-                            fleet.formation = 'circle'; // 3+舰队 → 包围
-                        } else if (powerRatio > 1.5) {
-                            fleet.formation = 'wedge';  // 绝对优势 → 楔形追击
-                        } else {
-                            fleet.formation = 'line';   // 均势 → 战列对射
-                        }
+                        // [v55] 阵型统一走 aiDirector.chooseFormation（原两张互相矛盾的表已收口；
+                        //   此处与交战机动处调用同一函数 ⇒ 不再互相覆盖）。最终口径 = 原 :5072 生效表。
+                        const formationCommit = stabilizeCombatFormation({
+                            active: true,
+                            targetId: closestEnemyFleet.id,
+                            existingFormation: (fleet.formation || 'wedge') as any,
+                            candidate: chooseFormation({
+                            alliesOnTarget,
+                            powerRatio,
+                            // 高统帅只改变执行质量；绕侧必须由战法明确授权，不能擅自偏离正面战线。
+                            aggressive: shouldFlank({ commanderAggressive: (myFac.admiralStats?.command || 50) > 80, maneuverRole: (fleet as any)._maneuverRole }),
+                            avoiding,
+                            }),
+                            previous: (fleet as any)._combatFormation,
+                            emergency: avoiding,
+                        });
+                        (fleet as any)._combatFormation = formationCommit.state;
+                        fleet.formation = formationCommit.formation;
                     } else {
                         // 打不过或目标已饱和，保持距离或撤退
                         // v2：劣势方也保持 engaging（距离保持逻辑会自动拉开到理想交战距），
                         //   只有压倒性劣势才退避 —— 原来直接转 exploring 会导致双方对峙不开火
                         // v6.5：避战窗内同样保持 engaging+spindle（拉开距离对峙），不再写 fallback
                         fleet.state = 'engaging';
-                        fleet.formation = 'spindle';
+                        const formationCommit = stabilizeCombatFormation({
+                            active: true, targetId: closestEnemyFleet.id,
+                            existingFormation: (fleet.formation || 'wedge') as any,
+                            candidate: 'spindle', previous: (fleet as any)._combatFormation,
+                            emergency: avoiding,
+                        });
+                        (fleet as any)._combatFormation = formationCommit.state;
+                        fleet.formation = formationCommit.formation;
                         if (!avoiding && myPower < enemyPower * 0.3) {
                             // 仅压倒性劣势（非战略层犹豫）才真撤——这是硬条件，与手动/断粮同级
                             fleet.stance = 'fallback';
@@ -4757,7 +4842,7 @@ export class BattleScene extends Phaser.Scene {
                 // R10-A1/D1(b)①：信标转进**允许途中自卫**——途中有敌进入接战距离即置 isEngaging，
                 //   由开火门（:4310）还击；但位移目标仍是信标（不做追击，仅保持航向）。
                 //   速度模式已在 :4165 对 flaring 豁免，故"边打边走"不会被缠斗减速卡住。
-                if (closestEnemyFleet && minFleetDist < 250) isEngaging = true;
+                if (closestEnemyFleet && minFleetDist < strikeRange) isEngaging = true; // [v55] 250→真射程：受击/近敌在武器射程内即还击
                 if (Phaser.Math.Distance.Between(fleet.x, fleet.y, fleetTargetX, fleetTargetY) < 40) {
                     const flareRealY = fleetTargetY;
                     const fQ = Math.round((Math.sqrt(3)/3 * fleetTargetX - 1/3 * flareRealY) / this.hexRadius);
@@ -4822,10 +4907,21 @@ export class BattleScene extends Phaser.Scene {
                 //   用户实报：船就在后面不远处，舰队却掉头迎接，补给满后又掉回来 = 两次丑陋机动。
                 const nearAux: any = inboundAux
                     && Math.hypot(inboundAux.x - fleet.x, inboundAux.y - fleet.y) < 8 * this.hexRadius ? inboundAux : null;
+                // [v55] 挨打不停船：受击且攻击者在射程内 ⇒ 停船等补给改为"边补给边滑开"，
+                //   否则 _regrouping 原地驻留 = 固定靶（"被动挨打"根因③）。滑开目标逐帧重算，
+                //   只做位移、不改撤退态、不追击（与 R10-A1/B8「自卫开火但不追击」同口径）。
+                const kiteVec = (underFire && attackerFleet && attackerDist != null && attackerDist <= strikeRange)
+                    ? (() => { const a = Math.atan2(fleet.y - attackerFleet.y, fleet.x - attackerFleet.x); return { x: fleet.x + Math.cos(a) * 140, y: fleet.y + Math.sin(a) * 140 }; })()
+                    : null;
                 if (supplyChainLive && currentSupply < 90) {
                     // v6.1：补给圈内（含运输舰覆盖）→ 停船就地补给（补给速度 AUX_SUPPLY_RATE 远大于流失率）
-                    fleet._regrouping = true;
-                    fleetTargetX = fleet.x; fleetTargetY = fleet.y;
+                    if (kiteVec) {
+                        fleet._regrouping = false;
+                        fleetTargetX = kiteVec.x; fleetTargetY = kiteVec.y;
+                    } else {
+                        fleet._regrouping = true;
+                        fleetTargetX = fleet.x; fleetTargetY = fleet.y;
+                    }
                     const regroupDone = currentSupply > 80;
                     if (regroupDone) {
                         fleet._regrouping = false;
@@ -4835,8 +4931,13 @@ export class BattleScene extends Phaser.Scene {
                 } else if (nearAux) {
                     // [v41] 双向会合（**仅当船还远**）：舰队转向运输舰，缩短断粮暴露时间。
                     //   船已在附近时走 S0-船近停等（决策层），寻路侧配合 = 不进本分支，原地停船。
-                    fleet._regrouping = true;
-                    fleetTargetX = fleet.x; fleetTargetY = fleet.y;
+                    if (kiteVec) {
+                        fleet._regrouping = false;
+                        fleetTargetX = kiteVec.x; fleetTargetY = kiteVec.y;
+                    } else {
+                        fleet._regrouping = true;
+                        fleetTargetX = fleet.x; fleetTargetY = fleet.y;
+                    }
                 } else if (nearestSupply && !supplyChainLive) {
                     fleetTargetX = nearestSupply.x; fleetTargetY = nearestSupply.y;
                     // 已到达补给点 → 标记重组状态，等待恢复
@@ -4857,7 +4958,9 @@ export class BattleScene extends Phaser.Scene {
                 // 撤退中若敌军在射程内，标记接敌以触发拖刀开火。
                 // R10-A1/B8：去掉 `!_regrouping` —— 重组驻留期不得"站着挨打"。isEngaging 只影响
                 //   开火门/朝向，不改位移目标（重组时目标=自身，不会追击），故重组中"自卫开火但不追击"。
-                isEngaging = !!(closestEnemyFleet && minFleetDist < 250);
+                // [v55] 250px 硬编码是"被动挨打"主病灶（武器射程 560~880 ⇒ 300~880px 内被白嫖）：
+                //   现还击半径 = 本舰队最远武器射程；攻击者即使 fuzzy 也已在上方注入 closestEnemyFleet。
+                isEngaging = !!(closestEnemyFleet && minFleetDist < strikeRange);
             } else if (fleet.state === 'engaging' && closestEnemyFleet) {
                 isEngaging = true;
                 // ===== [v32] **战法优先于姿态**：分舰队的角色决定机动方式 =====
@@ -4869,7 +4972,10 @@ export class BattleScene extends Phaser.Scene {
                 const mRole = (fleet as any)._maneuverRole as string | undefined;
                 const mKind = (fleet as any)._maneuverTargetKind as string | undefined;
                 /** 迂回授权：被战法指定为左右翼 ⇒ 强制走弧线绕向敌军侧后（不再取决于提督属性） */
-                const wantsFlank = mRole === 'left' || mRole === 'right';
+                const wantsFlank = shouldFlank({
+                    commanderAggressive: (myFac.admiralStats?.command || 50) > 80,
+                    maneuverRole: mRole,
+                });
                 /** 后勤猎杀：本路目标 = 敌方补给节点（运输舰 > 敌方补给点） */
                 const raidTarget = mKind === 'enemy_supply' ? this.findEnemySupplyTarget(fleet, myFac) : null;
 
@@ -4984,7 +5090,9 @@ export class BattleScene extends Phaser.Scene {
 
                     // --- 4. 指挥官影响：统帅决定战术风格 ---
                     const cmdStat = myFac.admiralStats?.command || 50;
-                    const isAggressive = cmdStat > 80;   // 莱因哈特式：主动包抄
+                    // 统帅值提升决断与执行，但不再把每名高统帅自动改成侧翼包抄。
+                    // 侧翼路线只能由 taskForce 的 left/right 编组明确授予。
+                    const isAggressive = wantsFlank;
                     const isCautious = cmdStat < 40;     // 低能指挥官：只会正面冲
 
                     // 决策：选择攻击位置和方式
@@ -5028,16 +5136,23 @@ export class BattleScene extends Phaser.Scene {
                         fleetTargetY = closestEnemyFleet.y - Math.sin(approachAngle) * idealDist;
                     }
 
-                    // 阵型选择：根据战场态势和指挥官风格
-                    if (alliesOnTarget >= 2) {
-                        fleet.formation = 'circle';  // 3+舰队集火 → 包围
-                    } else if (isAggressive && powerRatio > 1.3) {
-                        fleet.formation = 'wedge';   // 优势+激进 → 楔形突破
-                    } else if (powerRatio > 0.8) {
-                        fleet.formation = 'line';    // 均势 → 战列对射
-                    } else {
-                        fleet.formation = 'spindle'; // 劣势 → 纺锤防御
-                    }
+                    // [v55] 阵型统一走 aiDirector.chooseFormation（本表口径 = 整合前的最终生效表；
+                    //   与状态评估处调用同一函数 ⇒ 两张互相矛盾的表收口为一张判定表，不再互相覆盖）
+                    const formationCommit = stabilizeCombatFormation({
+                        active: true,
+                        targetId: closestEnemyFleet.id,
+                        existingFormation: (fleet.formation || 'wedge') as any,
+                        candidate: chooseFormation({
+                        alliesOnTarget,
+                        powerRatio,
+                        aggressive: isAggressive || wantsFlank,
+                        avoiding: ((fleet._avoidUntil as number | undefined) ?? 0) > this.time.now,
+                        }),
+                        previous: (fleet as any)._combatFormation,
+                        emergency: ((fleet._avoidUntil as number | undefined) ?? 0) > this.time.now,
+                    });
+                    (fleet as any)._combatFormation = formationCommit.state;
+                    fleet.formation = formationCommit.formation;
                 }
             }
             
@@ -5075,7 +5190,7 @@ export class BattleScene extends Phaser.Scene {
                     prevAction: (fleet as any)._supplyAction,
                     aggression: (_facD as any)._aggression ?? 0.5,
                     holdingGround: fleet.stance === 'defend' || fleet.stance === 'siege',
-                    engaged: !!(closestEnemyFleet && minFleetDist < 250),
+                    engaged: !!(closestEnemyFleet && minFleetDist < strikeRange), // [v55] 250→真射程，与开火门同口径
                 });
                 (fleet as any)._supplyAction = _sup.action;
                 (fleet as any)._supplyRule = _sup.rule;
@@ -5282,7 +5397,10 @@ export class BattleScene extends Phaser.Scene {
                 Math.sin(fAngle - (fleet.facingSmooth ?? fAngle)),
                 Math.cos(fAngle - (fleet.facingSmooth ?? fAngle)),
             ));
-            const reformed = prevControl.phase === 'reform' && prevControl.phaseSeconds >= 1.25;
+            // 重编完成必须由实际阵面追到新朝向确认，不能靠固定时间提前放行。
+            const previousFormFacing = (fleet as any).formFacing ?? fleet.facingSmooth ?? fAngle;
+            const reformed = prevControl.phase === 'reform'
+                && headingDistance(previousFormFacing, fleet.facingSmooth ?? fAngle) <= 0.015;
             const control = advanceManeuver(prevControl, {
                 engaged: contact.engaged,
                 retreatRequested: isRetreating || fleet.stance === 'fallback',
@@ -5535,8 +5653,12 @@ export class BattleScene extends Phaser.Scene {
                 const ff0 = (fleet as any).formFacing;
                 if (typeof ff0 !== 'number') {
                     (fleet as any).formFacing = fleet.facingSmooth ?? fleet.facingAngle ?? 0;
-                } else if ((fleet as any)._uturnJustEnded === true) {
-                    (fleet as any).formFacing = fleet.facingSmooth ?? ff0;
+                } else if (control.phase === 'reform') {
+                    (fleet as any).formFacing = advanceFormationFacing(
+                        ff0,
+                        fleet.facingSmooth ?? ff0,
+                        FORM_FACING_RATE * dt,
+                    );
                 }
             }
 
@@ -5706,9 +5828,15 @@ export class BattleScene extends Phaser.Scene {
                 //   舰队步长之间交替。`Math.min(uDist, …)` 已保证不越冲 ⇒ 小 uDist 时 chase=uDist
                 //   （一帧精确贴合、无过冲无残留），大 uDist 仍受 (1.0+uDist×0.02)×dt 限速。
                 if (uDist > UNIT_CHASE_EPS) {
-                    const chase = Math.min(uDist, (1.0 + uDist * 0.02) * dt);
-                    u.sprite.x += (targetUnitX - u.sprite.x) / uDist * chase;
-                    u.sprite.y += (targetUnitY - u.sprite.y) / uDist * chase;
+                    // 归位速度只取固定预算：阵面转了 180° 只会让归位更久，
+                    // 不会因为目标距离变大而突然加速、收拢或瞬移。
+                    const nextPosition = moveTowardsAtSpeed(
+                        { x: u.sprite.x, y: u.sprite.y },
+                        { x: targetUnitX, y: targetUnitY },
+                        UNIT_FORMATION_SPEED * dt,
+                    );
+                    u.sprite.x = nextPosition.x;
+                    u.sprite.y = nextPosition.y;
                 }
                  
                 u.sprite.setAlpha(uDist > 320 ? 0.4 : 1.0);
@@ -5768,14 +5896,27 @@ export class BattleScene extends Phaser.Scene {
                 //   未平滑的瞬时舰队朝向，转向期逐帧摆动 = "文字跟着摇头"的最大观感来源）
                 const textObj = u.sprite.getByName('text') as any;
                 if (textObj) textObj.rotation = -(u as any).visHeading;
-                if (isEngaging && time - u.lastAtkTime > (u.atkInterval / dt)) {
+                // [v55] 统一开火门（aiDirector.fireGate 判定表）：①交战态=combat（既有行为）；
+                //   ②受击且攻击者在射程内=return_fire——无视撤退/信标/视野模糊，受击必还击；
+                //   ③其余=none。替换旧 `isEngaging && …` 单门（撤退/信标态被 250px 卡死的病灶）。
+                const gate = fireGate({
+                    engaged: isEngaging,
+                    underFire,
+                    attackerDist,
+                    strikeRange,
+                });
+                if (gate.canFire && time - u.lastAtkTime > (u.atkInterval / dt)) {
                     let targetShip: any = null;
-                    if (closestEnemyFleet) {
+                    // return_fire 模式强制打攻击者（谁打我我打谁）；combat 模式按目标选择结果
+                    const fireTargetFleet = (gate.mode === 'return_fire' && attackerFleet) ? attackerFleet : closestEnemyFleet;
+                    if (fireTargetFleet) {
                         // P1 地形：小行星带射程-30%
                         // v5：射程直接用 u.range（gameData 已超视距分层），去掉 +30 补偿
                         const rangeMul = this.getTerrainRangeMul(fleet.x, fleet.y);
                         const effectiveRange = u.range * rangeMul;
-                        const inRangeUnits = closestEnemyFleet.units.filter((eu: any) => 
+                        // 后勤舰不维持“战斗存活”，但始终是可选火力目标：击沉它会让
+                        // collectAuxShips / 补给链自然失去该运输舰，后勤切断战术因此成立。
+                        const inRangeUnits = targetableUnits(fireTargetFleet).filter((eu: any) =>
                             Phaser.Math.Distance.Between(u.sprite.x, u.sprite.y, eu.sprite.x, eu.sprite.y) <= effectiveRange
                         );
                         if (inRangeUnits.length > 0) targetShip = inRangeUnits[Math.floor(Math.random() * inRangeUnits.length)];
@@ -5887,7 +6028,10 @@ export class BattleScene extends Phaser.Scene {
                         // ── 指挥点修正：受击方护盾减伤 + reflect 反弹 ──
                         // 受击舰队有活跃 shield 效果（紧急抢修/紧急回避等）或处于驻守姿态 → 减伤；
                         // 有 reflect 效果（杨威利魔术的反击）→ 按系数反弹给攻击方
-                        const tgtFleet = closestEnemyFleet; // 受击的是敌方舰队
+                        const tgtFleet = fireTargetFleet; // 受击的是敌方舰队（return_fire 时=攻击者）
+                        // [v55] 受击台账写入端：一舰中弹 ⇒ 受击舰队获得 8s 还击权（aiDirector 不变量
+                        //   「受击必还击」的证据链）。读取端在本帧上方 activeAttacker 解析处。
+                        if (tgtFleet) noteIncomingFire(tgtFleet, fleet.id, this.time.now);
                         if (this.cpState && tgtFleet) {
                             const tgtDefending = tgtFleet.stance === 'defend';
                             const incomingMult = getIncomingMultiplier(this.cpState, tgtFleet.id, tgtDefending);
@@ -6158,17 +6302,18 @@ export class BattleScene extends Phaser.Scene {
             if (!aux.unit?.sprite || !aux.unit.sprite.active) return;
             const sp = aux.unit.sprite;
             const uDist = Phaser.Math.Distance.Between(sp.x, sp.y, aux.x, aux.y);
-            // [v21 JIT-1] 运输舰 sprite 同步同源修复：旧式 `if (uDist > 2)` 死区 + 增益
-            //   `min(0.12, uDist×0.005)` 在小 uDist 时塌陷到 ~0 ⇒ sprite 永久落后于独立坐标，
-            //   与死区叠加成"停-追"极限环（与作战舰阵位跟随同一病灶，见 UNIT_CHASE_EPS 注释）。
-            //   改为无死区的一阶指数收敛（增益有上限，远距不瞬移；近距不塌陷）。
+            // 显示层同样以固定步长跟随独立航行坐标，不能用指数插值吞掉积累误差。
             if (uDist > UNIT_CHASE_EPS) {
-                const k = Math.min(0.25, 1 - Math.exp(-dt / JIT_AUX_TAU));
-                sp.x += (aux.x - sp.x) * k;
-                sp.y += (aux.y - sp.y) * k;
+                const nextPosition = moveTowardsAtSpeed(
+                    { x: sp.x, y: sp.y },
+                    { x: aux.x, y: aux.y },
+                    AUX_SPEED * dt,
+                );
+                sp.x = nextPosition.x;
+                sp.y = nextPosition.y;
             }
             // 朝向 = 航向（容器 +X 为前进方向，贴图竖向需 +π/2 补偿，与作战舰一致）
-            if (uDist > 5 && aux.unit.hp > 0) sp.rotation = aux.heading;
+            if (aux.unit.hp > 0) sp.rotation = aux.heading;
         });
 
         // ===== 航母舰载机系统：突击型舰船环绕母舰的护卫机群 =====
@@ -6218,11 +6363,14 @@ export class BattleScene extends Phaser.Scene {
         const allyVisionNodes = this.tilesList.filter(t => allyFactionIds.includes(t.ownerId) && (t.type === 'castle' || t.type === 'tower' || t.type === 'planet' || t.type === 'relay'));
 
         // 1. 初始化各阵营的实时统计数据与视野状态
-        this.store.factions.forEach((f: any) => { 
-            f.inVision = (f.type === 'player'); 
+        this.store.factions.forEach((f: any) => {
+            f.inVision = (f.type === 'player');
             f.unitCount = 0;
             f.hp = 0;
             f.maxHp = 0;
+            // [v57] 面板士气/补给聚合（口径见 types/game.ts Faction.morale 注释）：先清零，末尾换算均值
+            f.morale = 0;
+            f.supply = 0;
         });
 
         this.globalFleets.forEach(fl => {
@@ -6234,6 +6382,9 @@ export class BattleScene extends Phaser.Scene {
                     // 实时累加该阵营当前的建制数与绝对血量
                     fac.unitCount += fl.units.length;
                     fl.units.forEach((u: any) => { fac.hp += u.hp; fac.maxHp += u.maxHp; });
+                    // [v57] 士气=舰队级 fl.morale 按舰数加权（末尾 ÷unitCount 得均值）；补给=舰级 u.supply 求和
+                    fac.morale += (typeof fl.morale === 'number' ? fl.morale : 100) * fl.units.length;
+                    fl.units.forEach((u: any) => { fac.supply += (typeof u.supply === 'number' ? u.supply : 100); });
                 }
 
                 // 2. 战争迷雾：敌方舰队默认隐藏，除非进入玩家视野
@@ -6318,6 +6469,9 @@ export class BattleScene extends Phaser.Scene {
         this.store.factions.forEach((f: any) => {
             if (f.maxHp > 0) { f.hp = (f.hp / f.maxHp) * 100; }
             else { f.hp = 0; }
+            // [v57] 士气/补给：加权和 ÷ 总舰数 = 面板均值（0-100）；无存活舰时士气 0 / 补给 100
+            if (f.unitCount > 0) { f.morale = f.morale / f.unitCount; f.supply = f.supply / f.unitCount; }
+            else { f.morale = 0; f.supply = 100; }
         });
         
         this.store.fleetsUI = uiData;
@@ -6402,21 +6556,34 @@ export class BattleScene extends Phaser.Scene {
             this.updateFortressWeapon(this.game.loop.delta);
         }
 
+        // [v57] 战中提督闲聊调度：部署期不开口；开战 25s 后第一句，之后每 30~55s 一句
+        if (!(this.store as any).battleDeployPhase) {
+            if (this.nextBanterAt === 0) this.nextBanterAt = this.time.now + 25000;
+            else if (this.time.now >= this.nextBanterAt) {
+                this.nextBanterAt = this.time.now + 30000 + Math.random() * 25000;
+                this.emitBanter();
+            }
+        }
+
         this.checkGameEnd();
     
     }
 
     // 渲染漫画风对话气泡（固定于头像框右侧）
-    private showFleetDialogue(fleet: any, eventType: string, isDefeat: boolean = false) {
+    // [v58] customText：banter 闲聊由 emitBanter 预选台词（含防连续重复），事件台词仍从池内随机
+    private showFleetDialogue(fleet: any, eventType: string, isDefeat: boolean = false, customText?: string) {
         const myFac = this.factionMap.get(fleet.factionId);
         if (!myFac) return;
         if (myFac.team !== 1 && !myFac.inVision) return;
 
         const admName = myFac.name.replace('舰队', ''); 
         let pool = battleDialogues[admName]?.[eventType] || battleDialogues['general']?.[eventType];
-        if (!pool || pool.length === 0) return;
+        if (customText === undefined && (!pool || pool.length === 0)) return;
 
-        const text = pool[Math.floor(Math.random() * pool.length)];
+        const text = customText ?? pool![Math.floor(Math.random() * pool!.length)];
+        // [v58] 单例气泡：任意时刻至多一个在场气泡，新建前杀掉旧气泡补间并销毁，杜绝互相遮挡
+        this.activeDialogues.forEach(b => { this.tweens.killTweensOf(b); b.destroy(); });
+        this.activeDialogues = [];
         const targetShip = isDefeat ? null : fleet.units[0];
         
         const cam = this.cameras.main;
@@ -6451,12 +6618,9 @@ export class BattleScene extends Phaser.Scene {
         
         bubble.add([bg, txt]);
 
-        if (!isDefeat && targetShip) {
-            bubble.setData('targetShip', targetShip);
-            this.activeDialogues.push(bubble);
-        } else if (isDefeat) {
-            bubble.setScale(targetZoom);
-        }
+        // [v58] 统一入列 activeDialogues 参与单例清理；targetShip 为 null（击毁语录）时跟随循环跳过定位
+        bubble.setData('targetShip', targetShip);
+        this.activeDialogues.push(bubble);
 
         bubble.setScale(0);
         this.tweens.add({
@@ -6471,6 +6635,32 @@ export class BattleScene extends Phaser.Scene {
                 });
             }
         });
+    }
+
+    /** [v57→v58] 战中提督闲聊：随机可见提督 → 台词池（专属 banter 优先、general 兜底）→ 旗舰位置浮动气泡。
+     *  [v58] 不再走 GameHeader 右侧立绘卡（store.showDialog）——会被军议任务指令侧栏遮挡；
+     *  改调 showFleetDialogue(fl, 'banter', false, text) 以旗舰气泡呈现（预选台词含防连续重复），
+     *  与事件台词同一呈现层、单例互不遮挡。
+     *  ⚠ 选人前先按可见性过滤（不可见敌舰直接排除）：否则随机选中迷雾敌舰会静默吞掉一次
+     *    发言配额（探针实测 calls=0 而 nextBanterAt 已重排的根因）。 */
+    private emitBanter() {
+        const cands = this.globalFleets.filter(fl => {
+            if (fl.units.length === 0) return false;
+            const fac = this.factionMap.get(fl.factionId);
+            return !!fac && (fac.team === 1 || fac.inVision);
+        });
+        if (!cands.length) return;
+        const fl = cands[Math.floor(Math.random() * cands.length)];
+        const fac = this.factionMap.get(fl.factionId)!;
+        const admName = String(fac.name).replace('舰队', '');
+        const pool = battleDialogues[admName]?.['banter'] || battleDialogues['general']?.['banter'];
+        if (!pool || pool.length === 0) return;
+        let text = pool[Math.floor(Math.random() * pool.length)];
+        if (pool.length > 1 && text === this.lastBanterText) {
+            text = pool[(pool.indexOf(text) + 1) % pool.length];   // 防连续重复同一句
+        }
+        this.lastBanterText = text;
+        this.showFleetDialogue(fl, 'banter', false, text);   // [v58] 旗舰位置浮动气泡（单例），替代右侧立绘卡
     }
 
     // ===== 伊谢尔伦要塞武器系统 =====
@@ -6834,7 +7024,7 @@ export class BattleScene extends Phaser.Scene {
         const aliveFactions = new Set<number>();
         const aliveTeams = new Set<number>();
         this.globalFleets.forEach(fl => {
-            if (fl.units.some((u: any) => u.hp > 0)) {
+            if (hasCombatUnits(fl)) {
                 aliveFactions.add(fl.factionId);
                 const f = this.factionMap.get(fl.factionId);
                 if (f && typeof f.team === 'number') aliveTeams.add(f.team);

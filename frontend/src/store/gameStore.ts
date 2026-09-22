@@ -2294,6 +2294,15 @@ export const useGameStore = defineStore('game', () => {
       if (phaserCommandDispatcher) phaserCommandDispatcher(id, type, payload);
   };
 
+  // [G4] 战前军议全屏层 → BattleScene 的「部署动作」通道：`formation` / `tactic` / `start`。
+  //   ⚠ 不复用 dispatchFleetCommand：那条通道要求 id 命中某支**己方舰队**，而部署动作是**全局**的
+  //   （开战、选阵型与舰队无关），借道会触发布阵权限校验并产出无意义的 toast。
+  let phaserDeployDispatcher: ((action: string, value?: any) => void) | null = null;
+  const setPhaserDeployDispatcher = (fn: any) => { phaserDeployDispatcher = fn; };
+  const dispatchDeployAction = (action: string, value?: any) => {
+      if (phaserDeployDispatcher) phaserDeployDispatcher(action, value);
+  };
+
   // ===== 提督扮演：军议面板状态（仅指挥制使用；BattleScene 镜像写入）=====
   /** 战前部署阶段（军议面板据此全员可派任务 + 自动展开） */
   const battleDeployPhase = ref(false);
@@ -2309,6 +2318,11 @@ export const useGameStore = defineStore('game', () => {
   const supremeCommanderCandidates = ref<any[]>([]);
   /** 军议面板开关 */
   const warRoomOpen = ref(false);
+  /** [G4] 战前军议全屏层：当前选定的初始阵型（BattleScene 镜像写入，开战时生效）。
+   *  单一真源仍是 `BattleScene.deployFormation`，此处只做 UI 显示与回读。 */
+  const deployFormation = ref<string>('wedge');
+  /** [G4] 战前军议全屏层：旗舰开局姿态（值域=stance：search/siege/defend） */
+  const deployTactic = ref<string>('search');
 
   // ===== P0 toast 队列化：避免后续通知覆盖前一条 =====
   const toastQueue = ref<string[]>([]);
@@ -4318,6 +4332,7 @@ export const useGameStore = defineStore('game', () => {
     setPhaserMatchLauncher, setPhaserEditorInitializer,
     battleDialog, showDialog,
     setPhaserCommandDispatcher, dispatchFleetCommand,
+    setPhaserDeployDispatcher, dispatchDeployAction, deployFormation, deployTactic,
     // 战略层
     strategicNodes, strategicFleets, universeDate, playerMerit, playerRank, initStrategicMap, strategicTimeSpeed, strategicTick,
     selectedFleetId, issueFleetMoveOrder, issueWarpOrder, retreatFleet,
