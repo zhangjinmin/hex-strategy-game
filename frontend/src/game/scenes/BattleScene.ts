@@ -25,7 +25,7 @@ import { updateSupplyChain, collectAuxShips, moveAuxShips, isSupplyUnit, AUX_SPE
 import { advanceFormationFacing, headingDistance, moveTowardsAtSpeed } from '../fleetKinematics';
 import { combatUnits, hasCombatUnits, targetableUnits } from '../combatRoster';
 // 提督扮演：总指挥判定 / 直接命令拦截 / 任务指令（仅指挥制启用）
-import { pickSupremeCommander, isDirectCommandAllowed, DIRECT_COMMAND_TYPES, buildMission, ROLE_LABEL, PLAN_ROLE_LABEL, type Mission } from '../TacticalCommandSystem';
+import { pickSupremeCommander, isDirectCommandAllowed, DIRECT_COMMAND_TYPES, buildMission, intentLabel, intentKindFor, ROLE_LABEL, PLAN_ROLE_LABEL, type Mission } from '../TacticalCommandSystem';
 // 兵力折算：舰种 HP 表（单一真源）与 500:1 比例尺，正反映射共用
 import {
     SHIP_TYPE_HP, SHIP_SCALE, resolveShipType,
@@ -35,8 +35,8 @@ import {
     allocateVisualCounts, SHIP_TYPE_CN,
     type ShipStatMods, type TroopLike,
 } from '../../config/shipScaling';
-// 阵型排布：可随实体数 n 缩放的格位枚举（原 8 坐标硬编码表的替代）
-import { formationOffsets, formationSpacing, FORMATION_SPACING, type FormationCell } from '../../config/formationLayout';
+// 阵型排布：可随实体数 n 缩放的格位枚举（原 8 坐标硬编码表的替代）；rearCommandSlot = 后方中央指挥席
+import { formationOffsets, formationSpacing, rearCommandSlot, FORMATION_SPACING, type FormationCell } from '../../config/formationLayout';
 import type { FormationType } from '../../config/formations';
 // [v33] 旧案 44 图战术模块整合（docs/design/loch-web-plan/02_*）：
 //   **全部走单一真源 import，禁止再在本文件内联 beats 表 / 地形分支 / 舰种装甲表。**
@@ -73,8 +73,33 @@ import {
 import {
     MANEUVERS, selectManeuver, assignDetachments, splitUnitCounts, requiredFleets, maneuverLabel,
     maxRoutesFor, MIN_UNITS_PER_ROUTE,
+    canSplit, SPLIT_DENY_LABELS, shouldRejoin, REJOIN_LABELS,
     type DetachmentPlan, type DetachmentSpec, type ManeuverType,
+    type SplitCheckInput, type SplitCheckResult,
 } from '../taskForce';
+// [W1] 战斗指令权威模型（纯计算单一真源）：6 级权威解析 / direct 指令生命周期 /
+//   撤退运行时三态 / 停滞看门狗 / 任务与意图术语。BattleScene 只做接线与消费，
+//   不在本文件内联任何权威规则（见 frontend/src/game/battle/CommandAuthority.ts）。
+import {
+    resolveAuthority, tickDirectAttack, cancelDirectAttack, validateDirectOrder,
+    transitionRetreatState, tickStallWatchdog, RETREAT_STATE_INIT, ROUT_RECOVER_MORALE, ATTACK_END_LABELS,
+    type DirectOrder, type DirectAttackState, type TargetTrack,
+    type RetreatState, type RetreatRuntimeState, type RetreatTierInput, type MissionKind,
+} from '../battle/CommandAuthority';
+// [W2] 阵营级侦察分队生命周期（纯计算单一真源）：放飞 / 前向扇面 / 跟踪指派 / 通知四分类。
+//   BattleScene 只做接线与消费（launchScoutForFaction / tickReconScouts），不内联侦察规则。
+import {
+    launchScoutFlights, advanceScoutFlight, shouldLaunchScouts, resolveScoutForwardHeading,
+    selectScoutTracker, classifyScoutNotice, SCOUT_FLIGHTS_PER_DETACHMENT,
+    type ScoutNoticeInput,
+} from '../battle/ScoutSystem';
+// [W2] 迷雾情报链（纯计算单一真源）：接触评估 / 接触记忆 / 持久档案 / 渲染四档。
+//   档案是团队域（无 TTL）；航迹失效唯一入口 = breakFleetIdentification（invalidateKnownTrack）。
+import {
+    assessContact, resolveContactMemory, resolveIntelDisplay,
+    createIntelArchive, recordKnownContact, getKnownContact, invalidateKnownTrack,
+    isMaterialIntelChange, type IntelContactState,
+} from '../battle/IntelSystem';
 
 
 // 贴图 key → Vite URL 映射表
@@ -93,6 +118,17 @@ const classToTypeCode: Record<string, string> = {
 const getShipTypeCode = (facTrait: string, cls: string) => {
     if (facTrait === 'rebels' && cls === '驱逐') return 'D';
     return classToTypeCode[cls] || 'AUX';
+};
+
+// [W1] 战略任务类型 → 五词任务语言（CommandAuthority.MissionKind 术语真源）。
+//   TacticalCommandSystem.MissionType 与方案 §Mission language 的映射表：
+//   进击敌舰队 / 夺取战略据点 / 固守战区 / 协同友军 / 撤回整补。
+const MISSION_KIND_BY_TYPE: Record<string, MissionKind> = {
+    attack_fleet: 'engage_force',
+    capture_planet: 'seize_objective',
+    hold_point: 'hold_sector',
+    support_fleet: 'support_ally',
+    retreat_supply: 'withdraw_supply',
 };
 
 /** [v14 ③1] 阵型过渡 morph 时长（秒，派单建议 3~5s）。
@@ -242,6 +278,33 @@ const DEPLOY_COUNTDOWN_SEC = 20;
 const DEPLOY_GAP_MIN = 160;
 const DEPLOY_GAP_FOOTPRINT_K = 1.35;
 
+// ════════════════════════════════════════════════════════════════════
+// [W2] 迷雾情报 / 侦察 / 电子战 运行时常量与类型
+// ════════════════════════════════════════════════════════════════════
+/** 交战窗口（ms）：开火后强制战斗接触、不可消失（resolveContactMemory 的 fired/engaged 输入） */
+const EXCHANGE_WINDOW_MS = 5000;
+/** 侦察放飞冷却（ms，阵营分队级） */
+const SCOUT_LAUNCH_COOLDOWN_MS = 30000;
+/** 电子战假目标投放间隔（ms） */
+const EW_DECOY_INTERVAL_MS = 8000;
+/** 电子战假目标存活（ms；expiresAt 过期即清） */
+const EW_DECOY_TTL_MS = 20000;
+/** 每艘电子舰的干扰强度（jammingStrength / targetJamming 数据源） */
+const EW_JAMMING_PER_SHIP = 30;
+
+/** [W2] 阵营级侦察分队运行时（design §Reconnaissance lifecycle）：每阵营 1 队，
+ *  在途机数上限 = SCOUT_FLIGHTS_PER_DETACHMENT（分兵/新建正式舰队**不增加上限**）。 */
+interface ScoutDetachment {
+    scoutFlights: any[];      // 在途航班运行时（伪舰队 + flight 状态；不进正式编制）
+    lastContactAt: number;    // 汇总：最近情报接触时间（放飞策略的陈旧判据）
+    cooldownUntil: number;    // 放飞整备冷却
+    nextSerial: number;       // 放飞序号（视觉 id 去重）
+}
+
+/** [W2] 电子战假目标（欺骗）：带 expiresAt 的过期假接触。
+ *  只以 clarity='fuzzy' 进入可疑目标列表——可被查证，绝不进交战锁定（不可开火）。 */
+interface ElectronicDecoy { id: number; x: number; y: number; team: number; expiresAt: number; }
+
 
 export class BattleScene extends Phaser.Scene {
     private store: any;
@@ -252,7 +315,26 @@ export class BattleScene extends Phaser.Scene {
     private hpBarsGraphics!: Phaser.GameObjects.Graphics;
     private playerFlare: Phaser.GameObjects.Container | null = null;
     private carrierFighters: Map<number, Phaser.GameObjects.Arc[]> = new Map();
-    private activeDialogues: Phaser.GameObjects.Container[] = [];
+    // [W1·任务B] 浮动气泡 DOM 锚点（v59/v60）：气泡渲染走 store.floatBubble + FloatBubble.vue，
+    //   本类只管锚点（跟随单位 / 击毁固定点）与单例生命周期；v58 的 Phaser 气泡（activeDialogues）已删除。
+    private floatAnchor: { mode: 'unit'; unit: any } | { mode: 'fixed'; x: number; y: number } | null = null;
+    private floatHideEvent: Phaser.Time.TimerEvent | null = null;
+    /** [W1] 本场已确认毁灭的舰队 id（direct attack 追踪档案 destroyed 判据）。
+     *  [W2] 与持久情报档案（getKnownContact）并用：本集合管"本场确认毁灭"（终态），
+     *  档案管"末次已知位置/可靠航迹"（迷雾下的追踪输入）。 */
+    private destroyedFleetIds: Set<number> = new Set();
+    // [W2] 迷雾情报持久档案（团队域 · 无 TTL；IntelSystem 单一真源）
+    private intelArchive = createIntelArchive();
+    // [W2] 阵营级侦察分队（key=factionId；放飞锚 = castlePos，分兵不增上限）
+    private scoutDetachments: Map<number, ScoutDetachment> = new Map();
+    private scoutRuntimeSeq = 1;                       // 侦察伪舰队视觉 id（负数域，避免与舰队 id 冲突）
+    // [W2] 电子战假目标（欺骗）：expiresAt 过期自动清场
+    private electronicDecoys: ElectronicDecoy[] = [];
+    // [W2] 战斗结算已开始（侦察静默门：结算后不再放飞 / 发通知）
+    private battleResolutionStarted = false;
+    /** [W3] 指挥崩溃态：无合格继任者 ⇒ 直接指令禁用（design §Failure handling：显式崩溃态，
+     *  不得用误导性的「实时指挥」文案）。checkSupremeSuccession 写入，canDirectlyControlFleet 消费。 */
+    private commandCollapsed = false;
     private factionMap: Map<number, any> = new Map(); // O(1) faction lookup cache
     // P2 战役阶段目标：1破网 → 2斩链 → 3拔旗
     private battleStage: number = 1;
@@ -1224,6 +1306,8 @@ export class BattleScene extends Phaser.Scene {
                     // 运输舰不参与阵型定位（见 moveAuxShips 独立往返），故不占用阵位号。
                     const isSupply = slot.type === 'supply' || slot.type === '补给';
                     const formationSlot = isSupply ? -1 : formationSlotCounter;
+                    // [W2] 旗舰身份 = 建造期持久标记（不再依赖会随战损前移的 units[0] 下标）
+                    const isFlagshipUnit = !isSupply && formationSlotCounter === 0;
 
                     fleetObj.units.push({
                         sprite: unitContainer, factionId: fleetData.factionId,
@@ -1238,6 +1322,8 @@ export class BattleScene extends Phaser.Scene {
                         shipCount: (slot as any).shipCount,
                         // [阵型] 部署期固定的阵位号（-1 = 不参与阵型定位）
                         formationSlot,
+                        // [W2] 旗舰持久身份（旗舰损失判定 / 3D 特效消费）
+                        isFlagship: isFlagshipUnit,
                         gridX: slot.x,
                         gridY: slot.y
                     });
@@ -1246,6 +1332,8 @@ export class BattleScene extends Phaser.Scene {
                 // [阵型] 本舰队开局参与布阵的实体数（阵型按它枚举；与 units.length 不同，
                 // 因为运输舰被排除在阵位之外）
                 fleetObj.formationCount0 = formationSlotCounter;
+                // [W2] 部署期旗舰入位：旗舰恒占受保护的后方中央指挥席（rearCommandSlot）
+                this.placeFlagshipAtRear(fleetObj);
                 this.globalFleets.push(fleetObj);
             });
         };
@@ -1401,21 +1489,25 @@ export class BattleScene extends Phaser.Scene {
                 // 添加顺序：光环 -> 尾焰 -> 战舰 -> 文字(顶)
                 unitContainer.add([aura, flame, shipImg, typeText]);
 
-                const initialAtkOffset = (idx * 300) % interval; 
-                fleet.units.push({ 
-                    sprite: unitContainer, factionId: fac.id, hp, maxHp, atk, def, range, 
-                    classType: cls as any, atkInterval: interval, speed, tier: 'none', 
+                const initialAtkOffset = (idx * 300) % interval;
+                fleet.units.push({
+                    sprite: unitContainer, factionId: fac.id, hp, maxHp, atk, def, range,
+                    classType: cls as any, atkInterval: interval, speed, tier: 'none',
                     lastAtkTime: -initialAtkOffset, state: 'moving', supply: 100,
                     // [兵力折算] 该实体摊到的精确兵力 —— 战后回写优先用它（与战役轨道同口径；
                     // 回落 deck 路径时为 undefined，回写自动退回"从 HP 反推"）
                     shipCount: u.count,
                     // [阵型] 建造期固定的阵位号（-1 = 不参与阵型定位）
                     formationSlot,
+                    // [W2] 旗舰持久身份（旗舰损失判定 / 3D 特效消费）
+                    isFlagship,
                     // v6.5 弹药：巡洋 8 / 驱逐 12 轮齐射，其余舰种无导弹（999=不适用）
                     missileAmmo: cls === '巡洋' || cls === '电子' ? 8 : (cls === '驱逐' ? 12 : 999)
                 });
                 if (!isSupplyDeck) formationSlotCounter += 1;
             });
+            // [W2] 部署期旗舰入位：旗舰恒占受保护的后方中央指挥席（rearCommandSlot）
+            this.placeFlagshipAtRear(fleet);
             // [阵型] 本舰队开局参与布阵的实体数（阵型按它枚举；与 units.length 不同，
             // 因为运输舰被排除在阵位之外）
             fleet.formationCount0 = formationSlotCounter;
@@ -1641,7 +1733,8 @@ export class BattleScene extends Phaser.Scene {
             if (!fac || fl.units.length === 0) return;
 
             // 补给判定基准必须使用旗舰的物理坐标，而非舰队虚拟阵型锚点
-            const flagship = fl.units[0];
+            // [W2] 旗舰=持久身份 isFlagship（placeFlagshipAtRear 后 units[0] 不再是旗舰）
+            const flagship = fl.units.find((u: any) => u.isFlagship === true) || fl.units[0];
             const realY = flagship.sprite.y;
             const fQ = Math.round((Math.sqrt(3)/3 * flagship.sprite.x - 1/3 * realY) / this.hexRadius);
             const fR = Math.round((2/3 * realY) / this.hexRadius);
@@ -1931,60 +2024,515 @@ export class BattleScene extends Phaser.Scene {
         this.store.triggerToast("战术信标已部署，突击舰队正在改变航向。");
     }
 
-    /** [R10-B2] 右键移动：把**选中**的己方舰队牵引到目标点。
-     *  与 deployFlare **同通道**（`targetFlare` + `stance='search'`）、**同门控**（带宽三分支），
-     *  唯一差别在"选哪支舰队"：信标取"距点击点**最近**的己方舰队"，move 取"玩家**选中**的那支"。
-     *
-     *  权限（β 口径，D1）：仅 `fac.type === 'player'` 可接收 move —— 此处是**第二道纵深校验**（第一道在右键分支 :3483）。
-     *  不用 `DIRECT_COMMAND_TYPES`/`isDirectCommandAllowed`：战役模式下 `supremeCommanderId`
-     *  可能被判给 team-1 的**盟军提督**，届时那条门控会误拒玩家自己的 move（违背诉求）。
-     *
-     *  门控语义与 deployFlare 逐字同构（team-lead 裁定②）：silent → 拒绝（不建视觉、旧标记保留）；
-     *  delayed → 建视觉 + 复用 `'flare'` 订单类型入队；direct 且频道可 → 立即生效。 */
+    // ══════════════════════════════════════════════════════════════════════════
+    // [W1] 直接指令区块（design §Direct attack / §Failure handling / §Authority and state model）
+    //   右键 = 对「选中己方舰队」下达**直接指令**：敌舰近点 → orderFleetAttack（目标=舰队身份），
+    //   空地 → orderFleetMove（精确世界坐标）。旧信标真源（deployFlare/orderFleetBeacon）已停用：
+    //   右键不再投放信标，左键路径亦无 marker 副作用。
+    //   带宽门控三分支：silent 拒发（不替换旧指令）/ delayed 入队（带 direct 标记）/ direct 放行。
+    // ══════════════════════════════════════════════════════════════════════════
+
+    /** [W1] 直接指令权限校验（第一道守卫在 handleTileClick 右键分支，此处为第二道纵深校验）：
+     *  仅「玩家阵营 + 尚有单位」的舰队可直接控制。
+     *  不用 `isDirectCommandAllowed`：战役模式下 supremeCommanderId 可能判给盟军提督，
+     *  那条门控会误拒玩家自己的直接指令（沿旧 orderFleetMove 的 β 口径裁定）。 */
+    private canDirectlyControlFleet(fleet: any): boolean {
+        if (this.commandCollapsed) return false;   // [W3] 指挥崩溃态：直接指令整体禁用
+        if (!fleet || !Array.isArray(fleet.units) || fleet.units.length === 0) return false;
+        const fac = this.factionMap.get(fleet.factionId);
+        return !!fac && fac.type === 'player';
+    }
+
+    /** [W1] 右键点位近旁的敌舰（阈值 max(60, hexRadius×1.6)）：
+     *  命中 → orderFleetAttack（攻击指令）；未命中 → orderFleetMove（移动指令）。 */
+    private findHostileFleetNear(x: number, y: number, ownFac: any): any | null {
+        if (!ownFac) return null;
+        const threshold = Math.max(60, this.hexRadius * 1.6);
+        let best: any = null; let bestD = threshold;
+        for (const ef of this.globalFleets) {
+            const efFac = this.factionMap.get(ef.factionId);
+            if (!efFac || !efFac.active || efFac.team === ownFac.team) continue;
+            if (!hasCombatUnits(ef)) continue;
+            const d = Phaser.Math.Distance.Between(x, y, ef.x, ef.y);
+            if (d < bestD) { bestD = d; best = ef; }
+        }
+        return best;
+    }
+
+    /** [W1] 指挥带宽门控（与旧信标门控同构的三分支语义，接收方 = 目标舰队当前位置）。
+     *  @returns 'rejected' = 拒发（调用方不替换旧指令）；'queued' = 已入中继队列（带 direct 标记）；
+     *           'now' = 直连放行，立即生效。 */
+    private passOrderBandwidthGate(fleet: any, order: DirectOrder): 'rejected' | 'queued' | 'now' {
+        if (!this.bwState) return 'now';
+        const comm = this.getCommCenter();
+        const dist = comm ? Phaser.Math.Distance.Between(fleet.x, fleet.y, comm.x, comm.y) : 0;
+        const status = getLinkStatus(this.bwState, dist);
+
+        if (status === 'silent') {
+            this.store.triggerToast(`⌁ 通讯链路中断：目标舰队超出中继范围，无法接收直接指令。它将继续执行既有命令。`);
+            return 'rejected';
+        }
+        if (status === 'delayed') {
+            const delayMs = relayDelayMs(this.bwState, dist);
+            // 带 direct 标记入队：送达时按 commitDirectOrder 落地（见 executeRelayedOrder）
+            queueDelayedOrder(this.bwState, 'order', fleet.id, { direct: order }, delayMs);
+            this.store.triggerToast(`⇢ 直达指令已发出，经中继节点转发中（预计 ${Math.round(delayMs / 1000)} 秒送达）。`);
+            return 'queued';
+        }
+        // direct：频道锁定失败（容量满）→ 拒发
+        if (!canOrderInstantly(this.bwState, status, fleet.id)) {
+            this.store.triggerToast(`⌁ 通信频道已满（${this.bwState.channels.size}/${this.bwState.maxChannels}）：无法与该舰队建立直连。`);
+            return 'rejected';
+        }
+        return 'now';
+    }
+
+    /** [W1] 直接指令落地（即时下达与中继送达共用的唯一写入路径）：
+     *  旧攻击生命周期收尾（cancelDirectAttack → endReason='replaced'）→ attackState=null
+     *  → _combatControl 复位巡航（清掉头/重组/相位机等陈旧运动控制器状态）→ targetFlare=null
+     *  → state='moving' → 写 directOrder + _directJustIssued（成为权威后才 ack，见权威主链）。
+     *  ⚠ 不动 fleet.stance：姿态是玩家的长期设定，不被单条指令改写。 */
+    private commitDirectOrder(fleet: any, order: DirectOrder) {
+        cancelDirectAttack(((fleet as any).attackState ?? null) as DirectAttackState | null);
+        (fleet as any).attackState = null;
+        (fleet as any)._combatControl = { phase: 'cruise', phaseSeconds: 0 };
+        fleet.targetFlare = null;
+        fleet.state = 'moving';
+        (fleet as any).directOrder = order;
+        (fleet as any)._directJustIssued = true;
+    }
+
+    /** [W1] 右键敌舰 = 直接攻击指令（目标 = **舰队身份** targetFleetId，不是格子/坐标）。
+     *  §Failure handling 第 1 条：对无效/已毁灭目标的攻击**被拒绝且不替换当前指令**（浮泡「目标无效」）。 */
+    private orderFleetAttack(fleet: any, targetFleet: any) {
+        if (!this.canDirectlyControlFleet(fleet) || !targetFleet) return;
+        const order: DirectOrder = { kind: 'attack', targetFleetId: targetFleet.id, issuedAt: this.time.now };
+        // 指令校验（单一真源 validateDirectOrder）：track 供合法性判据（alive + 身份一致）
+        const track: TargetTrack = {
+            targetFleetId: targetFleet.id,
+            lastKnown: { x: targetFleet.x, y: targetFleet.y, t: this.time.now },
+            liveVisible: true,
+            reliable: this.isTargetTrackReliable(targetFleet, this.factionMap.get(fleet.factionId)?.team ?? -1),
+            destroyed: this.destroyedFleetIds.has(targetFleet.id) || !hasCombatUnits(targetFleet),
+        };
+        if (!validateDirectOrder(order, track)) {
+            // 被拒绝且**不替换**原指令：浮泡「目标无效」（ATTACK_END_LABELS 术语真源）
+            this.showFleetDialogue(fleet, 'order', false, ATTACK_END_LABELS.invalid_target);
+            return;
+        }
+        if (this.passOrderBandwidthGate(fleet, order) !== 'now') return;
+        this.commitDirectOrder(fleet, order);
+        // [W3] 指针反馈：成功攻击 ⇒ 敌目标短暂 target-lock 标记
+        this.showTargetLock(targetFleet.x, targetFleet.y);
+    }
+
+    /** [W1] 右键空地 = 直接移动指令（精确世界目的地，不是格子近似）。 */
     private orderFleetMove(fleet: any, x: number, y: number) {
-        const fac = fleet ? this.factionMap.get(fleet.factionId) : null;
-        // ── 纵深校验（β 第二道）：非玩家阵营 / 无存活单位 → 拒绝 ──
-        if (!fleet || !fac || fac.type !== 'player') {
+        if (!this.canDirectlyControlFleet(fleet)) {
             this.store.triggerToast("⛔ 该舰队不隶属于你可直接指挥的己方阵营。");
             return;
         }
-        if (!fleet.units || fleet.units.length === 0) {
-            this.store.triggerToast("⛔ 选中舰队已无可指挥单位。");
-            return;
-        }
+        const order: DirectOrder = { kind: 'move', x, y, issuedAt: this.time.now };
+        if (this.passOrderBandwidthGate(fleet, order) !== 'now') return;
+        this.commitDirectOrder(fleet, order);
+        // [W3] 指针反馈：成功移动 ⇒ 精确目的地短暂 chevron/ring 标记
+        this.showPointerChevron(x, y);
+    }
 
-        // ── 指挥带宽门控：与 deployFlare 逐字同构（接收方 = 选中舰队当前位置）──
-        if (this.bwState) {
-            const comm = this.getCommCenter();
-            const dist = comm ? Phaser.Math.Distance.Between(fleet.x, fleet.y, comm.x, comm.y) : 0;
-            const status = getLinkStatus(this.bwState, dist);
+    // ════════════════════════════════════════════════════════════════════════
+    // [W3] 指针反馈转发（battle3dFx 总线 → Battle3DOverlay 三接口；
+    //   design §Pointer feedback：短暂标记、无常驻大 hex）
+    // ════════════════════════════════════════════════════════════════════════
 
-            if (status === 'silent') {
-                this.store.triggerToast(`⌁ 通讯链路中断：目标舰队无法接收移动命令。它将继续执行既有命令。`);
-                return;                                  // 被拒：不建视觉（旧标记保留）
+    /** 成功移动指令 → 目的地短暂 chevron/ring（3D 层渲染并自动淡出） */
+    private showPointerChevron(x: number, y: number) {
+        pushFx3d({ kind: 'pointer_chevron', at: { x, y }, color: 0x66ccff });
+    }
+
+    /** 成功攻击指令 → 敌目标短暂 target-lock 标记（3D 层渲染并自动淡出） */
+    private showTargetLock(x: number, y: number) {
+        pushFx3d({ kind: 'pointer_target_lock', at: { x, y }, color: 0xff4444 });
+    }
+
+    /** 战斗结算清理瞬态指针标记（design §Failure handling 末条） */
+    private clearPointerMarkers() {
+        pushFx3d({ kind: 'pointer_clear', color: 0 });
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // [W2] 迷雾情报 / 阵营级侦察 / 主动电子战（design §Fog and intelligence、
+    //   §Reconnaissance lifecycle、§Electronic warfare）。
+    //   规则真源 = battle/IntelSystem + battle/ScoutSystem；本区只做接线与消费。
+    // ════════════════════════════════════════════════════════════════════════
+
+    /** [W2] 确认识别 → 持久档案（recordKnownContact 的 BattleScene 唯一写入点）。
+     *  开火互认（fire loop）与实时重捕获（雾链）共用；`_revealedByFire*` 台账只由开火路径写。 */
+    private markFleetIdentified(team: number, fleet: any) {
+        if (!fleet) return;
+        (fleet as any)._trackReliable = true;
+        const byTeams: Set<number> = (((fleet as any)._identifiedByTeams ??= new Set<number>()));
+        byTeams.add(team);
+        recordKnownContact(this.intelArchive, {
+            team, targetId: fleet.id, kind: 'fleet',
+            x: fleet.x, y: fleet.y, now: this.time.now,
+            strength: (fleet.units || []).length,
+        });
+    }
+
+    /** [W2] 航迹失效**唯一入口**（design §Fog：仅显式电子战/欺骗转换）：
+     *  置 _trackReliable=false + invalidateKnownTrack（全场景唯一调用点），档案保留供重新识别。 */
+    private breakFleetIdentification(fleet: any) {
+        if (!fleet) return;
+        (fleet as any)._trackReliable = false;
+        const fac = this.factionMap.get(fleet.factionId);
+        // 所有已确认过它的敌对团队：航迹显式失效（reliable=false，记录保留）
+        this.store.factions.forEach((f: any) => {
+            if (fac && f.team !== fac.team) {
+                invalidateKnownTrack(this.intelArchive, f.team, fleet.id);
             }
-            if (status === 'delayed') {
-                const delayMs = relayDelayMs(this.bwState, dist);
-                this.createPlayerFlareVisual(x, y);      // delayed：保留视觉（与信标同语义）
-                queueDelayedOrder(this.bwState, 'flare', fleet.id, { x, y }, delayMs);
-                this.store.triggerToast(`⇢ 移动命令已发出，中继转发中（预计 ${Math.round(delayMs / 1000)} 秒送达）。`);
+        });
+    }
+
+    /** [W2] 目标可靠航迹判定（direct attack track 的 reliable 消费）：
+     *  显式反制置 false 后不可靠，直到重新确认（markFleetIdentified 重建）。 */
+    private isTargetTrackReliable(target: any, viewerTeam: number): boolean {
+        if (!target) return false;
+        if ((target as any)._trackReliable === false) return false;
+        const tid = (target as any).id ?? (target as any).targetId;
+        const rec = getKnownContact(this.intelArchive, viewerTeam, tid);
+        return rec ? rec.reliable !== false : true;
+    }
+
+    /** [W2] 敌基地发现：舰队视距内确认 ⇒ 写持久档案（kind='base'，确认后常驻可见）。 */
+    private tryDiscoverEnemyBase(myFac: any, t: any) {
+        if (!t || t.type !== 'castle') return;
+        const oFac = this.factionMap.get(t.ownerId);
+        if (!oFac || oFac.team === myFac.team) return;
+        recordKnownContact(this.intelArchive, {
+            team: myFac.team, targetId: `base:${oFac.id}`, kind: 'base',
+            x: t.x, y: t.y, now: this.time.now, strength: null,
+        });
+    }
+
+    /** [W2] 敌基地是否已为该团队所知（Battle3DOverlay.updateCastleIntelVisibility 同档案消费；
+     *  确认后常驻）。入参 fac = 敌方阵营对象（overlay 协议）。 */
+    private isEnemyBaseKnownTo(team: number, fac: any): boolean {
+        const facId = fac?.id ?? fac;
+        return !!getKnownContact(this.intelArchive, team, `base:${facId}`);
+    }
+
+    /** [W2] 战略格情报门（AI 选目标前的**舰队域**情报检查，禁止全知敌方坐标）：
+     *  中立/己方/盟军占格天然已知；敌占格须在该舰队视距内（顺带确认其基地）或基地已在档案。 */
+    private isTileKnownToFleet(fleet: any, myFac: any, t: any): boolean {
+        if (!t) return false;
+        const oFac = t.ownerId !== 0 ? this.factionMap.get(t.ownerId) : null;
+        if (!oFac || oFac.team === myFac.team) return true;
+        const d = Phaser.Math.Distance.Between(fleet.x, fleet.y, t.x, t.y);
+        if (d <= this.getVisionRange(fleet, myFac)) {
+            this.tryDiscoverEnemyBase(myFac, t);
+            return true;
+        }
+        return this.isEnemyBaseKnownTo(myFac.team, oFac);
+    }
+
+    /** [W2] 部署期旗舰入位：旗舰恒占**受保护的后方中央指挥席**（rearCommandSlot），
+     *  与 formationSlot 下标解耦（身份 = u.isFlagship 持久标记，不再依赖会前移的 units[0]）。 */
+    private placeFlagshipAtRear(fleet: any) {
+        const units = ((fleet?.units || []) as any[]);
+        const flagship = units.find((u: any) => u.isFlagship === true);
+        if (!flagship) return;
+        const combat = units.filter((u: any) => (u.formationSlot ?? -1) >= 0);
+        const offs = formationOffsets(fleet.formation || 'wedge', Math.max(1, combat.length));
+        const cmdSlot = rearCommandSlot(offs);
+        const holder = combat.find((u: any) => u.formationSlot === cmdSlot && u !== flagship);
+        if (holder) {
+            const tmp = flagship.formationSlot;
+            flagship.formationSlot = holder.formationSlot;
+            holder.formationSlot = tmp;
+        } else {
+            flagship.formationSlot = cmdSlot;
+        }
+    }
+
+    /** [W2] 阵营级侦察放飞（design §Reconnaissance lifecycle）：
+     *  · 放飞锚 = 阵营部署中心（castlePos），**不是**母舰——分兵/新建正式舰队不增加上限；
+     *  · 汇总状态判定（shouldLaunchScouts）：情报陈旧 + 无在途 + 不在整备冷却；
+     *  · 搜索扇面前向化（resolveScoutForwardHeading 指向敌战线/敌接近估计）；
+     *  · 例行放飞**不发全局通知**（通知抑制：classifyScoutNotice 只放行 4 类）。 */
+    private launchScoutForFaction(fac: any) {
+        if (this.battleResolutionStarted || !fac?.active || !fac.castlePos) return;
+        let det = this.scoutDetachments.get(fac.id);
+        if (!det) {
+            det = { scoutFlights: [], lastContactAt: 0, cooldownUntil: 0, nextSerial: 0 };
+            this.scoutDetachments.set(fac.id, det);
+        }
+        const liveCount = det.scoutFlights.filter((sf: any) => sf.flight?.phase !== 'lost').length;
+        if (!shouldLaunchScouts({
+            now: this.time.now, lastContactAt: det.lastContactAt,
+            cooldownUntil: det.cooldownUntil, liveFlightCount: liveCount,
+        })) return;
+        // 前向扇面指向敌战线（敌舰队位置优先；无实时接触则指向**已知**敌方基地）
+        const hostilePositions: { x: number; y: number }[] = [];
+        this.globalFleets.forEach((ef: any) => {
+            const efFac = this.factionMap.get(ef.factionId);
+            if (efFac && efFac.team !== fac.team && efFac.active && hasCombatUnits(ef)) {
+                hostilePositions.push({ x: ef.x, y: ef.y });
+            }
+        });
+        const hostileObjectives: { x: number; y: number }[] = [];
+        this.tilesList.forEach((t: any) => {
+            if (t.type !== 'castle') return;
+            const bFac = this.factionMap.get(t.ownerId);
+            if (bFac && bFac.team !== fac.team && this.isEnemyBaseKnownTo(fac.team, bFac)) {
+                hostileObjectives.push({ x: t.x, y: t.y });
+            }
+        });
+        const parentFleet = this.globalFleets.find((fl: any) => fl.factionId === fac.id && hasCombatUnits(fl)) ?? null;
+        // 敌情入参：无敌情时回退母舰朝向（仅作 resolveScoutForwardHeading 的 currentHeading 入参）
+        const curHdg = parentFleet ? (parentFleet.facingSmooth ?? parentFleet.facingAngle ?? 0) : 0;
+        const scoutHeading = resolveScoutForwardHeading({
+            x: fac.castlePos.x, y: fac.castlePos.y,
+            currentHeading: curHdg,
+            hostilePositions,
+            hostileObjectives,
+        });
+        const flights = launchScoutFlights({
+            parentFleetId: parentFleet ? parentFleet.id : -1,
+            factionId: fac.id, team: fac.team,
+            x: fac.castlePos.x, y: fac.castlePos.y,
+            heading: scoutHeading,
+            parentSpeed: 1, now: this.time.now,
+            serial: det.nextSerial++,
+        });
+        // 分队视觉上限 = SCOUT_FLIGHTS_PER_DETACHMENT（分兵不增上限；放飞不裁母舰编制）
+        flights.slice(0, SCOUT_FLIGHTS_PER_DETACHMENT).forEach((f) => {
+            det!.scoutFlights.push(this.createScoutFlightRuntime(f, fac));
+        });
+        det.cooldownUntil = this.time.now + SCOUT_LAUNCH_COOLDOWN_MS;
+    }
+
+    /** [W2] 侦察机运行时：轻量伪舰队（`_scoutFlight`，**不进正式编制** globalFleets/存档/统计）——
+     *  Battle3DOverlay 经 getRenderableFleets 取用，走 createScoutBillboard 紧凑标牌。 */
+    private createScoutFlightRuntime(flight: any, fac: any) {
+        const sprite = this.add.container(flight.x, flight.y).setDepth(4);
+        const dot = this.add.circle(0, 0, 5, fac.color ?? 0x94a3b8, 0.9);
+        sprite.add([dot]);
+        const unit = {
+            sprite, factionId: fac.id,
+            hp: flight.hp, maxHp: flight.maxHp, atk: 5, def: 0,
+            range: flight.weaponRange, classType: '驱逐', atkInterval: 1500, speed: 0,
+            lastAtkTime: 0, state: 'moving', supply: 100, missileAmmo: 0, formationSlot: -1,
+        };
+        return {
+            id: -(this.scoutRuntimeSeq++),
+            _scoutFlight: true,
+            scoutSector: flight.sector,
+            factionId: fac.id,
+            parentFleetId: flight.parentFleetId,
+            commanderId: null,
+            x: flight.x, y: flight.y,
+            state: flight.phase,
+            units: [unit],
+            stance: 'scout',
+            mission: null,
+            flight,
+        };
+    }
+
+    /** [W2] 侦察分队生命周期 tick（每帧）：advanceScoutFlight → 跟踪指派（selectScoutTracker）→
+     *  情报上报（recordKnownContact）→ 通知四分类（classifyScoutNotice；例行静默）→ 返航/损失回收。 */
+    private tickReconScouts(deltaMs: number) {
+        if (this.battleResolutionStarted) return;
+        const now = this.time.now;
+        const dtSec = Math.min(deltaMs, 100) / 1000;
+        this.scoutDetachments.forEach((det, facId) => {
+            const fac = this.factionMap.get(facId);
+            if (!fac || !fac.active) {
+                det.scoutFlights.forEach((sf: any) => { try { sf.units?.[0]?.sprite?.destroy?.(); } catch (e) { /* 视觉销毁非关键路径 */ } });
+                det.scoutFlights = [];
                 return;
             }
-            // direct：频道锁定失败（容量满）→ 拒发
-            if (!canOrderInstantly(this.bwState, status, fleet.id)) {
-                this.store.triggerToast(`⌁ 通信频道已满（${this.bwState.channels.size}/${this.bwState.maxChannels}）：无法与该舰队建立直连。`);
-                return;                                  // 被拒：不建视觉（旧标记保留）
-            }
-        }
+            det.scoutFlights = det.scoutFlights.filter((sf: any) => {
+                const flight = sf.flight;
+                const parent = sf.parentFleetId >= 0
+                    ? (this.globalFleets.find((fl: any) => fl.id === sf.parentFleetId) ?? null)
+                    : null;
+                const hostiles = this.globalFleets
+                    .filter((ef: any) => {
+                        const efFac = this.factionMap.get(ef.factionId);
+                        return !!efFac && efFac.team !== fac.team && efFac.active && hasCombatUnits(ef);
+                    })
+                    .map((ef: any) => ({ id: ef.id, x: ef.x, y: ef.y, alive: true }));
+                // 跟踪指派：分队内一旦出现新接触，由**最佳位置（最近）**的机开始跟踪，
+                //   其余机扩大前向覆盖（不重复建立航迹）；已有跟踪在途则不再指派新航迹
+                const anyTracking = det.scoutFlights.some((s2: any) => s2.flight?.contactId != null);
+                let trackerId: string | null = null;
+                if (anyTracking) {
+                    trackerId = '__none__';
+                } else {
+                    const live = det.scoutFlights.filter((s2: any) => s2.flight?.phase !== 'lost' && s2.flight?.hp > 0);
+                    let near: { x: number; y: number } | null = null;
+                    let nd = Infinity;
+                    for (const s2 of live) {
+                        for (const h of hostiles) {
+                            const dd = Math.hypot(h.x - s2.flight.x, h.y - s2.flight.y);
+                            if (dd <= (s2.flight.sensorRange || 520) && dd < nd) { nd = dd; near = { x: h.x, y: h.y }; }
+                        }
+                    }
+                    if (near) {
+                        trackerId = selectScoutTracker(
+                            live.map((s2: any) => ({ id: s2.flight.id, x: s2.flight.x, y: s2.flight.y, hp: s2.flight.hp })),
+                            near,
+                        );
+                    }
+                }
+                const tracked = flight.contactId != null
+                    ? (hostiles.find((h: any) => h.id === flight.contactId) ?? null)
+                    : null;
+                // 移交友军传感器 ⇒ 跟踪安静结束（例行转换）；显式反制失效 ⇒ trackBroken
+                const contactHandoff = !!tracked && this.globalFleets.some((af: any) => {
+                    const afFac = this.factionMap.get(af.factionId);
+                    return !!afFac && afFac.team === fac.team && hasCombatUnits(af)
+                        && Phaser.Math.Distance.Between(af.x, af.y, tracked.x, tracked.y) < 320;
+                });
+                const trackBroken = !!tracked && (tracked as any)._trackReliable === false;
+                const res = advanceScoutFlight(flight, {
+                    now, deltaSeconds: dtSec,
+                    parent: parent
+                        ? { x: parent.x, y: parent.y, alive: hasCombatUnits(parent) }
+                        : { x: fac.castlePos?.x ?? flight.originX, y: fac.castlePos?.y ?? flight.originY, alive: true },
+                    hostiles,
+                    trackerId,
+                    contactHandoff,
+                    trackBroken,
+                });
+                sf.flight = res.flight;
+                // 同步伪舰队坐标/状态（3D 投影与意图文案消费）
+                sf.x = res.flight.x; sf.y = res.flight.y;
+                sf.state = res.flight.phase;
+                const su = sf.units[0];
+                if (su) {
+                    su.sprite.x = res.flight.x; su.sprite.y = res.flight.y;
+                    su.hp = res.flight.hp;
+                }
+                // 情报上报 → 持久档案（首次确认 / 重大变化的通知判据数据源）
+                if (res.report) {
+                    const report = res.report;
+                    const tgt = this.globalFleets.find((ef: any) => ef.id === report.targetId) ?? null;
+                    const prevRec = getKnownContact(this.intelArchive, fac.team, report.targetId);
+                    const firstForTarget = !prevRec;
+                    const materialChange = isMaterialIntelChange(prevRec, {
+                        x: report.x, y: report.y, strength: tgt ? (tgt.units || []).length : null,
+                    });
+                    recordKnownContact(this.intelArchive, {
+                        team: fac.team, targetId: report.targetId, kind: 'fleet',
+                        x: report.x, y: report.y, now,
+                        strength: tgt ? (tgt.units || []).length : null,
+                    });
+                    det.lastContactAt = now;
+                    this.emitScoutNotice({ event: 'contact', firstForTarget, materialChange }, fac);
+                }
+                if (res.trackLost) this.emitScoutNotice({ event: 'track_lost' }, fac);
+                if (res.scoutLost) this.emitScoutNotice({ event: 'scout_loss' }, fac);
+                // 返航到锚 / 损失 ⇒ 回收视觉（例行返航静默）
+                if (res.returned || res.flight.phase === 'lost') {
+                    try { su?.sprite?.destroy?.(); } catch (e) { /* 视觉销毁非关键路径 */ }
+                    return false;
+                }
+                return true;
+            });
+            // 自动放飞（阵营汇总状态判定；例行放飞静默）
+            this.launchScoutForFaction(fac);
+        });
+        // 电子战假目标过期清场（expiresAt）
+        this.electronicDecoys = this.electronicDecoys.filter((d) => now < d.expiresAt);
+    }
 
-        // ── 生效：建视觉 + 写命令 + 清任务 + toast ──
-        this.createPlayerFlareVisual(x, y);
-        fleet.targetFlare = { x, y };
-        fleet.stance = 'search';
-        // D3：清任务（+ 军议面板镜像），否则 fleetIntentText 会显示旧任务名而舰队实际在 move。
-        fleet.mission = null;
-        (fac as any).mission = null;
-        this.store.triggerToast(`▸ 【${fac.name || '己方舰队'}】已奉命前往目标空域。`);
+    /** [W2] 侦察通知四分类出口（classifyScoutNotice 单一真源）：例行事件返回 null ⇒ 不发全局通知。
+     *  仅 4 类文案：首次确认 / 重大变化 / 侦察损失 / 重要航迹丢失。 */
+    private emitScoutNotice(input: ScoutNoticeInput, fac: any) {
+        const kind = classifyScoutNotice({
+            event: input.event, firstForTarget: input.firstForTarget, materialChange: input.materialChange,
+        });
+        if (!kind) return;
+        const who = fac.name || '侦察';
+        const text = kind === 'first_contact'
+            ? `【${who}】首次确认接触。`
+            : kind === 'strength_change'
+            ? `【${who}】敌兵力方位重大变化。`
+            : kind === 'scout_loss'
+            ? `【${who}】侦察损失。`
+            : `【${who}】重要航迹丢失。`;
+        this.store.triggerToast?.(text);
+    }
+
+    /** [W2] 渲染层取数口（Battle3DOverlay.syncShips 消费）：正式编制 + 侦察伪舰队。
+     *  侦察存于阵营分队（scoutDetachments），**不进正式编制**（globalFleets / 存档 / 战斗统计）。 */
+    private getRenderableFleets(): any[] {
+        const extras: any[] = [];
+        this.scoutDetachments.forEach((det) => {
+            for (const sf of det.scoutFlights) {
+                if (sf.flight?.phase !== 'lost') extras.push(sf);
+            }
+        });
+        return extras.length > 0 ? this.globalFleets.concat(extras) : this.globalFleets;
+    }
+
+    /** [W2] 战斗结算开始 ⇒ 侦察静默（design §Reconnaissance lifecycle 末段）：
+     *  销毁侦察视觉 / 清空分队 / 取消后续放飞与事件（结算期不再产生新情报事件）。 */
+    private beginBattleResolution() {
+        // [W3] 瞬态指针标记清理（design §Failure handling 末条）
+        this.clearPointerMarkers();
+        if (this.battleResolutionStarted) return;
+        this.battleResolutionStarted = true;
+        this.scoutDetachments.forEach((det) => {
+            det.scoutFlights.forEach((sf: any) => {
+                try { sf.units?.[0]?.sprite?.destroy?.(); } catch (e) { /* 视觉销毁非关键路径 */ }
+            });
+            det.scoutFlights = [];
+            det.cooldownUntil = Infinity;   // 取消后续放飞
+        });
+        this.electronicDecoys = [];
+    }
+
+    /** [W2] 电子干扰强度（jammingStrength / targetJamming 数据源）：按在编电子舰数量聚合。 */
+    private electronicJammingOf(fleet: any): number {
+        if (!fleet || !fleet.units) return 0;
+        let n = 0;
+        for (const u of fleet.units) {
+            if (u.classType === '电子' || u.classType === 'electronic') n++;
+        }
+        return n * EW_JAMMING_PER_SHIP;
+    }
+
+    /** [W2] 主动电子战（design §Electronic warfare）：
+     *  · 需要**真实电子舰**才可实施干扰/欺骗；
+     *  · 欺骗 = 生成带 expiresAt 的假目标（fuzzy 可疑目标，可查证不可开火）；
+     *  · 隐蔽转换 = 脱离交战窗口后 breakFleetIdentification（航迹失效唯一入口）。 */
+    private activateElectronicWarfare(fleet: any, myFac: any) {
+        // 需要真实电子舰才可实施干扰
+        const hasEwShip = fleet.units.some((u: any) => u.classType === '电子' || u.classType === 'electronic');
+        if (!hasEwShip || this.battleResolutionStarted) return;
+        const now = this.time.now;
+        // 欺骗：周期性假目标（expiresAt 过期自动清；fuzzy ⇒ 可查证不可开火）
+        if (now >= ((fleet as any)._nextDecoyAt ?? 0)) {
+            (fleet as any)._nextDecoyAt = now + EW_DECOY_INTERVAL_MS;
+            this.electronicDecoys.push({
+                id: -(900000 + this.electronicDecoys.length + this.scoutRuntimeSeq),
+                x: fleet.x + (Math.random() - 0.5) * 360,
+                y: fleet.y + (Math.random() - 0.5) * 360,
+                team: myFac.team,
+                expiresAt: now + EW_DECOY_TTL_MS,
+            });
+        }
+        // 隐蔽转换：脱离交战窗口后，显式电子战/欺骗可重建"未识别"（唯一失效入口）
+        const revealedAt = (fleet as any)._revealedByFireAt;
+        const inExchange = revealedAt != null && now - revealedAt < EXCHANGE_WINDOW_MS;
+        const byTeams: Set<number> | undefined = (fleet as any)._identifiedByTeams;
+        if (!inExchange && (fleet as any)._trackReliable !== false && byTeams && byTeams.size > 0) {
+            this.breakFleetIdentification(fleet);
+            byTeams.clear();
+        }
     }
 
     /**
@@ -2159,15 +2707,11 @@ export class BattleScene extends Phaser.Scene {
             const fac = this.factionMap.get(fl.factionId);
             return fac && fac.team === 1 && fl.units && fl.units.length > 0;
         });
-        // 1. 现任仍存活 → 无需继任
+        // 现任仍存活 → 无需继任
         if (team1Alive.some((fl: any) => fl.commanderId === this.supremeCommanderId)) return;
-        // 3. 无存活己方舰队 → 兜底全控
-        if (team1Alive.length === 0) {
-            this.supremeCommanderId = null;
-            (this.store as any).supremeCommanderId = null;
-            return;
-        }
-        // 2. 从存活指挥官按 职位→军衔→功绩 取最高（数据缺失者兜底 none/R0/功绩0， fac.rank 可补军衔）
+        // 步骤 3：清除已被歼灭的选中（继任是运行时权威变更，不只是 store 值更新）
+        this.battleSelectedFleetId = null;
+        // 步骤 1：从存活正式舰队指挥官按 职位→军衔→功绩 选继任（数据缺失者兜底 none/R0/功绩0）
         const cands: any[] = [];
         team1Alive.forEach((fl: any) => {
             if (fl.commanderId == null) return;
@@ -2175,13 +2719,29 @@ export class BattleScene extends Phaser.Scene {
             const fac = this.factionMap.get(fl.factionId);
             cands.push(adm || { id: fl.commanderId, role: 'none', rank: fac?.rank ?? 0, stats: { tactics: 0 } });
         });
-        const next = pickSupremeCommander(cands);
-        if (!next) return;
+        const next = team1Alive.length > 0 ? pickSupremeCommander(cands) : null;
+        if (!next) {
+            // 无合格继任者 ⇒ 指挥崩溃态（design §Failure handling：显式崩溃，直接指令停用，
+            //   不得显示误导性的「实时指挥」）
+            this.commandCollapsed = true;
+            this.supremeCommanderId = null;
+            (this.store as any).supremeCommanderId = null;
+            this.store.triggerToast?.('◆ 指挥崩溃：无合格继任者 — 直接指令已停用');
+            if ((this.store as any).addBattleLog) (this.store as any).addBattleLog({ text: '指挥崩溃：指挥链断绝', type: 'battle' });
+            return;
+        }
+        // 步骤 2：更新 store 与战场场景权威
+        this.commandCollapsed = false;
         this.supremeCommanderId = next.id;
         (this.store as any).supremeCommanderId = next.id;
         const nFleet = this.globalFleets.find((fl: any) => fl.commanderId === next.id);
+        // 步骤 4：重建直接指令能力（指挥按钮按新权威逐帧派生，见 Battle3DOverlay.updateBillboards，
+        //   崩溃态解除即恢复）
+        // 步骤 5：已无其他有效选中（步骤 3 已清）⇒ 自动选中并高亮继任旗舰舰队
+        if (nFleet) this.battleSelectedFleetId = nFleet.id;
         const nName = nFleet ? (this.factionMap.get(nFleet.factionId)?.name || '舰队') : '舰队';
-        this.store.triggerToast?.(`◆ ${nName} 接任总指挥 — 你现在直接指挥其旗舰舰队`);
+        // 步骤 6：确认实时指挥已可用
+        this.store.triggerToast?.(`◆ ${nName} 接任总指挥 — 实时指挥已移交，请直接指挥其旗舰舰队`);
         if ((this.store as any).addBattleLog) (this.store as any).addBattleLog({ text: `${nName} 接任总指挥`, type: 'battle' });
     }
 
@@ -2412,10 +2972,13 @@ export class BattleScene extends Phaser.Scene {
                 if (!tf || !tf.active) { clearMission(); return; }
                 if (tf.castlePos) dest = { x: tf.castlePos.x, y: tf.castlePos.y };
             } else {
-                // 夺取最近的非己方星球/中继补给站
+                // 夺取最近的非己方星球/中继补给站（盟军拥有跳过；敌占格须过舰队情报门）
                 let best = Infinity;
                 this.tilesList.forEach((t: any) => {
-                    if ((t.type !== 'planet' && t.type !== 'relay') || t.ownerId === fac.id) return;
+                    if ((t.type !== 'planet' && t.type !== 'relay')) return;
+                    const ownerFac = this.store.factions.find((f: any) => f.id === t.ownerId);
+                    if (t.ownerId === fac.id || (ownerFac != null && ownerFac.team === fac.team)) return;
+                    if (!this.isTileKnownToFleet(fleet, fac, t)) return;
                     const d = dist(t.x, t.y);
                     if (d < best) { best = d; dest = { x: t.x, y: t.y }; }
                 });
@@ -3180,7 +3743,7 @@ export class BattleScene extends Phaser.Scene {
     public applyFleetSelectByPick(fleetId: number | null): boolean {
         const fl = fleetId !== null ? this.globalFleets.find((f: any) => f.id === fleetId) : null;
         const flFac = fl ? this.factionMap.get(fl.factionId) : null;
-        if (fl && flFac && flFac.type === 'player') {   // [V18-B · C3] 移除恒假 `|| flFac.type === 'ally'`（#63-a，行为不变）
+        if (fl && flFac && this.canDirectlyControlFleet(fl)) {   // [W1] 选中与右键同走指令权限门（canDirectlyControlFleet），不再裸判阵营类型
             this.battleSelectedFleetId = fl.id;
             this.store.triggerToast?.(`◎ 已选中：${flFac.name || '舰队'} — 右键点地令其前往 · 浮标「分兵」或按 X 拆分`);
             return true;
@@ -3359,6 +3922,10 @@ export class BattleScene extends Phaser.Scene {
         } else if (order.kind === 'stance') {
             this.applyStanceToFleet(fleet, order.payload);
             this.store.triggerToast(`⇢ 中继命令送达：[${fac.name || '舰队'}] 变阵「${order.payload}」生效。`);
+        } else if (order.kind === 'order' && order.payload && (order.payload as any).direct) {
+            // [W1] 中继落地：延迟直令按 commitDirectOrder 落地（与即时直令同一权威写入路径）
+            this.commitDirectOrder(fleet, (order.payload as any).direct as DirectOrder);
+            this.store.triggerToast(`⇢ 中继命令送达：[${fac.name || '舰队'}] 直达指令生效。`);
         }
     }
 
@@ -3431,6 +3998,9 @@ export class BattleScene extends Phaser.Scene {
                 // 独立战术单位 ⇒ 清掉母队的任务 / 信标 / 重组标记，避免共用可变状态
                 mission: null, targetFlare: null, _regrouping: false,
                 _detachedFrom: parent.id,
+                // [W3] 分队生命周期台账：归队判定 shouldRejoin 的输入（超时/兵力损失/任务完成）
+                _detachAt: this.time.now,
+                _detachStartUnits: slice.length,
                 _maneuverRole: spec.role,
                 _maneuverLateral: spec.lateral,
                 _maneuverIntent: spec.intent,
@@ -3538,6 +4108,10 @@ export class BattleScene extends Phaser.Scene {
 
         // ② 不足 ⇒ 拆最强的一支补足路数
         const parent = [...myFleets].sort((a: any, b: any) => this.calculateFleetPower(b) - this.calculateFleetPower(a))[0];
+        // [W3] 玩家直控舰队禁止被**自动**分兵（design：unless the player explicitly requests it）
+        if (parent && this.canDirectlyControlFleet(parent)) return maneuver;
+        // [W3] 自动分兵同样过 canSplit：不合格计划不拆（兵力/舰况/空间/情报/协同不足即拒绝）
+        if (parent && !this.evalSplitEligibility(parent).ok) return maneuver;
         const specs = MANEUVERS[maneuver]?.detachments ?? [];
         const kids = this.splitFleet(parent, specs);
         parent._maneuver = maneuver;
@@ -3604,6 +4178,13 @@ export class BattleScene extends Phaser.Scene {
             if (requiredFleets(maneuver) <= 1 && routes >= 2) maneuver = 'flank';
         }
 
+        // [W3] 分兵禁止条件（design §Tactical plans and splitting）：不合格计划拒绝并反馈原因
+        const splitCheck = this.evalSplitEligibility(fleet);
+        if (!splitCheck.ok) {
+            this.store.triggerToast?.(`◎ ${SPLIT_DENY_LABELS[splitCheck.reason!]}`);
+            return false;
+        }
+
         const specs = MANEUVERS[maneuver]?.detachments ?? [];
         if (specs.length < 2) {
             // 区分两种失败原因，避免把"兵力不够"误报成"战法单路"（用户实报的困惑点）
@@ -3629,6 +4210,78 @@ export class BattleScene extends Phaser.Scene {
         this.store.triggerToast?.(
             `分舰队 · ${maneuverLabel(maneuver)}：${specs.slice(1).map((s: any) => s.intent).join(' / ') || '已分兵'}`);
         return true;
+    }
+
+    /** [W3] 分兵合格性评估（canSplit 真源的输入装配；AI 自动分兵与玩家显式分兵同门）：
+     *  combatUnits=非补给舰数；hpPct=平均舰况；lateralSpace=舰队到地图边界的侧向余量；
+     *  contactQuality=0 无接触 / 1 档案接触 / 2 实时识别；commandDegraded=旗舰重伤（协同能力不足）。 */
+    private evalSplitEligibility(fleet: any): SplitCheckResult {
+        const units: any[] = fleet?.units ?? [];
+        const combat = units.filter((u: any) => u.classType !== '补给' && u.classType !== 'supply');
+        const hpPct = combat.length > 0
+            ? combat.reduce((s: number, u: any) => s + (u.hp / Math.max(1, u.maxHp)), 0) / combat.length : 0;
+        // 侧向展开空间 = 舰队位置到地图四边的最小距离（世界 px）
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const t of this.tilesList) {
+            if (t.x < minX) minX = t.x;
+            if (t.x > maxX) maxX = t.x;
+            if (t.y < minY) minY = t.y;
+            if (t.y > maxY) maxY = t.y;
+        }
+        const lateralSpace = Number.isFinite(minX)
+            ? Math.max(0, Math.min(fleet.x - minX, maxX - fleet.x, fleet.y - minY, maxY - fleet.y)) : 999;
+        // 接触质量：敌舰队实时识别 2 / 本团队档案接触 1 / 无 0
+        const myFac = this.factionMap.get(fleet.factionId);
+        let contactQuality: 0 | 1 | 2 = 0;
+        const liveIdentified = this.globalFleets.some((ef: any) => {
+            const efFac = this.factionMap.get(ef.factionId);
+            return efFac && myFac && efFac.team !== myFac.team && (ef as any)._contactMemState === 'identified';
+        });
+        if (liveIdentified) contactQuality = 2;
+        else if (myFac && [...this.intelArchive.records.values()].some((r: any) => r.team === myFac.team)) contactQuality = 1;
+        const flagship = units.find((u: any) => u.isFlagship === true) || units[0];
+        const commandDegraded = !!flagship && (flagship.hp / Math.max(1, flagship.maxHp)) < 0.3;
+        const input: SplitCheckInput = {
+            combatUnits: combat.length, hpPct, lateralSpace, contactQuality, commandDegraded,
+        };
+        return canSplit(input);
+    }
+
+    /** [W3] 分队生命周期每帧收口（design：错过触发/丢目标/达 abort 阈值 ⇒ 归队重组，
+     *  绝不因开局规划长期分立）。输入判定 = taskForce.shouldRejoin 纯函数。 */
+    private tickDetachmentRejoin() {
+        for (const kid of [...this.globalFleets]) {
+            const pid = (kid as any)._detachedFrom;
+            if (pid == null) continue;
+            const startUnits = (kid as any)._detachStartUnits ?? 0;
+            const nowUnits = (kid.units ?? []).filter((u: any) => u.classType !== '补给' && u.classType !== 'supply').length;
+            const r = shouldRejoin({
+                detachedMs: this.time.now - ((kid as any)._detachAt ?? this.time.now),
+                startUnits,
+                nowUnits,
+                // 错过触发/丢目标 ⇔ 已无任务在身（任务链断 ⇒ 无 coherent role ⇒ 归队）
+                objectiveDone: !kid.mission,
+            });
+            if (!r.rejoin) continue;
+            const parent = this.globalFleets.find((f: any) => f.id === pid) ?? null;
+            this.rejoinDetachment(kid, parent, r.reason!);
+        }
+    }
+
+    /** [W3] 分队归队：兵力并回母队（v34d 铁律：同一 unit 不得双引用 ⇒ 先并后摘除分队对象），
+     *  槽位全队重排 + 旗舰回后方指挥席；无母队（已被歼灭）时就地解散。 */
+    private rejoinDetachment(kid: any, parent: any, reason: 'timeout' | 'attrition' | 'objective_done') {
+        if (parent && parent.units) {
+            parent.units.push(...kid.units);
+            parent.units.forEach((u: any, i: number) => { u.formationSlot = i; u.gridX = 0; u.gridY = 0; });
+            this.placeFlagshipAtRear(parent);
+        }
+        kid.units = [];
+        kid._detachedFrom = null;
+        const ki = this.globalFleets.indexOf(kid);
+        if (ki >= 0) this.globalFleets.splice(ki, 1);
+        this.store.triggerToast?.(`◎ ${REJOIN_LABELS[reason]}`);
+        if ((this.store as any).addBattleLog) (this.store as any).addBattleLog({ text: REJOIN_LABELS[reason], type: 'battle' });
     }
 
     /** 姿态命令的公共执行体（即时/延迟两路共用） */
@@ -4146,23 +4799,24 @@ export class BattleScene extends Phaser.Scene {
         }
         if (tile.type === 'sea' || tile.type === 'ruined') return;
 
-        // 右鍵點擊 (button === 2)：有选中的己方舰队 → 移动该舰队；否则 → 投放戰術信標
-        //   [V18-B · C4] 原「选中盟军 → 提示」分支已移除（恒假，见选定项清理处说明）。
+        // [W1] 右鍵點擊 (button === 2)：对「选中的己方舰队」下达**直接指令**——
+        //   敌舰近点（findHostileFleetNear，阈值 max(60, hexRadius×1.6)）→ orderFleetAttack（目标=舰队身份）；
+        //   空地 → orderFleetMove（精确世界坐标）。
+        //   旧信标真源已停用：右键不再投放信标（orderFleetBeacon 不再被调用），左键路径亦无 marker 副作用。
         if (pointer.button === 2) {
             const sel = this.battleSelectedFleetId;
             if (sel !== null) {
                 const selFleet = this.globalFleets.find((f: any) => f.id === sel);
-                const selFac = selFleet ? this.factionMap.get(selFleet.factionId) : null;
-                if (selFleet && selFac && selFac.type === 'player') {
-                    // [R10-B2] 第一道权限守卫（第二道纵深校验在 orderFleetMove 内）
-                    this.orderFleetMove(selFleet, tile.x, tile.y);
+                if (selFleet && this.canDirectlyControlFleet(selFleet)) {
+                    // [W1] 第一道权限守卫在 canDirectlyControlFleet（第二道纵深校验在 orderFleet* 内）
+                    const hostile = this.findHostileFleetNear(tile.x, tile.y, this.factionMap.get(selFleet.factionId));
+                    if (hostile) this.orderFleetAttack(selFleet, hostile);
+                    else this.orderFleetMove(selFleet, tile.x, tile.y);
                     return;
                 }
-                // [V18-B · C4] 已移除恒假的「盟军右键 → 军议 toast」分支（#63-a：Faction.type 无 'ally'，该分支恒不可达，行为不变）。
-                // 选中项已失效（被歼灭/离场）→ 清选中后落回信标（安全降级）
+                // 选中项已失效（被歼灭/离场）→ 清选中（不再落回任何旧指令通道）
                 this.battleSelectedFleetId = null;
             }
-            this.deployFlare(tile.x, tile.y, pFac.id);
             return;
         }
 
@@ -4415,24 +5069,13 @@ export class BattleScene extends Phaser.Scene {
                 return true;
             });
             
-        // 实时同步对话气泡坐标：固定在前端头像框右侧，且抵消镜头缩放保持 UI 级大小
-        this.activeDialogues.forEach(b => {
-            const target = b.getData('targetShip');
-            if (target && target.sprite && target.sprite.active) {
-                const cam = this.cameras.main;
-                // 设定屏幕空间的固定偏移量：右侧 90px，偏上 40px (对齐浮动头像框)
-                const offsetX = 90 / cam.zoom;
-                const offsetY = -40 / cam.zoom;
-                
-                b.x = target.sprite.x + offsetX; 
-                b.y = target.sprite.y + offsetY;
-                b.setScale(1 / cam.zoom); // 逆向缩放，确保气泡和外部 HTML 的头像框比例一致
-            }
-        });
+        // [v59/v60] v58 Phaser 气泡跟随循环已删除：浮动气泡改走 DOM（store.floatBubble + FloatBubble.vue），
+        //   跟随锚点逻辑见本 update 内「浮动气泡 DOM 跟随」块（每帧一次，在舰队清理循环之外）。
 
             // 后勤舰不构成战斗编制；最后一艘战斗舰沉没即视为该舰队失能，
             // 不要求玩家继续击沉补给运输舰才能结束战斗。
             if (!hasCombatUnits(fleet)) {
+                this.destroyedFleetIds.add(fleet.id);   // [W1] 追踪档案 destroyed 判据（direct attack 收口）
                 const fac = this.factionMap.get(fleet.factionId);
                 if (fac) {
                     // ── 舰队全灭：提督诀别台词（isDefeat=true 固定坐标气泡）──
@@ -4446,8 +5089,34 @@ export class BattleScene extends Phaser.Scene {
             return true;
         });
 
+        // [v59/v60] 浮动气泡 DOM 跟随（每帧一次）：优先真相机投影（Battle3DOverlay.floatScreenPos），
+        //   3D overlay 不可用时降级 2D 相机投影（worldToScreen）。
+        if (this.floatAnchor) {
+            const a = this.floatAnchor;
+            const ov: any = (typeof window !== 'undefined') ? (window as any).__b3dOverlay : null;
+            const p = (ov && typeof ov.floatScreenPos === 'function')
+              ? ov.floatScreenPos(a.mode === 'fixed' ? { x: a.x, y: a.y } : { u: a.unit })
+              : null;
+            if (p) {
+                (this.store as any).updateFloatBubblePos?.(p.on ? p.x : -999, p.on ? p.y : -999);
+            } else {
+                const wx = a.mode === 'fixed' ? a.x : a.unit?.sprite?.x;
+                const wy = a.mode === 'fixed' ? a.y : a.unit?.sprite?.y;
+                if (wx !== undefined && wy !== undefined) {
+                    const s = this.worldToScreen(wx, wy);
+                    (this.store as any).updateFloatBubblePos?.(s.x, s.y);
+                }
+            }
+        }
+
         // 提督扮演 P0：总指挥舰队覆灭 → 指挥继任（仅指挥制；函数内部自带守卫，hex/crt 零影响）
         this.checkSupremeSuccession();
+
+        // [W2] 阵营级侦察：侦察队推进/接触移交/航迹失效/放飞冷却/电子假目标过期清场
+        this.tickReconScouts(delta);
+
+        // [W3] 分队生命周期：超时/战损/任务完成 ⇒ 归队重组（shouldRejoin 真源）
+        this.tickDetachmentRejoin();
 
         // [v33 P1-4.1] 地形持续损伤（机雷 / 杰夫粒子云）——内部自带 3s 节流
         this.applyTerrainDot(delta);
@@ -4456,8 +5125,12 @@ export class BattleScene extends Phaser.Scene {
             const myFac = this.factionMap.get(fleet.factionId);
             if (!myFac || !myFac.active) {
                 fleet.units.forEach((u: any) => { u.hp = 0; u.sprite.destroy(); });
-                fleet.units = []; return;
+                fleet.units = [];
+                this.destroyedFleetIds.add(fleet.id);   // [W1] 追踪档案 destroyed 判据
+                return;
             }
+            // [W2] 主动电子战：电子姿态 + 真实电子舰 ⇒ 干扰 / 欺骗（假目标）/ 隐蔽转换
+            if (fleet.stance === 'electronic') this.activateElectronicWarfare(fleet, myFac);
 
             let minFleetDist = 99999; let closestEnemyFleet: any = null;
             // === 阶段B：视野迷雾系统 ===
@@ -4470,16 +5143,33 @@ export class BattleScene extends Phaser.Scene {
                     const efFac = this.factionMap.get(ef.factionId);
                     if (efFac && efFac.team !== myFac.team && efFac.active) {
                         const d = Phaser.Math.Distance.Between(fleet.x, fleet.y, ef.x, ef.y);
+                        // [W2] 电子战：目标方主动干扰压缩有效探测视距（combat visibility 受 targetJamming 压制）
+                        const targetJamming = this.electronicJammingOf(ef);
+                        const effVision = visionRange / (1 + targetJamming * 0.01);
                         // [v55] 分级收口 aiDirector.visibilityOf（原内联三元判断的单一真源）
-                        const clarity = visibilityOf(d, visionRange);
+                        const clarity = visibilityOf(d, effVision);
                         if (clarity) {
                             visibleEnemies.push({ ef, dist: d, clarity });
                         }
                     }
                 }
             });
-            // 只有清晰目标才可锁定为交战对象
-            const clearEnemies = visibleEnemies.filter(v => v.clarity !== 'fuzzy');
+            // [W2] 电子战假目标（欺骗）：敌方 EW 生成的过期假接触 = 可疑目标，
+            //   只供模糊目标查证分支接近确认（fuzzy 永不进 clearEnemies ⇒ 不可开火）
+            for (const decoy of this.electronicDecoys) {
+                if (decoy.team === myFac.team || this.time.now > decoy.expiresAt) continue;
+                const dd = Phaser.Math.Distance.Between(fleet.x, fleet.y, decoy.x, decoy.y);
+                if (dd < visionRange) {
+                    visibleEnemies.push({
+                        ef: { id: decoy.id, x: decoy.x, y: decoy.y, units: [], _electronicDecoy: true },
+                        dist: dd,
+                        clarity: 'fuzzy',
+                    });
+                }
+            }
+            // 只有**已识别（full）**目标才可锁定为交战对象（与 assessContact 35% 识别阈值同口径；
+            // partial/fuzzy 只进可疑目标查证，不开火）
+            const clearEnemies = visibleEnemies.filter(v => v.clarity === 'full');
             clearEnemies.sort((a, b) => a.dist - b.dist);
             if (clearEnemies.length > 0) {
                 closestEnemyFleet = clearEnemies[0].ef;
@@ -4569,6 +5259,8 @@ export class BattleScene extends Phaser.Scene {
                 if (isValuable && t.ownerId !== 0 && t.type !== 'sea' && t.type !== 'ruined') {
                     const oFac = this.factionMap.get(t.ownerId);
                     if (oFac && oFac.team !== myFac.team && oFac.active) {
+                        // [W2] 战略格情报门：AI 选目标前须过**舰队域**情报检查（禁止全知敌方坐标）
+                        if (!this.isTileKnownToFleet(fleet, myFac, t)) return;
                         const d = Phaser.Math.Distance.Between(fleet.x, fleet.y, t.x, t.y);
                         let score = d - (t.type === 'castle' ? 800 : 0);
                         if (score < minTileDist) { minTileDist = score; closestEnemyTile = t; }
@@ -4650,6 +5342,169 @@ export class BattleScene extends Phaser.Scene {
             (fleet as any)._retreatTier = fleet.state === 'retreating'
                 ? (wantTier === 'none' ? 'withdraw' : wantTier) as RetreatTier
                 : 'none' as RetreatTier;
+
+            // ══════════════════════════════════════════════════════════════════
+            // [W1] 指令权威主链（design §Authority and state model）——每帧每舰队：
+            //   direct attack 生命周期 tick → resolveAuthority（6 级：destroyed/rout > direct > planRole >
+            //   mission(MISSION_KIND_BY_TYPE 五词映射) > localCombat > autonomous_posture）→ ack/拒收 →
+            //   `_intentLabel` → authFire / attackTargetFleet。
+            //   运动与火控**分离输出**：运动在下方「权威运动落地」处消费（direct_order 层独占运动目标），
+            //   火控在开火门处消费（authGateOk）。autonomous_posture 层玩家舰队无指令 ⇒ 保持部署。
+            // ══════════════════════════════════════════════════════════════════
+            const w1DOrder = (((fleet as any).directOrder ?? null)) as DirectOrder | null;
+            // —— direct attack tick：组装目标可靠追踪档案 ——
+            if (w1DOrder && w1DOrder.kind === 'attack') {
+                const w1Tgt = this.globalFleets.find((ef: any) => ef.id === w1DOrder.targetFleetId) ?? null;
+                // [W2 档案接线] track = 持久情报档案（getKnownContact）：迷雾下保留末次位置；
+                //   可靠追踪仅被电子战/欺骗等显式反制置 false（breakFleetIdentification 唯一失效入口）。
+                const w1Rec = getKnownContact(this.intelArchive, myFac.team, w1DOrder.targetFleetId);
+                const w1Track: TargetTrack | null = (w1Tgt || w1Rec) ? {
+                    targetFleetId: w1DOrder.targetFleetId,
+                    lastKnown: w1Tgt
+                        ? { x: w1Tgt.x, y: w1Tgt.y, t: this.time.now }
+                        : { x: w1Rec!.x, y: w1Rec!.y, t: w1Rec!.t },
+                    liveVisible: !!w1Tgt && (w1Tgt as any)._intelDisplayMode === 'live',
+                    reliable: this.isTargetTrackReliable(w1Tgt ?? w1Rec, myFac.team),
+                    destroyed: this.destroyedFleetIds.has(w1DOrder.targetFleetId) || (!!w1Tgt && !hasCombatUnits(w1Tgt)),
+                } : null;
+                (fleet as any).attackState = tickDirectAttack(
+                    ((fleet as any).attackState ?? null) as DirectAttackState | null,
+                    w1DOrder, w1Track, this.time.now,
+                );
+            }
+            const w1JustIssued = (fleet as any)._directJustIssued === true;
+            const w1LocalCombat = ((closestEnemyFleet && minFleetDist < strikeRange) || underFire)
+                ? { intent: underFire ? '受击还击' : '接敌交战' }
+                : null;
+            const w1PlanRoleSource: any = (fleet as any)._maneuverRole || (fleet as any)._planRole || null;
+            const authDecision = resolveAuthority({
+                destroyed: !hasCombatUnits(fleet),
+                retreatState: (((fleet as any).retreatState ?? 'none')) as RetreatState,
+                direct: w1DOrder,
+                attack: (((fleet as any).attackState ?? null)) as DirectAttackState | null,
+                planRole: w1PlanRoleSource
+                    ? {
+                        planId: String((fleet as any)._maneuver ?? (fleet as any)._planRole ?? 'plan'),
+                        role: String((fleet as any)._maneuverIntent
+                            ?? PLAN_ROLE_LABEL[(fleet as any)._planRole as string]
+                            ?? (fleet as any)._maneuverRole ?? ''),
+                    }
+                    : null,
+                mission: (fleet.mission?.type ? (MISSION_KIND_BY_TYPE[fleet.mission.type] ?? null) : null),
+                localCombat: w1LocalCombat,
+                playerControlled: myFac.type === 'player',
+                directJustIssued: w1JustIssued,
+            });
+            // —— ack / 拒收：仅 rout 可拒绝直接指令；毁灭层不产生 ack ——
+            if (w1DOrder && authDecision.rejectReason === 'rout') {
+                // 溃散中无法接令：清 directOrder + attackState，浮泡告知（§"Only a true rout may reject"）
+                (fleet as any).directOrder = null;
+                (fleet as any).attackState = null;
+                this.showFleetDialogue(fleet, 'order', false, '溃散中，无法接令');
+            } else if (authDecision.acknowledged) {
+                // 可见确认（ack）仅在指令真正成为权威后给出一次（directJustIssued 帧）
+                this.store.triggerToast?.(`▸ 【${myFac.name || '舰队'}】${authDecision.label}`);
+            }
+            (fleet as any)._directJustIssued = false;
+            // [W3] 意图标签走统一前缀（奉令/临机/交战/整补；design §Mission language）
+            (fleet as any)._intentLabel = intentLabel(
+                intentKindFor((authDecision as any).level ?? null, authDecision.label), authDecision.label);
+            // 火控消费入参（在开火门处按 authGateOk 过门）；attack_target_only 独占火控目标
+            const authFire: 'free' | 'attack_target_only' | 'return_fire_only' | 'none' = authDecision.fire;
+            const attackTargetFleet: any = (w1DOrder && w1DOrder.kind === 'attack')
+                ? (this.globalFleets.find((ef: any) => ef.id === w1DOrder.targetFleetId && hasCombatUnits(ef)) ?? null)
+                : null;
+
+            // ═══ [W1] 撤退运行时三态（resolveRetreatTier 消费点旁挂；既有 state='retreating'/RALLY 逻辑不动）═══
+            {
+                const rtPrev: RetreatRuntimeState = ((fleet as any)._retreatRuntime ?? RETREAT_STATE_INIT);
+                // nearSupplyOrAlly = 补给圈内（inSupply），或同阵营战力编队在 200 内
+                const ciRt = this.supplyInfo.get(fleet);
+                const nearSupplyOrAlly = !!(ciRt && ciRt.inSupply) || this.globalFleets.some((af: any) =>
+                    af !== fleet && af.factionId === fleet.factionId && hasCombatUnits(af)
+                    && Phaser.Math.Distance.Between(fleet.x, fleet.y, af.x, af.y) < 200);
+                const rtNext = transitionRetreatState({
+                    prev: rtPrev,
+                    tier: wantTier as RetreatTierInput,
+                    dtSec: Math.min(delta, 100) / 1000 * dt,
+                    nearSupplyOrAlly,
+                    recovered: moraleNow >= ROUT_RECOVER_MORALE,
+                    directOrderAccepted: authDecision.clearMotionState,
+                });
+                (fleet as any)._retreatRuntime = rtNext;
+                (fleet as any).retreatState = rtNext.state;
+            }
+
+            // ═══ [W1/W2] 战斗停滞看门狗（design §Deadlock watchdog；绝不伪造伤害 / 瞬移，只出意图与临时目标）═══
+            {
+                const w1DtSec = Math.min(delta, 100) / 1000 * dt;
+                const st: any = ((fleet as any)._stall ?? ((fleet as any)._stall = {
+                    displacement: 0, rangeClosure: 0, objectiveProgress: 0,
+                    weaponsFired: false, stalledSec: 0,
+                    lastX: fleet.x, lastY: fleet.y, lastEnemyDist: null, override: null,
+                    lastCapPct: 0, lastObjDist: null,
+                }));
+                // 观测①：有意义位移（帧差累计）
+                st.displacement += Math.hypot(fleet.x - st.lastX, fleet.y - st.lastY);
+                st.lastX = fleet.x; st.lastY = fleet.y;
+                // 观测②：敌距闭合量（帧差累计；正 = 接近）
+                const w1HostileDist: number | null = closestEnemyFleet ? minFleetDist : null;
+                if (w1HostileDist !== null && st.lastEnemyDist !== null) {
+                    st.rangeClosure += st.lastEnemyDist - w1HostileDist;
+                }
+                st.lastEnemyDist = w1HostileDist;
+                // 观测③：目标进度 —— [W2] 占领进度差（captureProgress 百分点→归一）+ 接近任务目标距离差
+                const capObjW: any = (fleet as any)._capTarget ?? null;
+                const capPctW = capObjW ? (capObjW.captureProgress || 0) : 0;
+                st.objectiveProgress += (capPctW - st.lastCapPct) / 100;
+                st.lastCapPct = capPctW;
+                const objW: any = fleet._missionDest ?? (capObjW ? { x: capObjW.x, y: capObjW.y } : null);
+                const objDistW = objW ? Phaser.Math.Distance.Between(fleet.x, fleet.y, objW.x, objW.y) : null;
+                if (objDistW !== null && st.lastObjDist !== null) {
+                    st.objectiveProgress += st.lastObjDist - objDistW;
+                }
+                st.lastObjDist = objDistW;
+                const w1HostilesRemain = this.globalFleets.some((ef: any) => {
+                    const efFac = this.factionMap.get(ef.factionId);
+                    return !!efFac && efFac.active && efFac.team !== myFac.team && hasCombatUnits(ef);
+                });
+                const w1BadlyHurt = hpPct < 0.3;
+                const stallOut = tickStallWatchdog({
+                    displacement: st.displacement,
+                    rangeClosure: st.rangeClosure,
+                    objectiveProgress: st.objectiveProgress,
+                    weaponsFired: st.weaponsFired,
+                    hostilesRemain: w1HostilesRemain,
+                    stalledSec: st.stalledSec,
+                    canAdvance: !!closestEnemyFleet && !w1BadlyHurt,
+                    objectiveAvailable: !!fleet._missionDest,
+                    badlyHurt: w1BadlyHurt,
+                });
+                if (stallOut.stalledSec === 0) {
+                    // 有进展（或无敌）：清观测窗（含目标进度基线），并撤下临时运动目标
+                    st.displacement = 0; st.rangeClosure = 0;
+                    st.objectiveProgress = 0; st.lastCapPct = capPctW; st.lastObjDist = objDistW;
+                    st.weaponsFired = false; st.override = null;
+                }
+                st.stalledSec = stallOut.stalledSec + w1DtSec;
+                // 三选一执行（chooseStallAction 策略已在 tickStallWatchdog 内裁决）：
+                //   仅 AI 且无 direct 指令的舰队执行（direct 权威更高，看门狗不得越权）
+                if (stallOut.directive !== 'none' && myFac.type !== 'player' && !w1DOrder) {
+                    if (stallOut.directive === 'advance') {
+                        // 推进：向最近敌的临时运动目标（_stall.override；有进展即撤下）
+                        if (closestEnemyFleet) st.override = { x: closestEnemyFleet.x, y: closestEnemyFleet.y };
+                    } else if (stallOut.directive === 'objective_pressure') {
+                        // 目标施压：向任务目的地
+                        if (fleet._missionDest) st.override = { x: fleet._missionDest.x, y: fleet._missionDest.y };
+                    } else if (stallOut.directive === 'withdrawal') {
+                        // 撤退：转 fallback 姿态，由既有撤退状态机接手
+                        fleet.stance = 'fallback';
+                    }
+                    // 执行后重开观测窗
+                    st.stalledSec = 0; st.displacement = 0;
+                    st.rangeClosure = 0; st.weaponsFired = false;
+                }
+            }
 
             // ── [v33 P0-2] 距离带（**舰队级**，含滞回）────────────────────────
             //   为什么是舰队级而不是单位级：列位由几何决定（前列 ⟺ gx 最大 ⟺ 离敌最近），
@@ -5198,14 +6053,17 @@ export class BattleScene extends Phaser.Scene {
                 const needsTethering = _sup.action === 'return';
 
                 // 【核心重构】战术姿态决定寻路权重
-                // 方向性探索：计算敌方阵地方向，偏好朝敌方推进
-                const enemyCastles = this.tilesList.filter(t => t.type === 'castle' 
-                    && this.factionMap.get(t.ownerId)?.team !== myFac.team);
-                const enemyDirX = enemyCastles.length > 0 
-                    ? enemyCastles.reduce((s: number, c: any) => s + c.x, 0) / enemyCastles.length 
+                // 方向性探索：计算**已知**敌方阵地方向，偏好朝敌方推进
+                // [W2] 情报门：禁全知敌坐标——敌基地须已被确认（档案 kind='base'）才参与方向加权；
+                //   全部未知时退回向城堡外侧推进的缺省方向
+                const knownEnemyCastles = this.tilesList.filter(t => t.type === 'castle'
+                    && this.factionMap.get(t.ownerId)?.team !== myFac.team
+                    && this.isEnemyBaseKnownTo(myFac.team, this.factionMap.get(t.ownerId)));
+                const enemyDirX = knownEnemyCastles.length > 0 
+                    ? knownEnemyCastles.reduce((s: number, c: any) => s + c.x, 0) / knownEnemyCastles.length 
                     : myFac.castlePos?.x + 500;
-                const enemyDirY = enemyCastles.length > 0
-                    ? enemyCastles.reduce((s: number, c: any) => s + c.y, 0) / enemyCastles.length
+                const enemyDirY = knownEnemyCastles.length > 0
+                    ? knownEnemyCastles.reduce((s: number, c: any) => s + c.y, 0) / knownEnemyCastles.length
                     : 0;
 
                 // 【v2 目标去重】收集友军已分配的目标（星球/塔/基地），避免多舰队扑同一目标
@@ -5220,6 +6078,9 @@ export class BattleScene extends Phaser.Scene {
                 this.tilesList.forEach(t => {
                     const tOwnerFac = t.ownerId !== 0 ? this.factionMap.get(t.ownerId) : undefined;
                     const isAlly = tOwnerFac && tOwnerFac.team === myFac.team;
+                    // [W2] 战略格情报门：敌占格未经该舰队确认 ⇒ 不得作为目标（禁全知敌坐标）；
+                    //   中立/未探索格天然已知，探索不受影响
+                    if (!this.isTileKnownToFleet(fleet, myFac, t)) return;
 
                     if (!isAlly && t.type !== 'sea' && t.type !== 'ruined') {
                         const d = Phaser.Math.Distance.Between(fleet.x, fleet.y, t.x, t.y);
@@ -5326,6 +6187,20 @@ export class BattleScene extends Phaser.Scene {
                 fleetTargetY = fleet.y + Math.sin(dodgeAngle + (Math.random() - 0.5) * 1.5) * 120;
             }
             fleet._lastTickHp = totalHp;
+
+            // ═══ [W1] 权威运动落地：direct_order 层**独占运动目标**（不得被本地威胁静默改成追击）═══
+            //   其余权威层维持既有状态机行为；AI 停滞看门狗的临时运动目标（_stall.override）次之。
+            if (authDecision.layer === 'direct_order') {
+                const w1mv = authDecision.movement;
+                if (w1mv.type === 'move') {
+                    fleetTargetX = w1mv.x; fleetTargetY = w1mv.y;
+                } else {
+                    fleetTargetX = fleet.x; fleetTargetY = fleet.y;   // hold：据守当前战位
+                }
+            } else {
+                const w1Override = (((fleet as any)._stall as any)?.override ?? null) as { x: number; y: number } | null;
+                if (w1Override) { fleetTargetX = w1Override.x; fleetTargetY = w1Override.y; }
+            }
 
             const distToTarget = Phaser.Math.Distance.Between(fleet.x, fleet.y, fleetTargetX, fleetTargetY);
             // [v43 取证] **只读调试快照**（零分配：复用同一对象，每帧覆盖字段）。
@@ -5850,7 +6725,7 @@ export class BattleScene extends Phaser.Scene {
                 const _dy = _uy - ((u as any)._py ?? _uy);
                 (u as any)._px = _ux; (u as any)._py = _uy;
                 const _rigid = (fleet as any)._uturn === true
-                    || (isRetreating && isEngaging) || _backing
+                    || isEngaging || _backing
                     || (_dx * _dx + _dy * _dy) < 0.02;
                 const _wantH = _rigid ? (fleet.facingSmooth ?? fAngle) : Math.atan2(_dy, _dx);
                 if (typeof (u as any).visHeading !== 'number') (u as any).visHeading = _wantH;
@@ -5905,10 +6780,19 @@ export class BattleScene extends Phaser.Scene {
                     attackerDist,
                     strikeRange,
                 });
-                if (gate.canFire && time - u.lastAtkTime > (u.atkInterval / dt)) {
+                // [W1] 权威火控门（authGateOk）：none 停火 / return_fire_only 只还击攻击者 /
+                //   attack_target_only 只打 attackTargetFleet / free = fireGate 现状。
+                //   火控与运动分离：任意层级下都可按权威模式还击，但 direct attack 未完成时
+                //   火控目标独占指定目标（运动目标同理独占追击点，见「权威运动落地」）。
+                const authGateOk = (authFire === 'none') ? false
+                    : (authFire === 'return_fire_only') ? (gate.mode === 'return_fire' && !!attackerFleet)
+                    : (authFire === 'attack_target_only') ? !!attackTargetFleet
+                    : gate.canFire;
+                if (authGateOk && time - u.lastAtkTime > (u.atkInterval / dt)) {
                     let targetShip: any = null;
-                    // return_fire 模式强制打攻击者（谁打我我打谁）；combat 模式按目标选择结果
-                    const fireTargetFleet = (gate.mode === 'return_fire' && attackerFleet) ? attackerFleet : closestEnemyFleet;
+                    // attack_target_only 强制打指定目标；return_fire 强制打攻击者（谁打我我打谁）；其余按目标选择结果
+                    const fireTargetFleet = (authFire === 'attack_target_only' && attackTargetFleet) ? attackTargetFleet
+                        : (gate.mode === 'return_fire' && attackerFleet) ? attackerFleet : closestEnemyFleet;
                     if (fireTargetFleet) {
                         // P1 地形：小行星带射程-30%
                         // v5：射程直接用 u.range（gameData 已超视距分层），去掉 +30 补偿
@@ -5923,6 +6807,12 @@ export class BattleScene extends Phaser.Scene {
                     }
 
                     if (targetShip) {
+                        // [W1] 开火事件登记：喂给停滞看门狗观测（窗口内有任何开火即视为有进展）
+                        (((fleet as any)._stall as any) ?? ((fleet as any)._stall = {
+                            displacement: 0, rangeClosure: 0, objectiveProgress: 0,
+                            weaponsFired: false, stalledSec: 0,
+                            lastX: fleet.x, lastY: fleet.y, lastEnemyDist: null, override: null,
+                        })).weaponsFired = true;
                         // [FIX-volley] 相位推进（原 u.lastAtkTime = time 会把全体冷却钉回同一时刻 → 齐射同步）
                         advanceAtkPhase(u, slotIdx);
                         const targetFac = this.factionMap.get(targetShip.factionId);
@@ -6032,6 +6922,19 @@ export class BattleScene extends Phaser.Scene {
                         // [v55] 受击台账写入端：一舰中弹 ⇒ 受击舰队获得 8s 还击权（aiDirector 不变量
                         //   「受击必还击」的证据链）。读取端在本帧上方 activeAttacker 解析处。
                         if (tgtFleet) noteIncomingFire(tgtFleet, fleet.id, this.time.now);
+                        // [W2] 开火 = 情报事件双向互认：开火方暴露给受击方团队，受击方同样暴露给开火方团队。
+                        // resolveContactMemory 的 fired/engaged 强制 identified 与此同口径。
+                        if (tgtFleet) {
+                            const defendingTeam = this.factionMap.get(tgtFleet.factionId)?.team ?? -1;
+                            const shootingTeam = this.factionMap.get(fleet.factionId)?.team ?? -1;
+                            this.markFleetIdentified(defendingTeam, fleet);
+                            this.markFleetIdentified(shootingTeam, tgtFleet);
+                            // [W2] 开火暴露台账（intelSystemSim 契约）：供 resolveIntelDisplay 判定
+                            //   fired/engaged 强制 identified 与被电子压制后的可信度衰减。
+                            (fleet as any)._revealedByFireAt = this.time.now;
+                            const _revTo: Set<number> = ((fleet as any)._revealedByFireToTeams ??= new Set<number>());
+                            if (defendingTeam >= 0) _revTo.add(defendingTeam);
+                        }
                         if (this.cpState && tgtFleet) {
                             const tgtDefending = tgtFleet.stance === 'defend';
                             const incomingMult = getIncomingMultiplier(this.cpState, tgtFleet.id, tgtDefending);
@@ -6375,7 +7278,8 @@ export class BattleScene extends Phaser.Scene {
 
         this.globalFleets.forEach(fl => {
             if (fl.units.length > 0) {
-                const flagship = fl.units[0]; 
+                // [W2] 旗舰=持久身份 isFlagship（units[0] 下标会随损毁/换位前移，禁用作旗舰判据）
+                const flagship = fl.units.find((u: any) => u.isFlagship === true) || fl.units[0];
                 const fac = this.factionMap.get(fl.factionId);
                 
                 if (fac) {
@@ -6387,29 +7291,70 @@ export class BattleScene extends Phaser.Scene {
                     fl.units.forEach((u: any) => { fac.supply += (typeof u.supply === 'number' ? u.supply : 100); });
                 }
 
-                // 2. 战争迷雾：敌方舰队默认隐藏，除非进入玩家视野
+                // 2. 战争迷雾：团队域情报链（IntelSystem 真源）
+                //    原始传感器覆盖 → assessContact 距离分级 → resolveContactMemory 记忆单调（fired/engaged
+                //    强制 identified，concealmentSucceeded 唯一降档入口）→ 供 resolveIntelDisplay 分档渲染
                 let isVisible = true;
+                let contact: any = { state: 'identified' };
+                let rawObserved: any = 'identified';
+                let memState: any = 'identified';
+                let engaged = false;
+                let record: any = null;
                 if (fac && fac.team !== playerFac?.team) {
-                    isVisible = false;
                     // 修复坐标：必须使用战舰 sprite 的绝对坐标计算视距
                     const fx = flagship.sprite.x;
                     const fy = flagship.sprite.y;
 
+                    // 逐观测点评估接触，取"最有利单次观测"（最小距离/传感器比）做分级
+                    let bestRatio = Infinity;
+                    let bestDist = Infinity;
+                    let bestSensor = 250;
+                    const considerObs = (d: number, s: number) => {
+                        const r = d / Math.max(1, s);
+                        if (r < bestRatio) { bestRatio = r; bestDist = d; bestSensor = s; }
+                    };
                     // 判断是否在友军高价值建筑视野内 (雷达半径 300)
                     for (const node of allyVisionNodes) {
-                        if (Phaser.Math.Distance.Between(fx, fy, node.x, node.y) < 300) { isVisible = true; break; }
+                        considerObs(Phaser.Math.Distance.Between(fx, fy, node.x, node.y), 300);
                     }
                     // 判断是否在友军舰队视野内 (普通视野 250，索敌姿态视野 450)
-                    if (!isVisible) {
-                        for (const pFl of allyFleets) {
-                            if (pFl.units.length > 0) {
-                                const px = pFl.units[0].sprite.x;
-                                const py = pFl.units[0].sprite.y;
-                                const visionRange = pFl.stance === 'search' ? 450 : 250;
-                                if (Phaser.Math.Distance.Between(fx, fy, px, py) < visionRange) { isVisible = true; break; }
-                            }
+                    for (const pFl of allyFleets) {
+                        if (pFl.units.length > 0) {
+                            const px = pFl.units[0].sprite.x;
+                            const py = pFl.units[0].sprite.y;
+                            const visionRange = pFl.stance === 'search' ? 450 : 250;
+                            considerObs(Phaser.Math.Distance.Between(fx, fy, px, py), visionRange);
                         }
                     }
+                    // 目标主动电子压制 ⇒ 探测距离折损（与 assessContact 的 jammingStrength 同口径）
+                    contact = assessContact({
+                        distance: bestDist,
+                        sensorRange: bestSensor,
+                        jammingStrength: this.electronicJammingOf(fl),
+                    });
+                    rawObserved = contact.state;
+                    // 开火/交战窗口台账（E17 写入）：交战中不可消失
+                    const recentlyFired = (fl as any)._revealedByFireAt != null
+                        && this.time.now - (fl as any)._revealedByFireAt < EXCHANGE_WINDOW_MS;
+                    const revTeams: Set<number> | undefined = (fl as any)._revealedByFireToTeams;
+                    // 与观察方团队处于交战窗口（EXCHANGE_WINDOW_MS）⇒ 强制 identified
+                    const inExchange = recentlyFired && !!revTeams && revTeams.has(playerFac?.team ?? -2);
+                    engaged = inExchange;
+                    // 显式电子战/欺骗转换（breakFleetIdentification 置 _trackReliable=false）= 唯一降档入口
+                    const concealmentSucceeded = (fl as any)._trackReliable === false && !inExchange;
+                    const previous: any = (fl as any)._contactMemState ?? 'unknown';
+                    memState = resolveContactMemory({
+                        previous,
+                        observed: contact.state,
+                        fired: recentlyFired,
+                        engaged: inExchange,
+                        concealmentSucceeded,
+                    });
+                    (fl as any)._contactMemState = memState;
+                    // HUD 导出的记忆态（已确认记忆单调保持，不会因暂离视界掉档）
+                    contact = { ...contact, state: memState };
+                    record = getKnownContact(this.intelArchive, playerFac?.team ?? -1, fl.id);
+                    isVisible = memState === 'identified';
                 }
                 
                 // 2.5 隐身检测：隐身舰队被敌方索敌单位发现 → 破隐
@@ -6441,26 +7386,57 @@ export class BattleScene extends Phaser.Scene {
                     }
                 }
                 
-                // 3. 根据视野状态处理模型隐身与 UI 渲染
-                if (fac && isVisible) {
-                    fl.units.forEach((u: any) => { u.sprite.setVisible(true); });
-                    if (fac.type !== 'player') fac.inVision = true;
+                // 3. 按渲染档位（resolveIntelDisplay 真源）处理模型显隐与 UI 渲染：
+                //    live=实时渲染；fuzzy=只画接触符号（B3O）；last_known=画在档案末次位置（绝不实时跟位）；hidden=不渲染
+                if (fac) {
+                    const display = resolveIntelDisplay({
+                        observed: rawObserved,
+                        identified: memState === 'identified',
+                        engaged,
+                        record,
+                    });
+                    (fl as any)._intelDisplayMode = display.mode;
+                    if (display.mode === 'last_known') {
+                        (fl as any)._intelLastKnown = { x: display.x, y: display.y, t: display.t };
+                    }
+                    if (display.mode === 'live') {
+                        fl.units.forEach((u: any) => { u.sprite.setVisible(true); });
+                        if (fac.type !== 'player') fac.inVision = true;
 
-                    const screenX = (flagship.sprite.x - cam.worldView.x) * cam.zoom;
-                    const screenY = (flagship.sprite.y - cam.worldView.y) * cam.zoom;
-                    uiData.push({
-                        id: fl.id, x: screenX, y: screenY, name: fac.name, imageId: fac.imageId,
-                        hp: flagship.hp, maxHp: flagship.maxHp, unitCount: fl.units.length,
-                        supply: flagship.supply, team: fac.team, stance: fl.stance
-                    });
-                } else if (fac && fac.team !== playerFac?.team) {
-                    fl.units.forEach((u: any) => { 
-                        u.sprite.setVisible(false); 
-                        // 强制隐藏挂载的血条或文本对象
-                        if (u.hpBar) u.hpBar.setVisible(false);
-                        if (u.text) u.text.setVisible(false);
-                        // 如果游戏底层是全局统一 Graphics 绘制血条，需在此处将其 scale 或 alpha 设为 0
-                    });
+                        const screenX = (flagship.sprite.x - cam.worldView.x) * cam.zoom;
+                        const screenY = (flagship.sprite.y - cam.worldView.y) * cam.zoom;
+                        uiData.push({
+                            id: fl.id, x: screenX, y: screenY, name: fac.name, imageId: fac.imageId,
+                            hp: flagship.hp, maxHp: flagship.maxHp, unitCount: fl.units.length,
+                            supply: flagship.supply, morale: fl.morale, contactState: contact.state,
+                            team: fac.team, stance: fl.stance
+                        });
+                    } else if (display.mode === 'last_known') {
+                        // 末次位置情报接触：画在**档案坐标**（持久档案的末次确认位置/时间），绝不实时跟位
+                        fl.units.forEach((u: any) => {
+                            u.sprite.setVisible(false);
+                            if (u.hpBar) u.hpBar.setVisible(false);
+                            if (u.text) u.text.setVisible(false);
+                        });
+                        const gx = ((display.x ?? 0) - cam.worldView.x) * cam.zoom;
+                        const gy = ((display.y ?? 0) - cam.worldView.y) * cam.zoom;
+                        uiData.push({
+                            id: fl.id, x: gx, y: gy, name: '末次位置', imageId: fac.imageId,
+                            hp: 0, maxHp: 1, unitCount: 0,
+                            supply: 0, morale: 0, contactState: contact.state,
+                            team: fac.team, stance: 'hidden', ghost: true,
+                            intelX: display.x, intelY: display.y, intelT: display.t,
+                        });
+                    } else if (fac.team !== playerFac?.team) {
+                        // fuzzy / hidden：真实模型不渲染（fuzzy 的接触符号由 B3O 按 _intelDisplayMode 绘制）
+                        fl.units.forEach((u: any) => {
+                            u.sprite.setVisible(false);
+                            // 强制隐藏挂载的血条或文本对象
+                            if (u.hpBar) u.hpBar.setVisible(false);
+                            if (u.text) u.text.setVisible(false);
+                            // 如果游戏底层是全局统一 Graphics 绘制血条，需在此处将其 scale 或 alpha 设为 0
+                        });
+                    }
                 }
             }
         });
@@ -6569,8 +7545,10 @@ export class BattleScene extends Phaser.Scene {
     
     }
 
-    // 渲染漫画风对话气泡（固定于头像框右侧）
-    // [v58] customText：banter 闲聊由 emitBanter 预选台词（含防连续重复），事件台词仍从池内随机
+    // [v59/v60] 旗舰位置浮动气泡（DOM 单例）：气泡渲染走 store.floatBubble + FloatBubble.vue，
+    //   本方法只负责选台词、定锚点、驱动单例生命周期（2.8s 后自动隐藏）。签名不变（13 个调用点零改动）。
+    // [v58] customText：banter 闲聊由 emitBanter 预选台词（含防连续重复），事件台词仍从池内随机；
+    //   直接指令反馈（「目标无效」/「溃散中，无法接令」）亦经此以 customText 呈现。
     private showFleetDialogue(fleet: any, eventType: string, isDefeat: boolean = false, customText?: string) {
         const myFac = this.factionMap.get(fleet.factionId);
         if (!myFac) return;
@@ -6581,60 +7559,32 @@ export class BattleScene extends Phaser.Scene {
         if (customText === undefined && (!pool || pool.length === 0)) return;
 
         const text = customText ?? pool![Math.floor(Math.random() * pool!.length)];
-        // [v58] 单例气泡：任意时刻至多一个在场气泡，新建前杀掉旧气泡补间并销毁，杜绝互相遮挡
-        this.activeDialogues.forEach(b => { this.tweens.killTweensOf(b); b.destroy(); });
-        this.activeDialogues = [];
-        const targetShip = isDefeat ? null : fleet.units[0];
-        
-        const cam = this.cameras.main;
-        const targetZoom = 1 / cam.zoom; // 目标 UI 缩放级
-        
-        // 初始坐标（若是击毁状态则固定在原地）
-        const px = isDefeat ? fleet.x + (90 * targetZoom) : targetShip?.sprite?.x;
-        const py = isDefeat ? fleet.y - (40 * targetZoom) : targetShip?.sprite?.y;
+        // 旗舰选取待继任模块（基线无 flagshipOf）：取舰队内首艘有 sprite 的单位作锚点
+        const targetShip = isDefeat ? null : (fleet.units?.find((u: any) => u?.sprite) ?? null);
+        const px = isDefeat ? fleet.x : targetShip?.sprite?.x;
+        const py = isDefeat ? fleet.y : targetShip?.sprite?.y;
         if (px === undefined || py === undefined) return;
-
-        const bubble = this.add.container(px, py).setDepth(100); // 调高层级避免被挡
-        const bg = this.add.graphics();
-        
-        const bgColor = 0x0f172a; 
-        bg.fillStyle(bgColor, 0.95).lineStyle(2, myFac.color, 1);
-        
-        const txt = this.add.text(0, 0, text, {
-            fontSize: '12px', color: '#f8fafc', padding: { x: 10, y: 6 },
-            wordWrap: { width: 140 }, align: 'center', fontFamily: 'sans-serif', fontStyle: 'bold'
-        }).setOrigin(0.5);
-
-        const bW = txt.width + 16; const bH = txt.height + 12;
-        
-        // 绘制带圆角的气泡主体
-        bg.fillRoundedRect(-bW/2, -bH/2, bW, bH, 6).strokeRoundedRect(-bW/2, -bH/2, bW, bH, 6);
-        
-        // 绘制指向左侧（头像框方向）的对话尾巴
-        bg.fillTriangle(-bW/2, 0, -bW/2 - 12, 6, -bW/2, 12);
-        bg.strokeTriangle(-bW/2, 0, -bW/2 - 12, 6, -bW/2, 12);
-        // 擦除连接处的线条
-        bg.lineStyle(3, bgColor, 1).beginPath().moveTo(-bW/2, 1).lineTo(-bW/2, 11).strokePath();
-        
-        bubble.add([bg, txt]);
-
-        // [v58] 统一入列 activeDialogues 参与单例清理；targetShip 为 null（击毁语录）时跟随循环跳过定位
-        bubble.setData('targetShip', targetShip);
-        this.activeDialogues.push(bubble);
-
-        bubble.setScale(0);
-        this.tweens.add({
-            targets: bubble, scale: targetZoom, duration: 300, ease: 'Back.easeOut', // 弹到 UI 对应的大小
-            onComplete: () => {
-                this.tweens.add({
-                    targets: bubble, alpha: 0, delay: 2500, duration: 400,
-                    onComplete: () => {
-                        bubble.destroy();
-                        this.activeDialogues = this.activeDialogues.filter(b => b !== bubble);
-                    }
-                });
-            }
+        const facColor = '#' + ((myFac.color >>> 0) & 0xffffff).toString(16).padStart(6, '0');
+        this.floatAnchor = isDefeat ? { mode: 'fixed', x: px, y: py } : { mode: 'unit', unit: targetShip };
+        const st = this.store as any;
+        st.showFloatBubble?.(admName, text, facColor);
+        if (this.floatHideEvent) this.floatHideEvent.remove(false);
+        this.floatHideEvent = this.time.delayedCall(2800, () => {
+            st.hideFloatBubble?.();
+            this.floatAnchor = null;
         });
+    }
+
+    /** [v59/v60] 世界坐标 → 屏幕像素（2D 降级路径的气泡跟随投影）。
+     *  3D 路径的真相机投影在 Battle3DOverlay.floatScreenPos；此处仅作降级兜底。 */
+    private worldToScreen(wx: number, wy: number): { x: number; y: number } {
+        const cam = this.cameras.main;
+        // 投影前强制 preRender：先刷新相机矩阵，避免拿到上一帧的 scroll/zoom（气泡滞后一帧）
+        try { (cam as any).preRender?.(this.scale.width, this.scale.height, 1); } catch { /* 无此钩子时忽略 */ }
+        return {
+            x: (wx - cam.worldView.x) * cam.zoom,
+            y: (wy - cam.worldView.y) * cam.zoom,
+        };
     }
 
     /** [v57→v58] 战中提督闲聊：随机可见提督 → 台词池（专属 banter 优先、general 兜底）→ 旗舰位置浮动气泡。
@@ -7032,6 +7982,8 @@ export class BattleScene extends Phaser.Scene {
         });
         // 【待改6】胜负按 team 判定（多提督同队时 factionId 计数永不 ≤1，旧判定会漏结束）
         const battleOver = aliveTeams.size <= 1;
+        // [W2] 结算静默：胜负既定 ⇒ 停止侦察放飞/通知/电子假目标（beginBattleResolution 幂等）
+        if (battleOver) this.beginBattleResolution();
 
         const state = (this.store as any).tacticalState;
         const isCampaign = state && state.mode === 'campaign';

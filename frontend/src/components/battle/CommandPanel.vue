@@ -16,7 +16,7 @@
       <div v-if="bwState" class="bw-briefing" :class="{ degraded: bwState.flagshipDown }">
         ⌁ 通信频道 {{ bwState.channels.size }}/{{ bwState.maxChannels }}
         <template v-if="bwState.delayedOrders.length > 0">｜中继传输中 ×{{ bwState.delayedOrders.length }}</template>
-        <template v-if="bwState.flagshipDown">｜⌁ 旗舰降级：指挥半径 -40%</template>
+        <template v-if="bwState.flagshipDown">｜⌁ 旗舰降级：指挥半径 -30%</template>
       </div>
 
       <div class="cp-body">

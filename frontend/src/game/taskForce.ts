@@ -308,3 +308,110 @@ export function maxRoutesFor(unitCounts: readonly number[]): number {
 export function maneuverLabel(maneuver: ManeuverType): string {
   return MANEUVERS[maneuver]?.label ?? maneuver;
 }
+
+// ============================================================
+// D. 分兵禁止条件与分队生命周期（design §Tactical plans and splitting 后半）
+// ============================================================
+
+/** 分兵禁止原因（拒绝时给玩家可读反馈） */
+export type SplitDenyReason =
+  | 'force_size'         // 总兵力不足阈值
+  | 'ship_condition'     // 舰况（hpPct）过低
+  | 'no_space'           // 侧向无展开余地
+  | 'contact_quality'    // 情报不足（没有可靠接触）
+  | 'command_bandwidth'; // 指挥带宽降级中（协同能力不足）
+
+/** 分兵禁止条件的中文反馈（UI toast 消费） */
+export const SPLIT_DENY_LABELS: Record<SplitDenyReason, string> = {
+  force_size: '兵力不足，无法编成多路',
+  ship_condition: '舰况过差，不宜再分散兵力',
+  no_space: '侧向无展开余地，无法分进',
+  contact_quality: '情报不足，分兵将失去目标',
+  command_bandwidth: '指挥带宽降级中，无法协同多路',
+};
+
+/** 总兵力阈值：拆两路、每路至少 MIN_UNITS_PER_ROUTE 艘 */
+export const MIN_SPLIT_UNITS = MIN_UNITS_PER_ROUTE * 2;
+/** 舰况阈值：平均 hpPct 低于此禁止分兵 */
+export const MIN_SPLIT_HP_PCT = 0.5;
+/** 侧向展开空间阈值（世界 px；DETACH_SPACING=200 的翼侧部署需留余量） */
+export const MIN_SPLIT_LATERAL_SPACE = 240;
+/** 接触质量阈值：0=情报不足（拒）/1=档案接触（含末次位置）/2=实时识别 */
+export const MIN_SPLIT_CONTACT_QUALITY = 1;
+
+export interface SplitCheckInput {
+  /** 参与拆分的战斗舰数（不含补给/运输） */
+  combatUnits: number;
+  /** 平均舰况（0..1） */
+  hpPct: number;
+  /** 侧向可用展开空间（世界 px，调用方按地图边界算） */
+  lateralSpace: number;
+  /** 接触质量：0=情报不足 / 1=档案接触 / 2=实时识别 */
+  contactQuality: 0 | 1 | 2;
+  /** 指挥带宽是否降级（旗舰降级/中继收缩窗口） */
+  commandDegraded: boolean;
+}
+
+export interface SplitCheckResult {
+  ok: boolean;
+  reason: SplitDenyReason | null;
+}
+
+/**
+ * **分兵禁止条件**（design §Tactical plans and splitting：不够则拒绝并反馈原因）。
+ * 判定顺序：force size → 舰况 → 可用空间 → 接触质量 → 协同能力。
+ * 纯函数、无随机 ⇒ 同输入必同输出（台架可逐条打）。
+ */
+export function canSplit(input: SplitCheckInput): SplitCheckResult {
+  if ((input.combatUnits ?? 0) < MIN_SPLIT_UNITS) return { ok: false, reason: 'force_size' };
+  if ((input.hpPct ?? 0) < MIN_SPLIT_HP_PCT) return { ok: false, reason: 'ship_condition' };
+  if ((input.lateralSpace ?? 0) < MIN_SPLIT_LATERAL_SPACE) return { ok: false, reason: 'no_space' };
+  if ((input.contactQuality ?? 0) < MIN_SPLIT_CONTACT_QUALITY) return { ok: false, reason: 'contact_quality' };
+  if (input.commandDegraded) return { ok: false, reason: 'command_bandwidth' };
+  return { ok: true, reason: null };
+}
+
+/** 分队归队原因（abort → rejoin） */
+export type RejoinReason = 'timeout' | 'attrition' | 'objective_done';
+
+export const REJOIN_LABELS: Record<RejoinReason, string> = {
+  timeout: '分出超时，归队重组',
+  attrition: '兵力损失过重，归队重组',
+  objective_done: '任务完成，归队重组',
+};
+
+/** 分出超时上限（ms）：不得仅因开局规划长期分立 */
+export const DETACH_TIMEOUT_MS = 45000;
+/** 兵力损失阈值：现存兵力低于分出时的比例 ⇒ 归队 */
+export const DETACH_ATTRITION_PCT = 0.5;
+
+export interface RejoinCheckInput {
+  /** 分出至今的时间（ms） */
+  detachedMs: number;
+  /** 分出时战斗舰数 */
+  startUnits: number;
+  /** 当前战斗舰数 */
+  nowUnits: number;
+  /** 任务已完成/目标已失（调用方合并判定「错过触发/丢目标/任务完成」） */
+  objectiveDone: boolean;
+}
+
+export interface RejoinCheckResult {
+  rejoin: boolean;
+  reason: RejoinReason | null;
+}
+
+/**
+ * **分队归队判定**（每支分队必须有目的与归队路径）：
+ * 错过触发/丢目标/达 abort 阈值（超时 / 兵力损失 / 任务完成）⇒ 归队。
+ * 纯函数；调用方在 updateFleets / applyManeuver 后逐分队收口。
+ */
+export function shouldRejoin(input: RejoinCheckInput): RejoinCheckResult {
+  if (input.objectiveDone) return { rejoin: true, reason: 'objective_done' };
+  if ((input.detachedMs ?? 0) >= DETACH_TIMEOUT_MS) return { rejoin: true, reason: 'timeout' };
+  const start = input.startUnits ?? 0;
+  if (start > 0 && (input.nowUnits ?? 0) <= start * DETACH_ATTRITION_PCT) {
+    return { rejoin: true, reason: 'attrition' };
+  }
+  return { rejoin: false, reason: null };
+}

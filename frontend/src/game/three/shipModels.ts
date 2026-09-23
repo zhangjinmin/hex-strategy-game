@@ -97,10 +97,10 @@ export const SHIP_CLASS_ALIAS: Record<string, string> = {
   fast_battleship: 'fast_battleship', '高速战列': 'fast_battleship',
   cruiser: 'cruiser', '巡洋': 'cruiser',
   destroyer: 'destroyer', '驱逐': 'destroyer',
-  carrier: 'carrier', 'CV': 'carrier', '突击': 'carrier',
+  carrier: 'carrier', 'CV': 'carrier', '突击': 'carrier', '空母': 'carrier',
   electronic: 'electronic', '电子': 'electronic',
   supply: 'supply', '补给': 'supply',
-  fighter: 'fighter', '战斗机': 'fighter',
+  fighter: 'fighter', '战斗机': 'fighter', '舰载': 'fighter',
 };
 
 /** 旗舰专属模型：旗舰中文名（admiralsData.flagshipName）→ 模型 key（文件名 flagship_{key}.glb） */

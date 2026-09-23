@@ -131,14 +131,44 @@ export interface Unit {
   missileAmmo?: number;
 }
 
+import type {
+  DirectOrder, DirectAttackState, RetreatState,
+} from '../game/battle/CommandAuthority';
+
+/** 战场正式舰队（BattleScene.globalFleets 元素）。W1 指令权威模型扩字段，旧字段保持兼容。 */
 export interface Fleet {
   id: number; displayId: number; factionId: number;
   x: number; y: number; target: any | null;
-  state: 'assembling' | 'moving' | 'engaging';
+  /** 战术状态。历史写入点还有 exploring / retreating / flaring 等运行态，
+   *  故保留宽联合（`(string & {})` 兜底）以免断掉既有写入；新代码优先读 retreatState/directOrder。 */
+  state: 'assembling' | 'moving' | 'engaging' | 'exploring' | 'retreating' | 'flaring' | (string & {});
   units: Unit[]; formation: 'wedge' | 'line' | 'spindle' | 'circle' | 'square';
   facingAngle: number;
-  stance: 'search' | 'siege' | 'defend'; 
+  /** 部署姿态。fallback = 手动/强制撤退（resolveRetreatTier 的 manual 入口）。 */
+  stance: 'search' | 'siege' | 'defend' | 'fallback';
   targetFlare: {x: number, y: number} | null;
+  // ── W1 指令权威模型（design 2026-09-23 §Authority and state model）──
+  /** 撤退运行时三态（none/withdrawing/regrouping/routed；CommandAuthority.transitionRetreatState 写入） */
+  retreatState?: RetreatState;
+  /** 玩家直接指令：move=精确世界坐标 / attack=目标舰队身份（不是格子）/ hold=据守 */
+  directOrder?: DirectOrder | null;
+  /** direct attack 生命周期（CommandAuthority.tickDirectAttack 每帧刷新 pursuit） */
+  attackState?: DirectAttackState | null;
+  /** 目标追踪可靠位：仅电子战/欺骗等显式反制可置 false（undefined 视为 true） */
+  _trackReliable?: boolean;
+  /** 停滞看门狗观测窗（tickStallWatchdog 消费；objectiveProgress 待 W2/W3 接占领/护送进度） */
+  _stall?: {
+    displacement: number;
+    rangeClosure: number;
+    objectiveProgress: number;
+    weaponsFired: boolean;
+    stalledSec: number;
+    lastX: number;
+    lastY: number;
+    lastEnemyDist: number | null;
+    /** 看门狗三选一执行的临时运动目标（advance/objective_pressure；有进展即撤下） */
+    override?: { x: number; y: number } | null;
+  };
 }
 
 export interface Projectile {

@@ -8,7 +8,8 @@
 
 /** 3D 特效事件（kind 决定可选字段的含义，消费逻辑见 Battle3DOverlay.handleFx） */
 export interface Fx3dEvent {
-  kind: 'laser' | 'shield' | 'hit' | 'capture' | 'strike' | 'missiles' | 'fortress_charge' | 'fortress_beam';
+  kind: 'laser' | 'shield' | 'hit' | 'capture' | 'strike' | 'missiles' | 'fortress_charge' | 'fortress_beam'
+    | 'pointer_chevron' | 'pointer_target_lock' | 'pointer_clear';
   /** laser / strike / missiles：发射端像素坐标 */
   from?: { x: number; y: number };
   /** laser：目标端像素坐标 */

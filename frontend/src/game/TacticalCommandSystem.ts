@@ -108,15 +108,56 @@ export interface Mission {
 
 export type MissionTargetKind = 'enemy_fleet' | 'ally_fleet' | 'planet' | 'none';
 
+/**
+ * 五类任务表单（UI 只许消费术语）。
+ * **术语真源 = CommandAuthority.missionLabel 五词**
+ * （进击敌舰队/夺取战略据点/固守战区/协同友军/撤回整补；映射键同 BattleScene.MISSION_KIND_BY_TYPE）。
+ * label 与 missionLabel 逐字一致——scripts/uiCommandSim.cjs 做跨模块对齐断言。
+ */
 export const MISSION_TYPES: { type: MissionType; label: string; needsTarget: MissionTargetKind }[] = [
-  { type: 'attack_fleet', label: '攻击敌舰队', needsTarget: 'enemy_fleet' },
-  { type: 'capture_planet', label: '夺取星球/根据地', needsTarget: 'planet' },
-  { type: 'hold_point', label: '坚守当前位置', needsTarget: 'none' },
-  { type: 'support_fleet', label: '协同友军作战', needsTarget: 'ally_fleet' },
-  { type: 'retreat_supply', label: '撤回后勤站补货', needsTarget: 'none' },
+  { type: 'attack_fleet', label: '进击敌舰队', needsTarget: 'enemy_fleet' },
+  { type: 'capture_planet', label: '夺取战略据点', needsTarget: 'planet' },
+  { type: 'hold_point', label: '固守战区', needsTarget: 'none' },
+  { type: 'support_fleet', label: '协同友军', needsTarget: 'ally_fleet' },
+  { type: 'retreat_supply', label: '撤回整补', needsTarget: 'none' },
 ];
 
 /** 构造任务对象（text 为显示用快照；目标名变化不影响执行——执行读 targetId） */
+// ============================================================
+// 运行时意图标签（design §Mission language 末段）
+//   意图与任务名分离：`奉令：右翼迂回` / `临机：追击敌旗舰` / `交战：压制敌前卫` / `整补：向最近补给线撤回`。
+//   文案须暴露「在做什么、为什么」，且不泄露隐藏敌情。BattleScene._intentLabel 与 billboard 意图行共用。
+// ============================================================
+
+/** 运行时意图四前缀：奉令（直接指令/计划）/ 临机（自主临机）/ 交战（火力接触）/ 整补（后勤行动） */
+export type IntentKind = 'ordered' | 'opportunistic' | 'engaged' | 'resupplying';
+
+export const INTENT_PREFIXES: Record<IntentKind, string> = {
+  ordered: '奉令：',
+  opportunistic: '临机：',
+  engaged: '交战：',
+  resupplying: '整补：',
+};
+
+/** 统一意图标签拼装：`奉令：右翼迂回` 形态 */
+export function intentLabel(kind: IntentKind, text: string): string {
+  return `${INTENT_PREFIXES[kind]}${text}`;
+}
+
+/**
+ * 权威级别 + 文案 → 意图类别（纯函数）：
+ *   · 文案指向补给/撤回行动 ⇒ 整补（优先判，覆盖各级权威下的后勤动作）；
+ *   · local_combat_response（火力接触驱动）⇒ 交战；
+ *   · direct_order / tactical_plan_role / strategic_mission ⇒ 奉令；
+ *   · autonomous_posture ⇒ 临机。
+ */
+export function intentKindFor(level: string | null | undefined, label: string): IntentKind {
+  if (/整补|补给|撤回|脱离|归队/.test(label)) return 'resupplying';
+  if (level === 'local_combat_response') return 'engaged';
+  if (level === 'autonomous_posture') return 'opportunistic';
+  return 'ordered';
+}
+
 export function buildMission(
   type: MissionType,
   opts: { targetId?: number; targetName?: string; x?: number; y?: number } = {},
@@ -136,10 +177,18 @@ export function buildMission(
 }
 
 /** 直接命令类型（stance/attack 等实时操控）——非总指挥舰队一律拦截 */
-export const DIRECT_COMMAND_TYPES = ['stance', 'attack'];
+export const DIRECT_COMMAND_TYPES = ['stance', 'attack', 'scout', 'electronic'];
+
+/** 指挥权与继任只承认仍有战斗舰的正式舰队；侦察航班、运输队和空壳均排除。 */
+export function isFormalCommandFleet(fleet: any): boolean {
+  if (!fleet || fleet._scoutFlight || fleet._auxiliary) return false;
+  return Array.isArray(fleet.units) && fleet.units.some((unit: any) =>
+    unit && unit.hp > 0 && unit.classType !== '补给' && unit.classType !== 'supply' && unit.classType !== '运输');
+}
 
 /** 是否允许对该舰队下达直接命令（玩家 = 总指挥，只能直接指挥旗舰舰队） */
 export function isDirectCommandAllowed(fleet: any, supremeCommanderId: number | null | undefined): boolean {
+  if (!isFormalCommandFleet(fleet)) return false;
   if (supremeCommanderId === null || supremeCommanderId === undefined) return true; // 非指挥制/未判定：不拦截
   return fleet?.commanderId === supremeCommanderId;
 }
@@ -149,11 +198,15 @@ export function isDirectCommandAllowed(fleet: any, supremeCommanderId: number | 
 // ============================================================
 
 /**
- * 舰队当前意图的可读文本（头顶标签）。
- * 有任务 → 任务文本；否则从状态机/姿态推导（敌方 AI 同样适用）。
+ * 舰队当前意图的可读文本（头顶标签 / billboard 态势行）。
+ * **优先消费 W1 权威层写入的 `fleet._intentLabel`**（CommandAuthority.runtimeIntentLabel 产物，
+ * 含 奉令/临机/交战/整补 四前缀与「目标失联」「保持部署」等运行时语义）；
+ * 无 _intentLabel 时回退旧推导（任务文本/状态机/姿态）。
  * @param nameOfFleet 按舰队 id 解析显示名（如"比克古舰队"），解析不到可返回 null
  */
 export function fleetIntentText(fleet: any, nameOfFleet?: (fleetId: any) => string | null, opts?: { team?: number }): string {
+  // [W3-D] 四前缀权威标签优先（术语真源 CommandAuthority.runtimeIntentLabel）
+  if (fleet?._intentLabel) return String(fleet._intentLabel);
   const enemy = opts?.team == null ? true : opts.team !== 1;
   const base = ((): string => {
     if (!enemy && fleet?.mission?.text) {
@@ -166,6 +219,8 @@ export function fleetIntentText(fleet: any, nameOfFleet?: (fleetId: any) => stri
     const state = fleet?.state || '';
     if (state === 'retreating') return '撤退补给中';
     if (state === 'engaging') {
+      // 追击仅情报可见（last_known）目标 ⇒ 只报「末次位置」，**不泄露隐藏敌名**
+      if (fleet?.attackState?.pursuit?.fromIntel) return '追击 末次位置';
       const tn = fleet?._lastTargetFleetId != null && nameOfFleet ? nameOfFleet(fleet._lastTargetFleetId) : null;
       return tn ? `攻击 ${tn}` : '交战中';
     }

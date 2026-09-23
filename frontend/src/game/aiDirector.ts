@@ -35,13 +35,16 @@ export type Clarity = 'full' | 'partial' | 'fuzzy';
 // ══════════════════════════════════════════════════════════════════════
 
 /**
- * 视野内敌人按距离分级：近(<50% 视野)=完全可见，中(50~80%)=识别类型，
+ * 视野内敌人按距离分级：近(≤35% 视野)=完全识别，中(35~80%)=接触，
  * 远(80~100%)=模糊（只能感知"有东西"）；视野外 = null。
+ *
+ * 35% 必须与 IntelSystem.assessContact 的 identified 阈值一致：`full` 是可锁定、
+ * 可交战的目标，不能让玩家界面仍显示“未识别舰队”时 AI 已经开始隔空对射。
  */
 export function visibilityOf(dist: number, visionRange: number): Clarity | null {
   if (!(dist < visionRange)) return null;
   if (dist > visionRange * 0.8) return 'fuzzy';
-  if (dist > visionRange * 0.5) return 'partial';
+  if (dist > visionRange * 0.35) return 'partial';
   return 'full';
 }
 

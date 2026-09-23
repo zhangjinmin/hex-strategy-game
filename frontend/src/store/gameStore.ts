@@ -22,6 +22,8 @@ import { FORMATIONS, DEFAULT_FORMATION, getFormationCombatMods, getFormationCoun
 import { evaluateDailyEvents, resetEventCooldowns, type EventContext, type PendingEvent, type ChainReaction } from '../config/events';
 import { getEffectiveCompatibility, getDefectionProbability, getRelationBuff } from '../config/admiralRelations';
 import { SaveGameData, LoadGameData } from '../../wailsjs/go/main/App';
+// W2 存档卫生：战斗瞬态字段（指令权威/迷雾情报档案等）不得污染存档（build/HexFront_Saves.json 往返）
+import { battleTransientJsonReplacer, stripBattleTransientFields } from '../game/battle/BattleTransientFields';
 import { useAdmiralStore } from './admiralStore';
 import { useNodeStore } from './nodeStore';
 import { useFleetStore, shipTypeToCompKey } from './fleetStore';
@@ -310,7 +312,7 @@ export const useGameStore = defineStore('game', () => {
           gameState: gameState.value,
           strategicMapInitialized: strategicMapInitialized.value,
           adminState: (useAdminStore() as any).adminState,
-      }));
+      }, battleTransientJsonReplacer));
       saveSlots.value[slotId] = {
           name: slotName,
           timestamp: Date.now(),
@@ -351,7 +353,8 @@ export const useGameStore = defineStore('game', () => {
       return;
     }
     try {
-      const data = slot.data;
+      // W2 存档卫生：旧档可能已混入战斗瞬态字段（指令权威/迷雾情报等），读档时统一剥离安全缺省
+      const data = stripBattleTransientFields(slot.data);
       
       // 【核心修复】：以最新的静态配置表为基准
       const freshAdmirals = JSON.parse(JSON.stringify(admiralsData));
@@ -485,7 +488,7 @@ export const useGameStore = defineStore('game', () => {
           gameState: gameState.value,
           strategicMapInitialized: strategicMapInitialized.value,
           adminState: (useAdminStore() as any).adminState,
-      }));
+      }, battleTransientJsonReplacer));
       saveSlots.value[slotId] = {
           name: slotName,
           timestamp: Date.now(),
@@ -517,6 +520,18 @@ export const useGameStore = defineStore('game', () => {
     if (dialogTimer) clearTimeout(dialogTimer);
     dialogTimer = setTimeout(() => { battleDialog.value.visible = false; }, 4000);
   };
+
+  // [v59] 旗舰浮动气泡（DOM 可见层）：指挥制下 Phaser 画布 display:none（body.battle3d-mode），
+  // 战斗一句话必须渲染在 Vue DOM 才可见（v58 Phaser 气泡画在隐藏画布 = 实报"浮动句/进场句都不出现"的根因）。
+  // 单例语义：同一时刻至多一条，新发言整体替换（互不遮挡）；坐标由 BattleScene 逐帧从旗舰世界坐标投影回写。
+  const floatBubble = ref<{ name: string; text: string; color: string; x: number; y: number; ts: number } | null>(null);
+  const showFloatBubble = (name: string, text: string, color: string) => {
+    floatBubble.value = { name, text, color, x: -999, y: -999, ts: Date.now() };
+  };
+  const updateFloatBubblePos = (x: number, y: number) => {
+    if (floatBubble.value) { floatBubble.value.x = x; floatBubble.value.y = y; }
+  };
+  const hideFloatBubble = () => { floatBubble.value = null; };
 
   const isCastingBomb = ref(false);
   const isSidebarCollapsed = ref(false);
@@ -4331,6 +4346,7 @@ export const useGameStore = defineStore('game', () => {
     togglePause, restartGame, returnToMetaMenu, deleteMap, startMatchLaunch, openEditorMode, openMapForEdit, initLoadData,
     setPhaserMatchLauncher, setPhaserEditorInitializer,
     battleDialog, showDialog,
+    floatBubble, showFloatBubble, updateFloatBubblePos, hideFloatBubble,
     setPhaserCommandDispatcher, dispatchFleetCommand,
     setPhaserDeployDispatcher, dispatchDeployAction, deployFormation, deployTactic,
     // 战略层

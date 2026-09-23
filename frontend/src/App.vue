@@ -13,12 +13,14 @@
         <div v-for="fleet in fleetsUI" :key="fleet.id"
             class="fleet-float-ui"
             :style="{ left: fleet.x + 'px', top: (fleet.y - 45) + 'px' }">
-          <img :src="getPortrait(fleet.imageId)" class="fleet-portrait" @error="handleImgError" />
+          <img v-if="!fleet.contactState || fleet.contactState === 'identified'" :src="getPortrait(fleet.imageId)" class="fleet-portrait" @error="handleImgError" />
           <div class="fleet-info">
             <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
                 <div class="fleet-name" :class="fleet.team === 1 ? 'text-cyan' : 'text-red'">{{ fleet.name }}</div>
-                <div style="font-size: 9px; color: var(--color-text-secondary); font-weight: 800;">{{ fleet.unitCount }} 艘</div>
+                <div v-if="!fleet.contactState || fleet.contactState === 'identified'" style="font-size: 9px; color: var(--color-text-secondary); font-weight: 800;">{{ fleet.unitCount }} 艘</div>
+                <div v-else style="font-size: 9px; color: var(--color-warning); font-weight: 800;">{{ fleet.contactState === 'anomaly' ? '◌' : '◇' }}</div>
             </div>
+            <template v-if="!fleet.contactState || fleet.contactState === 'identified'">
             <div class="fleet-hp-bar">
               <div class="hp-fill" :class="fleet.team === 1 ? 'bg-cyan' : 'bg-red'" :style="{ width: Math.max(0, (fleet.hp / fleet.maxHp) * 100) + '%' }"></div>
             </div>
@@ -26,10 +28,18 @@
             <div class="fleet-hp-bar" style="height: 2px; margin-top: 2px; background: var(--neo-surface-raised);">
               <div class="hp-fill" :style="{ width: fleet.supply + '%', background: fleet.supply > 30 ? 'var(--color-green)' : 'var(--color-warning)' }"></div>
             </div>
+            <!-- 士气：补给告急会先动摇士气，归零后才可能在交火中快速崩溃。 -->
+            <div title="士气" style="font-size: 8px; color: var(--color-text-secondary); margin-top: 2px; line-height: 10px;">士气 {{ Math.round(fleet.morale ?? 100) }}%</div>
+            <div class="fleet-hp-bar" style="height: 2px; margin-top: 1px; background: var(--neo-surface-raised);">
+              <div class="hp-fill" :style="{ width: Math.max(0, fleet.morale ?? 100) + '%', background: (fleet.morale ?? 100) > 40 ? '#a78bfa' : 'var(--color-warning)' }"></div>
+            </div>
+            </template>
 
             <!-- 战术姿态面板 -->
             <div class="stance-controls" v-if="fleet.team === 1">
               <button class="stance-btn" :class="{active: fleet.stance === 'search'}" @click="store.dispatchFleetCommand(fleet.id, 'stance', 'search')">索敌</button>
+              <button class="stance-btn" @click="store.dispatchFleetCommand(fleet.id, 'scout')">派遣侦察</button>
+              <button class="stance-btn" @click="store.dispatchFleetCommand(fleet.id, 'electronic')">电子干扰</button>
               <button class="stance-btn" :class="{active: fleet.stance === 'siege'}" @click="store.dispatchFleetCommand(fleet.id, 'stance', 'siege')">攻坚</button>
               <button class="stance-btn" :class="{active: fleet.stance === 'defend'}" @click="store.dispatchFleetCommand(fleet.id, 'stance', 'defend')">驻守</button>
             </div>
@@ -67,6 +77,8 @@
       <!-- [G4] 战前部署「入场仪式」全屏层（立绘 / 致辞 / 对阵）—— 纯叠加，不改既有部署逻辑；
            可见性由组件内部按 store.battleDeployPhase 判定 -->
       <BattleIntroOverlay v-if="isCommandBattle" />
+      <!-- [v59] 旗舰浮动气泡（战斗一句话，DOM 可见层，锚定旗舰屏幕坐标） -->
+      <FloatBubble />
       <button v-if="isCommandBattle && !warRoomOpen" class="war-room-toggle" @click="setWarRoomOpen(true)">⚔ 军议 · 任务指令</button>
 
       <SettlementModal v-if="gameOver" />
@@ -147,6 +159,7 @@ import { useSettingsStore } from './store/settingsStore';
 import CommandPanel from './components/battle/CommandPanel.vue';
 import CouncilWarRoom from './components/battle/CouncilWarRoom.vue';
 import BattleIntroOverlay from './components/battle/BattleIntroOverlay.vue';
+import FloatBubble from './components/battle/FloatBubble.vue';
 import BattleLogPanel from './components/battle/BattleLogPanel.vue';
 import ForcePassDialog from './components/meta/ForcePassDialog.vue';
 import { commandBridge } from './services/CommandBridge';

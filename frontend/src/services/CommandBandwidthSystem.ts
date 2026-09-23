@@ -26,8 +26,9 @@ export type LinkStatus = 'direct' | 'delayed' | 'silent';
 /** 延迟订单：命令已发出，正在中继传输途中 */
 export interface PendingOrder {
   fleetId: number;
-  kind: 'flare' | 'stance';
-  payload: any;              // flare → {x,y}；stance → 姿态字符串
+  /** 'order' = W1 直接指令（move/attack；旧复用 'flare' 的改名）；'flare' = 旧 {x,y} 战术信标；'stance' = 变阵 */
+  kind: 'order' | 'flare' | 'stance';
+  payload: any;              // order → {x,y,direct:'move'|'attack',targetFleetId?}；flare → {x,y}；stance → 姿态字符串
   remainingMs: number;       // 剩余传输时间
   totalMs: number;           // 总延迟（用于进度提示）
 }
@@ -107,7 +108,7 @@ export function relayDelayMs(state: BandwidthState, distToFlagship: number): num
 
 export function queueDelayedOrder(
   state: BandwidthState,
-  kind: 'flare' | 'stance',
+  kind: 'order' | 'flare' | 'stance',
   fleetId: number,
   payload: any,
   delayMs: number

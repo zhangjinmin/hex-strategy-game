@@ -10,7 +10,8 @@
  *   gx = 舰队前进轴（+ = 朝敌），gy = 横向；相邻格中心距 1.0。
  *   调用方负责 `ox = gx * spacing`、`oy = gy * spacing` 再按 fAngle 旋转。
  *
- * 锚点约定（与改动前一致）：index 0 = 旗舰位，恒为 [0,0]；其余格相对它展开。
+ * 锚点约定：index 0 恒为 [0,0]，仅是阵型锚点；旗舰身份与槽位解耦，
+ * 由消费者把旗舰分配到后方中央的 `rearCommandSlot`，避免指挥舰暴露在楔形尖端。
  *   各阵型的舰队主体都在 gx ≤ 0 一侧（即舰队本体朝向由调用方的 fAngle 决定），
  *   只有 circle / square 因「中心向外」而天然向两侧对称铺开。
  *
@@ -246,7 +247,7 @@ function squareCells(n: number): FormationCell[] {
 }
 
 /**
- * 阵型格位偏移（单位 = 格位）。长度恒等于 n、格位互不重复、index 0 = 旗舰位 = [0,0]。
+ * 阵型格位偏移（单位 = 格位）。长度恒等于 n、格位互不重复、index 0 = 锚点 [0,0]。
  * @param formation 阵型 id；未知值退化为 wedge
  * @param n         本舰队参与阵型定位的实体数（不含运输舰）；<= 0 → []
  */
@@ -262,12 +263,47 @@ export function formationOffsets(formation: FormationType | string, n: number): 
     case 'wedge':
     default: cells = wedgeCells(n); break;
   }
-  // 归一化：把 index 0（旗舰位）平移到原点。
+  // 归一化：把 index 0（阵型锚点）平移到原点。
   // 偶数宽度的排没有真正的中心格（中心落在半格上），此处整体平移半格让旗舰恰好落在 [0,0]，
   // 代价是编队相对 gy=0 有半格不对称（28px 格距下 = 14px），换取锚点语义与改动前一致。
   const [x0, y0] = cells[0];
   if (x0 !== 0 || y0 !== 0) cells = cells.map(([gx, gy]) => [gx - x0, gy - y0] as FormationCell);
   return cells;
+}
+
+/**
+ * 返回阵型中最适合作为指挥舰的**受保护后中**槽位。
+ *
+ * 旗舰不能放在最后一排：楔形的最后一排最宽，旧规则虽然选择了该排的“中央”舰，
+ * 却会在偶数宽度时稳定落到最左/右，并且舰尾没有任何掩护。这里取纵深中点再向后
+ * 偏 10% 的位置，并排除最外后排；同分时先取横向最居中的舰。这样旗舰位于阵型内部，
+ * 前后左右均有僚舰，而不是把“后置”误实现为“贴着后缘”。
+ */
+export function rearCommandSlot(offsets: readonly FormationCell[]): number {
+  if (offsets.length <= 1) return 0;
+  let minGx = Infinity;
+  let maxGx = -Infinity;
+  for (const [gx] of offsets) { minGx = Math.min(minGx, gx); maxGx = Math.max(maxGx, gx); }
+  // 从前方（maxGx）看，目标在纵深约 60% 处：处于中后段但仍留有后卫。
+  const protectedGx = maxGx - (maxGx - minGx) * 0.60;
+  const hasInnerRear = offsets.some(([gx]) => gx > minGx);
+  let best = 0;
+  let bestScore = Infinity;
+  for (let i = 0; i < offsets.length; i++) {
+    const [gx, gy] = offsets[i];
+    if (hasInnerRear && gx === minGx) continue;
+    // 纵深更接近受保护后中位优先；横向偏离作为次级排序，避免落在阵型翼侧。
+    const score = Math.abs(gx - protectedGx) * 3 + Math.abs(gy);
+    const [bestGx, bestGy] = offsets[best];
+    if (score < bestScore - 1e-9
+      || (Math.abs(score - bestScore) < 1e-9 && Math.abs(gy) < Math.abs(bestGy))
+      || (Math.abs(score - bestScore) < 1e-9 && Math.abs(gy) === Math.abs(bestGy) && gx > bestGx)
+      || (Math.abs(score - bestScore) < 1e-9 && Math.abs(gy) === Math.abs(bestGy) && gx === bestGx && gy < bestGy)) {
+      best = i;
+      bestScore = score;
+    }
+  }
+  return best;
 }
 
 /**

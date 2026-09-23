@@ -124,6 +124,8 @@ function fbm(x: number, z: number): number {
   carrier:         { L: 0.933, W: 0.311, H: 0.170 },
   fast_battleship: { L: 0.660, W: 0.222, H: 0.140 },
   cruiser:         { L: 0.556, W: 0.200, H: 0.120 },
+  // 专属电子舰 GLB 未交付前复用巡洋舰船体，尺寸必须同源以免视觉/碰撞足迹不一致。
+  electronic:       { L: 0.556, W: 0.200, H: 0.120 },
   destroyer:       { L: 0.400, W: 0.133, H: 0.090 },
   fighter:         { L: 0.170, W: 0.060, H: 0.040 },
   // 补给运输舰（AUX）：比战舰长 2 倍的设定 → 取战列 2.2 倍长，细高箱形，视觉上与战舰明确区分
@@ -234,7 +236,7 @@ interface ShipEntry {
   modelVer?: number;
   /** 【旗舰方案】指挥光环（水平细环，随舰体移动/缩放；仅旗舰持有） */
   cmdRing?: THREE.Mesh;
-  /** 旗舰标识与旗舰模型 key（每舰队 units[0]，换装重建时需保持） */
+  /** 旗舰标识与旗舰模型 key（由持久 isFlagship 身份决定，换装重建时需保持） */
   isFlagship?: boolean;
   flagshipKey?: string;
   /** 实体长出进度计时（秒）：0 → MESH_GROW_DUR 时 group.scale 达到基准值 */
@@ -310,6 +312,8 @@ interface FleetBillboard {
   hpFill: HTMLDivElement | null;
   supplyFill: HTMLDivElement | null;
   stanceBtns: HTMLButtonElement[];
+  /** [W3] 三概念之「分舰」按钮（分遣计划入口；可用性逐帧按指挥权威派生） */
+  splitBtn?: HTMLButtonElement | null;
   /** 意图/任务文本行（提督扮演 C：AI 意图可见） */
   missionEl: HTMLDivElement;
   /** 上次渲染的姿态，用于 active 态 diff（避免每帧写 DOM） */
@@ -324,7 +328,8 @@ interface FleetBillboard {
  *  v2：'补给'独立映射到 supply（原映射 destroyer 导致运输舰在 3D 里长得像驱逐舰，无法辨识） */
 const CLS_ALIAS: Record<string, string> = {
   '战列': 'battleship', '巡洋': 'cruiser', '驱逐': 'destroyer',
-  '突击': 'carrier', '电子': 'cruiser', '补给': 'supply', '无': 'destroyer',
+  '突击': 'carrier', '空母': 'carrier', '舰载': 'fighter',
+  '电子': 'electronic', '补给': 'supply', '无': 'destroyer',
 };
 
 // ============================================================
@@ -1217,6 +1222,8 @@ export class Battle3DOverlay {
   private relayRings: { a: THREE.Mesh; b: THREE.Mesh }[] = [];
   /** v6.7：司令部信标的核心 mesh（线框八面体，每帧自旋"活的指挥节点"） */
   private fortressRings: THREE.Mesh[] = [];
+  /** 迷雾情报：castle tile 标记（信标柱/模型）按 ownerId 登记，敌方未发现前隐藏 */
+  private castleMarkers = new Map<number, THREE.Object3D[]>();
   /** v6.9：伊谢尔伦雷神之锤 3D 特效——充能光球（每帧推进）与光束（复用 lasers 池寿命延长） */
   private fortressCharges: { group: THREE.Group; core: THREE.Mesh; ring: THREE.Mesh; t: number; dur: number }[] = [];
   /** v6.10：设施模型槽位（assets/scene/ 的 GLB 替代程序化标记）。
@@ -2615,7 +2622,15 @@ export class Battle3DOverlay {
       const propKey = PROP_KEY[t.type];
       if (propKey) {
         const holder = this.tryAttachSceneProp(propKey, x, h, z, PROP_COLOR[propKey]);
-        if (holder) return;
+        if (holder) {
+          // 迷雾情报：castle 模型同样受敌基地发现门控（登记后按帧开关可见性）
+          if (t.type === 'castle') {
+            const arr = this.castleMarkers.get(t.ownerId) || [];
+            arr.push(holder);
+            this.castleMarkers.set(t.ownerId, arr);
+          }
+          return;
+        }
       }
       switch (t.type) {
         case 'planet':
@@ -2657,6 +2672,12 @@ export class Battle3DOverlay {
           //   数据位置 ≠ castlePos 出生点，细信标不喧宾夺主。
           const beam = add(cylGeo, mats.castle, x, h + R * 0.8, z, R * 0.06);
           beam.scale.y = R * 1.6;
+          // 迷雾情报：敌方 castle 信标确认前隐藏（按帧开关）
+          {
+            const arr = this.castleMarkers.get(t.ownerId) || [];
+            arr.push(beam);
+            this.castleMarkers.set(t.ownerId, arr);
+          }
           break;
         }
         default:
@@ -2696,7 +2717,11 @@ export class Battle3DOverlay {
 
   /** 该舰所属舰队的专属旗舰模型 key（旗舰名 → FLAGSHIP_MODEL_ALIAS），非旗舰返回 null */
   private flagshipKeyOf(u: any, fleet: any): string | null {
-    if ((fleet.units as any[]).indexOf(u) !== 0) return null;
+    // 侦察分队是一艘真实的非旗舰巡洋舰，绝不可因为单舰编制而被回退识别为旗舰。
+    if ((fleet as any)?._scout || (fleet as any)?._scoutFlight) return null;
+    const units = (fleet.units as any[]) || [];
+    const flagship = units.find((candidate: any) => candidate.isFlagship === true) || units[0];
+    if (u !== flagship) return null;
     const adm = (this.store.allAdmirals as any[]).find((a: any) => a.id === (fleet.commanderId ?? u.factionId));
     return adm?.flagshipName ? (FLAGSHIP_MODEL_ALIAS[adm.flagshipName] || null) : null;
   }
@@ -3088,6 +3113,9 @@ export class Battle3DOverlay {
     if (cls) {
       if (flagshipKey) candidates.push(`flagship_${flagshipKey}.glb`);
       candidates.push(`${factionKey}_${cls}.glb`, `${cls}.glb`);
+      // 电子舰已有独立兵种和行为，但专属 GLB 尚未交付；明确回落巡洋舰，
+      // 保持阵营外观一致，也避免模型缺失时退化成程序化小船。
+      if (cls === 'electronic') candidates.push(`${factionKey}_cruiser.glb`, 'cruiser.glb');
     }
 
     let reg: ShipModelReg | null = candidates.length ? acquireShipModelByFiles(candidates) : null;
@@ -3491,7 +3519,9 @@ export class Battle3DOverlay {
 
   private syncShips(dt: number) {
     const bs = this.battleScene;
-    const fleets: any[] = bs.globalFleets || []; // any 来源：BattleScene.globalFleets
+    const fleets: any[] = typeof (bs as any).getRenderableFleets === 'function'
+      ? (bs as any).getRenderableFleets()
+      : ((bs as any).globalFleets || []);
     const now = performance.now() / 1000;
 
     // ── 第零遍：队间高度档（WS3）。每方（= factionId，1v1 会战里攻守各一方）的各支分舰队
@@ -3519,11 +3549,12 @@ export class Battle3DOverlay {
     //   `dotGrid` / `flagVisBuf` 虽持引用，但都在 writeDotLayers 开头 clear、同帧内用完即弃。
     const vis = this.unitVis;
     for (const v of vis.values()) v.seen = false;
-    // 【旗舰方案】重建旗舰集合（fleet.units[0] = 旗舰；O(队数) 而非逐舰 indexOf）
+    // 【旗舰方案】重建旗舰集合（持久 isFlagship 身份，而非会随战损前移的数组下标）。
     this.flagshipSet.clear();
     for (const fleet of fleets) {
-      const u0 = (fleet.units as any[])?.[0];
-      if (u0) this.flagshipSet.add(u0);
+      const units = (fleet.units as any[]) || [];
+      const flagship = ((fleet as any)._scout || (fleet as any)._scoutFlight) ? null : (units.find((u: any) => u.isFlagship === true) || units[0]);
+      if (flagship) this.flagshipSet.add(flagship);
     }
     for (const fleet of fleets) {
       const units: any[] = fleet.units || [];
@@ -3548,7 +3579,9 @@ export class Battle3DOverlay {
       const tierY = fleetTierY.get(fleet) ?? 0;
       for (let ui = 0; ui < units.length; ui++) {
         const u = units[ui];
-        if (!u.sprite || u.hp <= 0 || !visibleIndexes.has(ui)) continue;
+        // Phaser 层的 visible 是战争迷雾的权威输出；3D 层只能消费它，
+        // 不得因独立遍历 globalFleets 而泄漏未知/未识别敌舰模型。
+        if (!u.sprite || u.sprite.visible === false || u.hp <= 0 || !visibleIndexes.has(ui)) continue;
         // unit 无稳定 id：用 fleetId + sprite 容器引用做 key（sprite 生命周期=unit 生命周期）
         const key = `${fleet.factionId}:${u.sprite._b3dKey || (u.sprite._b3dKey = Math.random().toString(36).slice(2))}`;
         const shipLen = this.shipLenOf(u, fleet);
@@ -3817,7 +3850,9 @@ export class Battle3DOverlay {
   private addMesh(v: UnitVis) {
     const u = v.u, fleet = v.fleet;
     const color = factionColor(this.getFac(u.factionId) || {});
-    const isFlagshipUnit = (fleet.units as any[]).indexOf(u) === 0;
+    const units = (fleet.units as any[]) || [];
+    const isFlagshipUnit = !(fleet as any)._scout && !(fleet as any)._scoutFlight
+      && u === (units.find((candidate: any) => candidate.isFlagship === true) || units[0]);
     const flagshipKey = isFlagshipUnit ? this.flagshipKeyOf(u, fleet) : null;
     const built = this.buildShip(String(u.classType || 'destroyer'), color, this.isEmpireSideOf(u), flagshipKey ?? undefined);
     // 【旗舰方案】指挥光环（仅水平细环）：挂在 ship group 下（随位置/缩放自动跟随，无需每帧同步）。
@@ -4099,6 +4134,7 @@ export class Battle3DOverlay {
   }
 
   private createBillboard(fleet: any, team: number): FleetBillboard {
+    if (fleet?._scoutFlight) return this.createScoutBillboard(fleet, team);
     const root = document.createElement('div');
     root.className = 'b3d-bb';
 
@@ -4118,26 +4154,38 @@ export class Battle3DOverlay {
     spBar.appendChild(supplyFill);
     root.appendChild(spBar);
 
-    // 意图/任务文本行（提督扮演 C：每支舰队头顶显示当前任务，解决"一窝蜂"不可读）
+    // ── 三概念之「态势」：当前指令 / 战术角色 / 交战状态 / 损管 + 意图行（design §Fleet billboard）──
+    const statusGroup = document.createElement('div');
+    statusGroup.className = 'b3d-bb-group';
+    const statusTag = document.createElement('span');
+    statusTag.className = 'b3d-bb-grouptag';
+    statusTag.textContent = '态势';
+    statusGroup.appendChild(statusTag);
     const missionEl = document.createElement('div');
     missionEl.className = 'b3d-bb-mission idle';
-    root.appendChild(missionEl);
+    statusGroup.appendChild(missionEl);
+    root.appendChild(statusGroup);
 
-    // 姿态按钮：提督扮演下只有"总指挥旗舰"可直接实时指挥（A. 指挥权限）；
-    // 非指挥制（supremeCommanderId 未判定）保持原口径——我方（team===1）全给按钮。
-    const bsAny: any = this.battleScene;
-    const supremeId = bsAny?.supremeCommanderId;
-    const directOK = team === 1 &&
-      (supremeId === null || supremeId === undefined || fleet?.commanderId === supremeId);
+    // ── 三概念之「行动」：侦察 / 电子战 / 保持等情境特令（移动与攻击由右键直接承担，不设常驻按钮）──
+    // [W3] 按钮创建与权威解耦：我方恒建，可用性由 updateBillboards 逐帧按当前指挥权威派生
+    //   （design：controls derived from current authority on every update, not frozen at creation）。
     const stanceBtns: HTMLButtonElement[] = [];
-    if (directOK) {
+    let splitBtn: HTMLButtonElement | null = null;
+    if (team === 1) {
       const wrap = document.createElement('div');
       wrap.className = 'b3d-bb-stances';
-      for (const stance of ['search', 'siege', 'defend'] as const) {
+      const actionTag = document.createElement('span');
+      actionTag.className = 'b3d-bb-grouptag';
+      actionTag.textContent = '行动';
+      wrap.appendChild(actionTag);
+      for (const stance of ['search', 'scout', 'electronic', 'siege', 'defend'] as const) {
         const btn = document.createElement('button');
         btn.className = 'b3d-bb-btn';
         btn.dataset.stance = stance;
-        btn.textContent = stance === 'search' ? '索敌' : stance === 'siege' ? '攻坚' : '驻守';
+        btn.textContent = stance === 'search' ? '索敌'
+          : stance === 'scout' ? '侦察'
+          : stance === 'electronic' ? '电子战'
+          : stance === 'siege' ? '攻坚' : '驻守';
         // 阻止冒泡到 canvas：否则点按钮会连带触发地块拾取/框选
         btn.addEventListener('pointerdown', (e) => e.stopPropagation());
         btn.addEventListener('click', (e) => {
@@ -4145,19 +4193,21 @@ export class Battle3DOverlay {
           const fid = fleet?.id;
           if (fid === undefined) return;
           const fn = this.store?.dispatchFleetCommand;
-          if (typeof fn === 'function') fn(fid, 'stance', stance);
+          if (typeof fn === 'function') {
+            const isStance = stance === 'search' || stance === 'siege' || stance === 'defend';
+            fn(fid, isStance ? 'stance' : stance, isStance ? stance : undefined);
+          }
           else this.opts.onError?.(`[3D] 姿态切换失败：store.dispatchFleetCommand 不可用`);
         });
         wrap.appendChild(btn);
         stanceBtns.push(btn);
       }
-      // [v31-C] **「分兵」按钮**：玩家主动拆分（按战法把这支舰队拆成多路）。
-      //   与姿态按钮同属一个操作界面 ⇒ 不必记忆快捷键（用户实报"没看到操作界面、没有提示"）。
-      //   点击直接对**本浮标对应的舰队**生效（无需先选中），与快捷键 `X` 共用同一入口。
-      const splitBtn = document.createElement('button');
+      // ── 三概念之「分舰」：打开分遣计划（战法规划 + 合格性门 canSplit），不是即时拆分 ──
+      //   与快捷键 `X` 共用 splitFleetById 同一入口（内含战法选择与分兵禁止条件）。
+      splitBtn = document.createElement('button');
       splitBtn.className = 'b3d-bb-btn';
-      splitBtn.textContent = '分兵';
-      splitBtn.title = '按战法把这支舰队拆成多路（快捷键 X）';
+      splitBtn.textContent = '分舰';
+      splitBtn.title = '分遣计划：按战法规划拆分多路（需合格计划，不合格会说明原因；快捷键 X）';
       splitBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
       splitBtn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -4172,13 +4222,73 @@ export class Battle3DOverlay {
 
     this.bbLayer!.appendChild(root);
     return {
-      root, nameEl, hpFill, supplyFill, stanceBtns, missionEl,
+      root, nameEl, hpFill, supplyFill, stanceBtns, splitBtn, missionEl,
+      lastStance: '', lastIntent: '', lastTeam: team, lastHpPct: -1, lastSupply: -1,
+    };
+  }
+
+  /** 侦察航班不是舰队：只显示方向/状态/生命，不生成姿态、分兵或命令按钮。 */
+  private createScoutBillboard(_fleet: any, team: number): FleetBillboard {
+    const root = document.createElement('div');
+    root.className = 'b3d-bb b3d-bb-scout';
+    root.style.pointerEvents = 'none';
+    const nameEl = document.createElement('div');
+    nameEl.className = 'b3d-bb-name';
+    root.appendChild(nameEl);
+    const hpBar = document.createElement('div');
+    hpBar.className = 'b3d-bb-bar';
+    const hpFill = document.createElement('div');
+    hpBar.appendChild(hpFill);
+    root.appendChild(hpBar);
+    const missionEl = document.createElement('div');
+    missionEl.className = 'b3d-bb-mission';
+    root.appendChild(missionEl);
+    this.bbLayer!.appendChild(root);
+    return {
+      root, nameEl, hpFill, supplyFill: null as any, stanceBtns: [], missionEl,
       lastStance: '', lastIntent: '', lastTeam: team, lastHpPct: -1, lastSupply: -1,
     };
   }
 
   private destroyBillboard(bb: FleetBillboard) {
     bb.root.remove();
+  }
+
+  /**
+   * 3D 的所有敌情呈现都以 BattleScene 写出的情报档位为准。
+   * 己方/友方可见；敌方只有 `_intelDisplayMode === 'live'`（实时确认/交战强制/档案+实时重捕获）
+   * 才可显示完整舰队、意图或补给链——「末次位置」档案接触只画情报标记，不算实时可见。
+   */
+  private isFleetIntelVisible(fleet: any): boolean {
+    if (!fleet) return false;
+    const fac: any = this.getFac(fleet.factionId) || {};
+    const player = ((this.store as any).factions || []).find((f: any) => f.type === 'player');
+    const playerTeam = player?.team ?? 1;
+    if (fac.team === playerTeam) return true;
+    const mode = (fleet as any)._intelDisplayMode;
+    if (mode != null) return mode === 'live';
+    // 档位尚未写出（首帧前）时退回接触记忆判定，避免闪烁误显
+    return (fleet as any)._intelContactState === 'identified';
+  }
+
+  /** Explicit alias keeps intent rendering from accidentally bypassing fog gates. */
+  private isEnemyIntelVisible(fleet: any): boolean {
+    return this.isFleetIntelVisible(fleet);
+  }
+
+  /** 迷雾情报：敌方 castle 标记（信标柱/模型）未发现前隐藏，正向确认后永久常驻 */
+  private updateCastleIntelVisibility() {
+    if (this.castleMarkers.size === 0) return;
+    const bs: any = this.battleScene;
+    const player = ((this.store as any).factions || []).find((f: any) => f.type === 'player');
+    const playerTeam = player?.team ?? 1;
+    this.castleMarkers.forEach((objs, ownerId) => {
+      const fac: any = this.getFac(ownerId) || {};
+      const visible = fac.team == null || fac.team === playerTeam
+        ? true
+        : !!(bs.isEnemyBaseKnownTo ? bs.isEnemyBaseKnownTo(playerTeam, fac) : true);
+      for (const o of objs) o.visible = visible;
+    });
   }
 
   /** 每帧投影更新：舰队 3D 锚点（所属舰船质心 + 抬高）→ 屏幕坐标 */
@@ -4212,6 +4322,7 @@ export class Battle3DOverlay {
       alive.add(key);
       const fleet = a.fleet;
       const fac = this.getFac(fleet.factionId) || {};
+      if (!this.isFleetIntelVisible(fleet)) return;
       const team = fac.team ?? (fleet.factionId === 1 ? 1 : 2);
       const units: any[] = fleet.units || [];
 
@@ -4229,8 +4340,9 @@ export class Battle3DOverlay {
 
       // 文本/数值 diff 后才写 DOM
       const bsS: any = this.battleScene;
-      const supremeMark = bsS?.supremeCommanderId != null && fleet.commanderId === bsS.supremeCommanderId ? '◆' : '';
-      const name = (fac.name || (team === 1 ? '我方舰队' : '敌方舰队'));
+      const supremeMark = !fleet._scoutFlight && bsS?.supremeCommanderId != null && fleet.commanderId === bsS.supremeCommanderId ? '◆' : '';
+      const sectorName = fleet.scoutSector === 'left' ? '左' : fleet.scoutSector === 'right' ? '右' : '中';
+      const name = fleet._scoutFlight ? `侦察·${sectorName}` : (fac.name || (team === 1 ? '我方舰队' : '敌方舰队'));
       // [v12.1] 删除「显示 N 艘（1∶K）」后缀：早期测试用，用户判定不需要；标签只留舰队名。
       if (bb.lastTeam !== team) { bb.lastTeam = team; }
       const label = `${supremeMark}${name}`;
@@ -4260,12 +4372,22 @@ export class Battle3DOverlay {
           b.classList.toggle('active', b.dataset.stance === stance);
         });
       }
+      // [W3] 按钮可用性**逐帧**按当前指挥权威派生（design §Command succession 末条：
+      //   not frozen when the billboard was first created —— 继任 / 指挥崩溃态即时反映到按钮）
+      const canDirect = (bsS as any)?.canDirectlyControlFleet?.(fleet) ?? true;
+      bb.stanceBtns.forEach((b) => { b.disabled = !canDirect; });
+      if (bb.splitBtn) bb.splitBtn.disabled = !canDirect;
 
-      // 提督扮演 C：意图文本（任务文本优先；否则由状态机推导，敌方 AI 同口径）
-      const intent = fleetIntentText(fleet, (fid: any) => {
-        const tf = bsS?.globalFleets?.find((x: any) => x.id === fid);
-        return tf ? (this.getFac(tf.factionId)?.name || null) : null;
-      }, { team });
+      // 提督扮演 C：意图文本（[W3] 权威决策输出 _intentLabel —— 奉令/临机/交战/整补前缀优先；
+      //   否则任务文本 / 状态机推导，敌方 AI 同口径）
+      const intent = fleet._intentLabel
+        ? String(fleet._intentLabel)
+        : fleet._scoutFlight
+        ? (fleet.state === 'returning' ? '回传返航' : fleet.state === 'sweeping' ? '前沿搜索' : '高速前出')
+        : fleetIntentText(fleet, (fid: any) => {
+          const tf = bsS?.globalFleets?.find((x: any) => x.id === fid);
+          return tf ? (this.getFac(tf.factionId)?.name || null) : null;
+        }, { team });
       if (bb.lastIntent !== intent) {
         bb.lastIntent = intent;
         bb.missionEl.textContent = intent;
@@ -4299,6 +4421,31 @@ export class Battle3DOverlay {
       this.destroyBillboard(bb);
       this.billboards.delete(key);
     });
+  }
+
+  /** [v60] 浮动句 DOM 气泡锚定投影：与 updateBillboards 同一台相机、同一 CSS px 口径
+   *（container.clientWidth/Height + 屏幕左上原点）。锚点两种：
+   *  · unit —— 直接吃本帧 unitVis 的 3D 位置（含地形高/分层/档位，与渲染实体同位）；
+   *  · 固定世界点（击毁语录）—— Phaser 世界 (x, y) 按 (x, 巡航高, −y) 映射。
+   * 视锥外返回 on=false，调用方把气泡移出视口隐藏（不钳在边缘 —— 用户实报
+   * "气泡飘在窗口外/别的地方"的根修：旧实现用 Phaser 相机投影，与真实渲染相机不同源）。
+   * 2D 降级（无 overlay）时由调用方回退 Phaser 投影。 */
+  public floatScreenPos(a: { u?: any; x?: number; y?: number }): { x: number; y: number; on: boolean } {
+    const w = this.container.clientWidth || 1;
+    const h = this.container.clientHeight || 1;
+    let wx = 0; let wy = 0; let wz = 0;
+    if (a.u) {
+      let vv: UnitVis | null = null;
+      for (const v of this.unitVis.values()) { if (v.u === a.u) { vv = v; break; } }
+      if (!vv || !vv.seen) return { x: -999, y: -999, on: false };
+      wx = vv.x; wy = vv.y; wz = vv.z;
+    } else {
+      wx = a.x ?? 0; wz = -(a.y ?? 0); wy = this.groundYAt(wx, -wz) + this.cruiseClearance;
+    }
+    const v = this.bbProjV.set(wx, wy, wz);
+    v.project(this.camera);
+    const on = v.z > -1 && v.z < 1 && Math.abs(v.x) < 1.05 && Math.abs(v.y) < 1.05;
+    return { x: (v.x * 0.5 + 0.5) * w, y: (-v.y * 0.5 + 0.5) * h, on };
   }
 
   // ---------- 指挥制后勤战 3D 可视化 ----------
@@ -4345,6 +4492,8 @@ export class Battle3DOverlay {
     const bs: any = this.battleScene;
     const R = this.hexR;
     const teamColor = (team: number | undefined) => (team === 1 ? 0x22c55e : 0xa855f7);
+    const playerFac0 = ((this.store as any).factions || []).find((f: any) => f.type === 'player');
+    const playerTeam0 = playerFac0?.team ?? 1;
 
     // ── 1) 司令部信标（castlePos 处）——v6.7 重做：CRT 线框向量语言 ──
     //    v6.6 的"实心装甲基座+舰桥塔+双 Torus 防御环"被用户判定为魔法阵风格
@@ -4413,6 +4562,12 @@ export class Battle3DOverlay {
       }
       m.ring.position.set(f.castlePos.x, gy + R * 0.3, -f.castlePos.y);
       (m.ring.material as THREE.LineBasicMaterial).color.setHex(teamColor(team));
+      // 敌方基地迷雾门（design §Fog and intelligence）：未发现不渲染，正向确认后**永久常驻**可见
+      const baseVisible = team === playerTeam0
+        ? true
+        : !!(bs.isEnemyBaseKnownTo ? bs.isEnemyBaseKnownTo(playerTeam0, f) : true);
+      m.grp.visible = baseVisible;
+      m.ring.visible = baseVisible;
     });
     this.supCastle.forEach((m, id) => {
       if (seenFac.has(id)) return;
@@ -4477,6 +4632,8 @@ export class Battle3DOverlay {
     const seenAux = new Set<any>();
     auxShips.forEach((aux: any) => {
       if (!aux?.unit || aux.unit.hp <= 0) return;
+      // 敌方运输舰既是可攻击目标，也必须先被识别；补给圈和航线不能越过迷雾泄漏其位置。
+      if (!this.isFleetIntelVisible(aux.fleet)) return;
       const key = aux.unit;   // aux 包装对象每帧重建，unit 引用稳定
       seenAux.add(key);
       const ax = aux.x;       // 独立坐标（不再 fleet.x + 偏移）
@@ -4548,6 +4705,7 @@ export class Battle3DOverlay {
     const seen = new Set<any>();
     fleets.forEach((fl: any) => {
       if (!fl?.units || fl.units.length === 0) return;
+      if (!this.isFleetIntelVisible(fl)) return;
       const fac = this.getFac(fl.factionId);
       if (!fac) return;
       let dest: any = null;
@@ -4556,7 +4714,9 @@ export class Battle3DOverlay {
         if (fl.mission && fl._missionDest) { dest = fl._missionDest; col = 0x22d3ee; }
       } else if (fl.state === 'engaging' && fl._lastTargetFleetId != null) {
         const tgt = fleets.find((x: any) => x.id === fl._lastTargetFleetId);
-        if (tgt && tgt.units && tgt.units.length > 0) { dest = { x: tgt.x, y: tgt.y }; col = 0xef4444; }
+        if (tgt && tgt.units && tgt.units.length > 0 && this.isEnemyIntelVisible(tgt)) {
+          dest = { x: tgt.x, y: tgt.y }; col = 0xef4444;
+        }
       }
       if (!dest) return;
       seen.add(fl);
@@ -4720,7 +4880,70 @@ export class Battle3DOverlay {
     return this.pxToWorld(p.x, p.y, this.fxYAtPx(p.x, p.y));
   }
 
+  // ═══ [W3] 指针反馈（design §Pointer feedback）══════════════════════════
+  //   · 地面左键不落任何标记；成功右键移动 ⇒ 精确目的地短暂 chevron/ring；
+  //   · 成功右键攻击 ⇒ 敌目标短暂 target-lock；无常驻大 hex 指示；
+  //   · 战斗结算 clearPointerMarkers 统一清理（design §Failure handling 末条）。
+  private pointerMarks: { obj: THREE.Object3D; until: number }[] = [];
+
+  /** 成功移动指令：在精确目的地落一枚短暂 chevron/ring（≈1.4s 淡出销毁） */
+  showPointerChevron(x: number, y: number) {
+    const geo = new THREE.RingGeometry(this.hexR * 0.55, this.hexR * 0.75, 24);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0x66ccff, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false,
+    });
+    const ring = new THREE.Mesh(geo, mat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(x, this.hexR * 0.2, -y);
+    this.scene.add(ring);
+    this.pointerMarks.push({ obj: ring, until: performance.now() + 1400 });
+  }
+
+  /** 成功攻击指令：在敌目标落一枚短暂 target-lock 标记（≈1.4s 淡出销毁） */
+  showTargetLock(x: number, y: number) {
+    const geo = new THREE.OctahedronGeometry(this.hexR * 0.8);
+    const edges = new THREE.EdgesGeometry(geo);
+    const mat = new THREE.LineBasicMaterial({ color: 0xff4444, transparent: true, opacity: 0.95 });
+    const lock = new THREE.LineSegments(edges, mat);
+    lock.position.set(x, this.hexR * 0.5, -y);
+    this.scene.add(lock);
+    this.pointerMarks.push({ obj: lock, until: performance.now() + 1400 });
+    geo.dispose();
+  }
+
+  /** 战斗结算清理瞬态指针标记 */
+  clearPointerMarkers() {
+    for (const m of this.pointerMarks) {
+      this.scene.remove(m.obj);
+      const mm: any = m.obj;
+      mm.geometry?.dispose?.();
+      mm.material?.dispose?.();
+    }
+    this.pointerMarks.length = 0;
+  }
+
+  /** 瞬态指针标记寿命管理（每帧：淡出 → 到期销毁） */
+  private updatePointerMarks() {
+    for (let i = this.pointerMarks.length - 1; i >= 0; i--) {
+      const m = this.pointerMarks[i];
+      const left = m.until - performance.now();
+      const mat: any = (m.obj as any).material;
+      if (mat) mat.opacity = Math.max(0, 0.9 * Math.min(1, left / 500));
+      if (left <= 0) {
+        this.scene.remove(m.obj);
+        const mm: any = m.obj;
+        mm.geometry?.dispose?.();
+        mm.material?.dispose?.();
+        this.pointerMarks.splice(i, 1);
+      }
+    }
+  }
+
   private handleFx(e: Fx3dEvent) {
+    // [W3] 指针反馈事件（battle3dFx 总线 → 三接口）
+    if (e.kind === 'pointer_chevron' && e.at) { this.showPointerChevron(e.at.x, e.at.y); return; }
+    if (e.kind === 'pointer_target_lock' && e.at) { this.showTargetLock(e.at.x, e.at.y); return; }
+    if (e.kind === 'pointer_clear') { this.clearPointerMarkers(); return; }
     if (e.kind === 'laser' && e.from && e.to) {
       const from = this.fxPointAt(e.from);
       const to = this.fxPointAt(e.to);
@@ -5192,8 +5415,8 @@ export class Battle3DOverlay {
       if (d < bestD) { bestD = d; best = t; }
     }
     if (!best || bestD > this.hexR * this.hexR * 4) return;
-    this.selRing.position.set(best.x, this.hexR * 0.15, -best.y);
-    this.selRing.visible = true;
+    // [W3] 地面点击不再落常驻大 hex 指示（design §Pointer feedback：persistent oversized hex 已移除）；
+    //   移动/攻击成功后的短暂 chevron / target-lock 由 showPointerChevron / showTargetLock 承担。
     this.syncTileClick(best, button);
     return;
   }
@@ -5220,7 +5443,7 @@ export class Battle3DOverlay {
     let bestD2 = Infinity;
     for (const v of this.unitVis.values()) {
       const fl = v.fleet;
-      if (!fl) continue;
+      if (!fl || fl._scoutFlight) continue;
       const fid: number = fl.id !== undefined ? fl.id : fl.factionId;
       if (cands && !cands.has(fid)) continue;
       const dx = v.sx - pxDev, dy = v.sy - pyDev;
@@ -5292,6 +5515,7 @@ export class Battle3DOverlay {
       this.syncShips(dt);
       this.updateBillboards();
       this.updateSupplyViz();
+      this.updateCastleIntelVisibility();
       this.updateIntentLines();
       // [v56 性能] 修复 v37 重构引入的**双重调用块**：updateFlames / drainFx3d / updateFx /
       // updateBoats / updateCaptures 曾被连续跑两遍（pre_refactor_backup 为单份）——
@@ -5302,10 +5526,9 @@ export class Battle3DOverlay {
       this.updateFx(dt);
       this.updateBoats(dt);
       this.updateCaptures();
-      if (this.selRing.visible) {
-        const mat = this.selRing.material as THREE.LineBasicMaterial;
-        mat.opacity = Math.max(0.45, mat.opacity - dt * 1.1);
-      }
+      // [W3] 瞬态指针标记寿命管理（chevron / target-lock 短暂显示后淡出销毁；
+      //   原 selRing 常驻透明度钳位指示已随之移除）
+      this.updatePointerMarks();
     }
 
     this.controls.update();
