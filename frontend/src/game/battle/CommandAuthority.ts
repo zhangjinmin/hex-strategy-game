@@ -164,6 +164,19 @@ export function cancelDirectAttack(state: DirectAttackState | null): DirectAttac
   return { ...state, completed: true, endReason: 'replaced', pursuit: null };
 }
 
+/** Forward-battery firing gate. Prevents beams from leaving ships that are
+ * visibly facing away from their target while still allowing a broad turret arc. */
+export function isTargetWithinFireArc(
+  heading: number,
+  from: { x: number; y: number },
+  target: { x: number; y: number },
+  halfArcRad = Math.PI * 0.42,
+): boolean {
+  const bearing = Math.atan2(target.y - from.y, target.x - from.x);
+  const delta = Math.abs(Math.atan2(Math.sin(bearing - heading), Math.cos(bearing - heading)));
+  return delta <= halfArcRad;
+}
+
 // ------------------------------------------------------------
 // 权威解析
 // ------------------------------------------------------------

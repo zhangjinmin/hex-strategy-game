@@ -371,6 +371,15 @@ export function canSplit(input: SplitCheckInput): SplitCheckResult {
   return { ok: true, reason: null };
 }
 
+/**
+ * Qualification gate for every multi-route AI plan, including plans that can
+ * use several already-existing fleets without physically splitting one.
+ * Personality may rank qualified plans, but cannot bypass these conditions.
+ */
+export function canCommitMultiRoutePlan(input: SplitCheckInput): SplitCheckResult {
+  return canSplit(input);
+}
+
 /** 分队归队原因（abort → rejoin） */
 export type RejoinReason = 'timeout' | 'attrition' | 'objective_done';
 

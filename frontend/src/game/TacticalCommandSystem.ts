@@ -158,6 +158,17 @@ export function intentKindFor(level: string | null | undefined, label: string): 
   return 'ordered';
 }
 
+/**
+ * Convert an authority decision into exactly one user-facing intent prefix.
+ * `CommandAuthority` already prefixes several decisions, while mission and
+ * autonomous labels are deliberately plain.  Keeping the normalization here
+ * prevents nested strings such as `奉令：交战：接敌交战`.
+ */
+export function formatAuthorityIntent(level: string | null | undefined, label: string): string {
+  if (/^(奉令|临机|交战|整补)：/.test(label)) return label;
+  return intentLabel(intentKindFor(level, label), label);
+}
+
 export function buildMission(
   type: MissionType,
   opts: { targetId?: number; targetName?: string; x?: number; y?: number } = {},
@@ -177,7 +188,8 @@ export function buildMission(
 }
 
 /** 直接命令类型（stance/attack 等实时操控）——非总指挥舰队一律拦截 */
-export const DIRECT_COMMAND_TYPES = ['stance', 'attack', 'scout', 'electronic'];
+// Recon is a standing team capability; only posture, attack and EW require direct authority.
+export const DIRECT_COMMAND_TYPES = ['stance', 'attack', 'electronic'];
 
 /** 指挥权与继任只承认仍有战斗舰的正式舰队；侦察航班、运输队和空壳均排除。 */
 export function isFormalCommandFleet(fleet: any): boolean {

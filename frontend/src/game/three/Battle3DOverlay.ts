@@ -311,6 +311,8 @@ interface FleetBillboard {
   nameEl: HTMLDivElement;
   hpFill: HTMLDivElement | null;
   supplyFill: HTMLDivElement | null;
+  moraleFill: HTMLDivElement | null;
+  controlsEl: HTMLDivElement | null;
   stanceBtns: HTMLButtonElement[];
   /** [W3] 三概念之「分舰」按钮（分遣计划入口；可用性逐帧按指挥权威派生） */
   splitBtn?: HTMLButtonElement | null;
@@ -323,6 +325,7 @@ interface FleetBillboard {
   lastTeam: number;
   lastHpPct: number;
   lastSupply: number;
+  lastMorale: number;
 }
 /** 中文舰种 → 英文 key（BattleScene 两套命名并存：演习中文 classType / 战役英文）
  *  v2：'补给'独立映射到 supply（原映射 destroyer 导致运输舰在 3D 里长得像驱逐舰，无法辨识） */
@@ -403,20 +406,21 @@ interface StrikeSquad {
 const BB_STYLE_ID = 'b3d-billboard-style';
 const BB_CSS = `
 .b3d-bb-layer{position:absolute;inset:0;pointer-events:none;z-index:6;overflow:hidden}
-.b3d-bb{position:absolute;left:0;top:0;transform:translate(-50%,-100%);pointer-events:none;
+.b3d-bb{position:absolute;left:0;top:0;transform:translate(-50%,-100%);pointer-events:none;box-sizing:border-box;width:154px;
   font-family:inherit;white-space:nowrap;will-change:transform,opacity;
-  padding:3px 5px;border-radius:5px;background:rgba(10,16,28,.72);
+  padding:4px 6px;border-radius:5px;background:rgba(10,16,28,.84);
   border:1px solid rgba(148,163,184,.35);backdrop-filter:blur(3px)}
-.b3d-bb-name{font-size:11px;font-weight:900;line-height:1.1;margin-bottom:2px;text-shadow:0 1px 2px #000}
-.b3d-bb-bar{height:3px;border-radius:2px;background:rgba(30,41,59,.9);overflow:hidden;margin-top:2px}
+.b3d-bb-name{font-size:10px;font-weight:800;line-height:1.25;margin-bottom:2px;text-shadow:0 1px 2px #000;overflow:hidden;text-overflow:ellipsis}
+.b3d-bb-bars{display:flex;flex-direction:column;gap:2px}
+.b3d-bb-bar{height:3px;border-radius:2px;background:rgba(30,41,59,.9);overflow:hidden}
 .b3d-bb-bar>div{height:100%;transition:width .2s linear}
-.b3d-bb-stances{display:flex;gap:2px;margin-top:3px}
-.b3d-bb-btn{pointer-events:auto;cursor:pointer;font-family:inherit;font-size:9px;font-weight:800;
-  padding:1px 4px;line-height:1.4;border-radius:3px;color:#94a3b8;
+.b3d-bb-stances{display:flex;gap:3px;margin-top:4px}
+.b3d-bb-btn{pointer-events:auto;cursor:pointer;font-family:inherit;font-size:9px;font-weight:700;flex:1 1 0;min-width:0;
+  padding:2px 3px;line-height:1.3;border-radius:3px;color:#94a3b8;
   background:rgba(15,23,42,.9);border:1px solid rgba(148,163,184,.4)}
 .b3d-bb-btn:hover{color:#0a0f1c;background:#4a9eff;border-color:#4a9eff}
 .b3d-bb-btn.active{color:#0a0f1c;background:#4a9eff;border-color:#4a9eff}
-.b3d-bb-mission{font-size:9px;font-weight:800;line-height:1.2;margin-top:2px;color:#22d3ee;
+.b3d-bb-mission{font-size:9px;font-weight:700;line-height:1.2;margin-top:3px;color:#22d3ee;
   text-shadow:0 1px 2px #000;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .b3d-bb-mission.idle{color:#94a3b8}
 `;
@@ -4146,13 +4150,25 @@ export class Battle3DOverlay {
     hpBar.className = 'b3d-bb-bar';
     const hpFill = document.createElement('div');
     hpBar.appendChild(hpFill);
-    root.appendChild(hpBar);
+    const bars = document.createElement('div');
+    bars.className = 'b3d-bb-bars';
+    hpBar.title = '舰体耐久';
+    bars.appendChild(hpBar);
 
     const spBar = document.createElement('div');
     spBar.className = 'b3d-bb-bar';
     const supplyFill = document.createElement('div');
     spBar.appendChild(supplyFill);
-    root.appendChild(spBar);
+    spBar.title = '补给';
+    bars.appendChild(spBar);
+
+    const moraleBar = document.createElement('div');
+    moraleBar.className = 'b3d-bb-bar';
+    const moraleFill = document.createElement('div');
+    moraleBar.appendChild(moraleFill);
+    moraleBar.title = '士气';
+    bars.appendChild(moraleBar);
+    root.appendChild(bars);
 
     // ── 三概念之「态势」：当前指令 / 战术角色 / 交战状态 / 损管 + 意图行（design §Fleet billboard）──
     const statusGroup = document.createElement('div');
@@ -4171,21 +4187,23 @@ export class Battle3DOverlay {
     //   （design：controls derived from current authority on every update, not frozen at creation）。
     const stanceBtns: HTMLButtonElement[] = [];
     let splitBtn: HTMLButtonElement | null = null;
-    if (team === 1) {
+    const playerTeam = ((this.store as any).factions || []).find((f: any) => f.type === 'player')?.team ?? 1;
+    let controlsEl: HTMLDivElement | null = null;
+    if (team === playerTeam) {
       const wrap = document.createElement('div');
       wrap.className = 'b3d-bb-stances';
-      const actionTag = document.createElement('span');
-      actionTag.className = 'b3d-bb-grouptag';
-      actionTag.textContent = '行动';
-      wrap.appendChild(actionTag);
-      for (const stance of ['search', 'scout', 'electronic', 'siege', 'defend'] as const) {
+      wrap.setAttribute('aria-label', '旗舰行动');
+      controlsEl = wrap;
+      for (const stance of ['search', 'electronic', 'siege', 'defend'] as const) {
         const btn = document.createElement('button');
         btn.className = 'b3d-bb-btn';
         btn.dataset.stance = stance;
         btn.textContent = stance === 'search' ? '索敌'
-          : stance === 'scout' ? '侦察'
           : stance === 'electronic' ? '电子战'
           : stance === 'siege' ? '攻坚' : '驻守';
+        btn.title = stance === 'search' ? '搜索并接敌；三向侦察由战队自动执行'
+          : stance === 'electronic' ? '有电子战舰时启用干扰与欺骗'
+          : stance === 'siege' ? '以攻坚阵型推进并争夺目标' : '保持阵地并保护控制区';
         // 阻止冒泡到 canvas：否则点按钮会连带触发地块拾取/框选
         btn.addEventListener('pointerdown', (e) => e.stopPropagation());
         btn.addEventListener('click', (e) => {
@@ -4194,8 +4212,8 @@ export class Battle3DOverlay {
           if (fid === undefined) return;
           const fn = this.store?.dispatchFleetCommand;
           if (typeof fn === 'function') {
-            const isStance = stance === 'search' || stance === 'siege' || stance === 'defend';
-            fn(fid, isStance ? 'stance' : stance, isStance ? stance : undefined);
+            const isElectronic = stance === 'electronic';
+            fn(fid, isElectronic ? 'electronic' : 'stance', isElectronic ? undefined : stance);
           }
           else this.opts.onError?.(`[3D] 姿态切换失败：store.dispatchFleetCommand 不可用`);
         });
@@ -4222,8 +4240,8 @@ export class Battle3DOverlay {
 
     this.bbLayer!.appendChild(root);
     return {
-      root, nameEl, hpFill, supplyFill, stanceBtns, splitBtn, missionEl,
-      lastStance: '', lastIntent: '', lastTeam: team, lastHpPct: -1, lastSupply: -1,
+      root, nameEl, hpFill, supplyFill, moraleFill, controlsEl, stanceBtns, splitBtn, missionEl,
+      lastStance: '', lastIntent: '', lastTeam: team, lastHpPct: -1, lastSupply: -1, lastMorale: -1,
     };
   }
 
@@ -4245,8 +4263,9 @@ export class Battle3DOverlay {
     root.appendChild(missionEl);
     this.bbLayer!.appendChild(root);
     return {
-      root, nameEl, hpFill, supplyFill: null as any, stanceBtns: [], missionEl,
-      lastStance: '', lastIntent: '', lastTeam: team, lastHpPct: -1, lastSupply: -1,
+      root, nameEl, hpFill, supplyFill: null as any, moraleFill: null, controlsEl: null,
+      stanceBtns: [], missionEl,
+      lastStance: '', lastIntent: '', lastTeam: team, lastHpPct: -1, lastSupply: -1, lastMorale: -1,
     };
   }
 
@@ -4329,7 +4348,9 @@ export class Battle3DOverlay {
       // 数据：HP 取全舰求和，补给取旗舰（与 BattleScene 生成 fleetsUI 的口径一致）
       let hp = 0, maxHp = 0;
       units.forEach((u: any) => { hp += u.hp || 0; maxHp += u.maxHp || 0; });
-      const supply = units.length ? (units[0].supply ?? 100) : 100;
+      const flagship = units.find((u: any) => u.isFlagship) || units[0];
+      const supply = flagship ? (flagship.supply ?? 100) : 100;
+      const morale = Math.max(0, Math.min(100, Number(fleet.morale ?? 100)));
       const hpPct = maxHp > 0 ? Math.max(0, Math.min(1, hp / maxHp)) : 1;
 
       let bb = this.billboards.get(key);
@@ -4365,6 +4386,13 @@ export class Battle3DOverlay {
           bb.supplyFill.style.background = supply > 30 ? '#22c55e' : '#f59e0b';
         }
       }
+      if (bb.lastMorale !== morale) {
+        bb.lastMorale = morale;
+        if (bb.moraleFill) {
+          bb.moraleFill.style.width = `${morale.toFixed(1)}%`;
+          bb.moraleFill.style.background = morale > 40 ? '#a78bfa' : '#f59e0b';
+        }
+      }
       const stance = String(fleet.stance || '');
       if (bb.lastStance !== stance) {
         bb.lastStance = stance;
@@ -4374,9 +4402,14 @@ export class Battle3DOverlay {
       }
       // [W3] 按钮可用性**逐帧**按当前指挥权威派生（design §Command succession 末条：
       //   not frozen when the billboard was first created —— 继任 / 指挥崩溃态即时反映到按钮）
-      const canDirect = (bsS as any)?.canDirectlyControlFleet?.(fleet) ?? true;
+      const canDirect = !!(bsS as any)?.canDirectlyControlFleet?.(fleet);
       bb.stanceBtns.forEach((b) => { b.disabled = !canDirect; });
       if (bb.splitBtn) bb.splitBtn.disabled = !canDirect;
+      if (bb.controlsEl) {
+        bb.controlsEl.style.display = canDirect && bsS?.battleSelectedFleetId === fleet.id ? 'flex' : 'none';
+        const hasElectronicShip = units.some((u: any) => u.classType === '电子' || u.classType === 'electronic');
+        bb.stanceBtns.forEach((b) => { if (b.dataset.stance === 'electronic') b.hidden = !hasElectronicShip; });
+      }
 
       // 提督扮演 C：意图文本（[W3] 权威决策输出 _intentLabel —— 奉令/临机/交战/整补前缀优先；
       //   否则任务文本 / 状态机推导，敌方 AI 同口径）
@@ -5397,6 +5430,13 @@ export class Battle3DOverlay {
     if (button === 0 && !(this.battleScene as any).deployPhase) {
       const selFid = this.pickFleetAtScreen(e.clientX, e.clientY);
       if ((this.battleScene as any).applyFleetSelectByPick?.(selFid)) return;
+    }
+    // RTS semantics: right-clicking the rendered hostile issues an identity-
+    // based attack order before falling back to a ground move. unitVis contains
+    // only fog-approved sprites, so hidden fleets cannot be targeted here.
+    if (button === 2 && !(this.battleScene as any).deployPhase) {
+      const targetFid = this.pickFleetAtScreen(e.clientX, e.clientY);
+      if (targetFid !== null && (this.battleScene as any).orderSelectedFleetAttackById?.(targetFid)) return;
     }
     // 指挥制：无六棱柱可拾取，射线对准 y=0 基准面 → 最近地块 → 中继给 BattleScene
     if (!this.spaceBuilt) return;

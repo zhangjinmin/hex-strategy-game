@@ -212,6 +212,9 @@ export function launchScoutFlights(input: ScoutLaunchInput): ScoutFlight[] {
  */
 export function shouldLaunchScouts(input: ScoutLaunchPolicyInput): boolean {
   if (input.liveFlightCount > 0 || input.cooldownUntil > input.now) return false;
+  // No contact timestamp means this battle has never been reconnoitred. Launch
+  // the opening fan immediately; staleAfterMs applies only to subsequent launches.
+  if (input.lastContactAt <= 0) return true;
   return input.now - input.lastContactAt >= (input.staleAfterMs ?? 12000);
 }
 

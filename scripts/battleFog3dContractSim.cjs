@@ -12,7 +12,8 @@ function check(name, condition) {
 }
 
 console.log('\n=== 3D fog-of-war command contract ===');
-check('3D fleet board exposes scout and electronic warfare commands', overlay.includes("['search', 'scout', 'electronic', 'siege', 'defend']"));
+check('3D fleet board keeps search/EW/posture commands while team recon runs automatically',
+  overlay.includes("['search', 'electronic', 'siege', 'defend']") && !overlay.includes("['search', 'scout', 'electronic"));
 check('3D enemy billboards are suppressed until the contact is identified', overlay.includes('isFleetIntelVisible(fleet)'));
 check('3D intent lines do not disclose an unidentified enemy target', overlay.includes('isEnemyIntelVisible'));
 check('3D transport supply visuals do not disclose an unidentified enemy convoy', overlay.includes('isFleetIntelVisible'));

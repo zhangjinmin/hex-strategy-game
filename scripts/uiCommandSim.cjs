@@ -171,7 +171,7 @@ check('运行时意图四前缀：奉令/临机/交战/整补', () => {
   }
 });
 check('BattleScene 意图标签走统一前缀函数', () => {
-  assert.ok(scene.includes('intentLabel('), 'missing intentLabel(');
+  assert.ok(scene.includes('formatAuthorityIntent('), 'missing formatAuthorityIntent(');
 });
 check('军议面板消费五词任务表', () => {
   assert.ok(warroom.includes('MISSION_TYPES'), 'CouncilWarRoom must consume MISSION_TYPES');

@@ -25,3 +25,18 @@ export function resolveFleetOrder(orders: readonly FleetOrder[], nowMs: number):
     return ISSUER_PRIORITY[candidate.issuer] > ISSUER_PRIORITY[winner.issuer] ? candidate : winner;
   });
 }
+
+function hasLivingCombatUnit(fleet: any): boolean {
+  return Array.isArray(fleet?.units) && fleet.units.some((unit: any) =>
+    unit && unit.hp > 0 && unit.classType !== '补给' && unit.classType !== 'supply' && unit.classType !== '运输');
+}
+
+/** A detached fleet loss must not deactivate its whole admiral/faction. */
+export function shouldDeactivateFactionAfterFleetLoss(
+  fleets: readonly any[],
+  factionId: number,
+  lostFleetId: number,
+): boolean {
+  return !fleets.some((fleet: any) =>
+    fleet?.id !== lostFleetId && fleet?.factionId === factionId && hasLivingCombatUnit(fleet));
+}

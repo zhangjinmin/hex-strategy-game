@@ -36,10 +36,9 @@
             </template>
 
             <!-- 战术姿态面板 -->
-            <div class="stance-controls" v-if="fleet.team === 1">
+            <div class="stance-controls" v-if="fleet.canDirectCommand">
               <button class="stance-btn" :class="{active: fleet.stance === 'search'}" @click="store.dispatchFleetCommand(fleet.id, 'stance', 'search')">索敌</button>
-              <button class="stance-btn" @click="store.dispatchFleetCommand(fleet.id, 'scout')">派遣侦察</button>
-              <button class="stance-btn" @click="store.dispatchFleetCommand(fleet.id, 'electronic')">电子干扰</button>
+              <button v-if="fleet.hasElectronicShip" class="stance-btn" @click="store.dispatchFleetCommand(fleet.id, 'electronic')">电子战</button>
               <button class="stance-btn" :class="{active: fleet.stance === 'siege'}" @click="store.dispatchFleetCommand(fleet.id, 'stance', 'siege')">攻坚</button>
               <button class="stance-btn" :class="{active: fleet.stance === 'defend'}" @click="store.dispatchFleetCommand(fleet.id, 'stance', 'defend')">驻守</button>
             </div>
