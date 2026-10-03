@@ -264,6 +264,21 @@ const DETACH_SPACING = 200;
 
 /** 阵型朝向的跟随速率（rad/帧）= 90°/s。输入已是**平滑过的实际速度方向**，此处限速仅防抖。 */
 const FORM_FACING_RATE = Math.PI / 120;
+/**
+ * [v71] reform 结束的阵位收敛阈值（px）。
+ * · 含义：全体舰船到各自槽位的最大偏差 ≤ 此值 ⇒ 认为「已就位」，可恢复巡航。
+ * · 取值依据：排距 FORMATION_SPACING=26 的 ~23%（6px）—— 略严于"看起来齐了"，
+ *   避免刚归位就加速又立刻拉开。
+ * · 为什么必须加这条：v70 阵面瞬跳 ⇒ reformed 立即为真 ⇒ 舰船未就位就巡航 ⇒ 挤压。
+ */
+const REFORM_SLOT_GAP_PX = 6;
+/**
+ * [v71] 触发格位身份反转所需的最小转向角（rad, π/2 = 90°）。
+ * · 依据：掉头（首尾调换）意味着舰首转过 **超过 90°** —— 低于它时原队形的
+ *   首尾次序仍然成立（船还在原位侧），槽位不该镜像。
+ * · v70 缺此门限 ⇒ 45° 转向也被当掉头 ⇒ 前后阵型大范围颠倒。
+ */
+const SLOT_FLIP_MIN_RAD = Math.PI / 2;
 /** 阵型朝向的最小速度阈值（px/帧 的平方）：低于此冻结阵型朝向。 */
 const FORM_FACING_MIN_SPD2 = 0.02 * 0.02;
 
@@ -3780,6 +3795,23 @@ export class BattleScene extends Phaser.Scene {
     }
 
     /**
+     * [v71] 本舰队**各舰到槽位的最大偏差**（px）。用于 reform 结束判据。
+     * 数据源是单位循环里每帧写的 `_slotGap`（BattleScene:7571），本方法只做 max 归约。
+     * ⚠ 未写入 `_slotGap` 的单位（尚未进入循环 / 被跳过）不参与统计，
+     *   避免用 0 假值把 max 拉低而误判为"已就位"。
+     */
+    private maxSlotGap(fleet: any): number {
+        if (!fleet || !Array.isArray(fleet.units)) return Infinity;
+        let mx = 0;
+        for (const u of fleet.units) {
+            if (isSupplyUnit(u)) continue;
+            const g = (u as any)._slotGap;
+            if (typeof g === 'number' && g > mx) mx = g;
+        }
+        return mx;
+    }
+
+    /**
      * [v68 阶段B] 舰载机波次推进（每帧调用）
      * ================================================================
      * 职责：生成编队 → 放飞 → 选靶 → 状态机 → 结算伤害 → 画表现
@@ -7045,8 +7077,16 @@ export class BattleScene extends Phaser.Scene {
             ));
             // 重编完成必须由实际阵面追到新朝向确认，不能靠固定时间提前放行。
             const previousFormFacing = (fleet as any).formFacing ?? fleet.facingSmooth ?? fAngle;
+            // [v71] reformed 判据**必须同时看「阵面收敛」与「舰船就位」**（原只看阵面）。
+            //   背景：v70 把阵面改成瞬时跳变 ⇒ 阵面瞬时就与 facingSmooth 一致 ⇒ reformed
+            //   立即为真 ⇒ 舰队在舰船还没跟上槽位时就进入 cruise ⇒ 挤压。
+            //   现在阵面回到限速旋转，它会**始终滞后**于 facingSmooth（角速率有上限），
+            //   若沿用 0.015 rad 判据，reform 会拖到超时。
+            //   正解：判据 = 阵面与舰首的**残余角差**收敛到一个与速率匹配的范围
+            //   （相当于"阵面基本跟上了"），**且**各舰到槽位的最大偏差已收敛。
             const reformed = prevControl.phase === 'reform'
-                && headingDistance(previousFormFacing, fleet.facingSmooth ?? fAngle) <= 0.015;
+                && headingDistance(previousFormFacing, fleet.facingSmooth ?? fAngle) <= 0.05
+                && this.maxSlotGap(fleet) <= REFORM_SLOT_GAP_PX;
             const control = advanceManeuver(prevControl, {
                 engaged: contact.engaged,
                 retreatRequested: isRetreating || fleet.stance === 'fallback',
@@ -7352,22 +7392,54 @@ export class BattleScene extends Phaser.Scene {
                 if (typeof ff0 !== 'number') {
                     (fleet as any).formFacing = fleet.facingSmooth ?? fleet.facingAngle ?? 0;
                 } else if (control.phase === 'reform') {
-                    // [v70] **格位翻转只在 turn→reform 交接的那一帧置位**（toggle），
-                    //   不是整个 reform 期间持续为 true —— 否则每次掉头都会把槽位反复镜像，
-                    //   队列在两种排列间来回跳 ⇒ 又变成新的抖动源。
-                    //   用 _uturnJustEnded（combatControl 已提供）作为唯一触发点。
+                    // [v71] **格位身份反转只对「真正的掉头」生效**（v70 的缺陷已修）。
+                    //
+                    //   v70 症状：45° 转向也出现前后阵型大幅变动。根因 = 门限缺失：
+                    //   只要进入 turn→reform 就翻转 slot，而 45° 也满足 turn 相条件
+                    //   （combatControl.TURN_THRESHOLD=30°，45° > 30°）。
+                    //   ⇒ 小角度转向被当成掉头 ⇒ 槽位镜像 ⇒ 前后颠倒。
+                    //
+                    //   物理判据：掉头 = 舰首旋转**超过 90°**（首尾调换）。
+                    //   45° 转向的首尾次序**不变**，不该翻转槽位。
+                    //   ⚠ 90° 是硬 90°：低于它原队形的首尾关系仍成立（船仍在原位置侧），
+                    //   高于它则新舰首朝向与原阵型长轴夹角 >90°，同序号槽位落到对侧。
                     if ((fleet as any)._uturnJustEnded) {
-                        (fleet as any)._slotFlip = !(fleet as any)._slotFlip;
+                        const flipMag = headingDistance(
+                            (fleet as any)._reformFromFacing ?? ff0, ff0,
+                        );
+                        if (flipMag >= SLOT_FLIP_MIN_RAD) {
+                            (fleet as any)._slotFlip = !(fleet as any)._slotFlip;
+                        }
                     }
-                    // [v70] 阵面**一步到位**（用户实报「掉头出现大范围阵型变换/首尾变换」）。
-                    //   旧实现以 FORM_FACING_RATE=90°/s 连续旋转 180° 需 2s，
-                    //   这 2s 内槽位目标绕中心**公转** ⇒ 全部舰船沿圆弧追槽位
-                    //   ⇒ 视觉即「整支舰队大范围扫过」= 用户看到的大范围阵型变换。
-                    //   ⚠ 注释里写「画圆不可构造」，但连续旋转阵面恰恰在构造公转，
-                    //     v31-D/v41b/v42 四代失败都源于对「阵面能否连续改」的判断失误。
-                    //   正解：阵面在 reform 起始帧**一次性对齐**新舰首，
-                    //     随后每艘舰沿**直线**追自己的新槽位（见 unit 循环的 slotSwap 处理）。
-                    (fleet as any).formFacing = fleet.facingSmooth ?? ff0;
+                    // [v71] 阵面**限速连续旋转**（v70 的「一步到位」是错的，已回滚）。
+                    //
+                    //   v70 症状：45° 转向也出现大范围阵型变动 + 舰队挤成一团 +
+                    //     内层舰船「瞬间换个方向」。根因 = 瞬时跳变：
+                    //     formFacing 一帧内跳 45° ⇒ **所有槽位目标同帧绕中心跳变** ⇒
+                    //     舰船追不上目标 ⇒ 挤压；且跳变期间 visHeading 的
+                    //     运动方向参考系突变 ⇒ 舰首朝向判定错乱（「瞬间换方向」）。
+                    //
+                    //   为什么限速旋转才对：槽位目标是「舰队中心 + 旋转后的格位偏移」。
+                    //   阵面平滑旋转 ⇒ 格位目标平滑公转 ⇒ 舰船能连续追近，
+                    //   每帧位移很小，不会挤压、不会跳变。
+                    //   之前 v42 用 FORM_FACING_RATE=90°/s 显得快，是因为它**固定**，
+                    //   与实际舰首角速度无关 ⇒ 大角度时跟不上、小角度时又太快。
+                    //
+                    //   新口径：**与舰首角速度同源**（同一 kinOmegaNow，dt 同倍），
+                    //   阵面与舰首同步旋转 ⇒ 格位目标相对舰船「近似静止」，
+                    //   舰船几乎不需要横向追赶 ⇒ 无论 45° 还是 180° 都不挤压。
+                    // 记录 reform 起始时的阵面（供 SLOT_FLIP 判据比较"转了多少"）
+                    if ((fleet as any)._uturnJustEnded) {
+                        (fleet as any)._reformFromFacing = ff0;
+                    }
+                    const ffRate = Math.max(
+                        FORM_FACING_RATE * dt,
+                        // 兜底：阵面至少要能跟上当前角速率，否则滞后角会持续累积
+                        (kinOmegaNow + Math.abs(fleet.facingRate || 0)) * dt,
+                    );
+                    (fleet as any).formFacing = advanceFormationFacing(
+                        ff0, fleet.facingSmooth ?? ff0, ffRate,
+                    );
                 }
             }
 
@@ -7585,10 +7657,26 @@ export class BattleScene extends Phaser.Scene {
                 const _dx = _ux - ((u as any)._px ?? _ux);
                 const _dy = _uy - ((u as any)._py ?? _uy);
                 (u as any)._px = _ux; (u as any)._py = _uy;
+                // [v71] 刚性判据**补上「转向期」**（用户实报「里面的战舰瞬间换个方向」）。
+                //   根因：`_wantH = atan2(_dy, _dx)` 用**有限差分**求位移方向。
+                //   转向期间（brake/turn/reform）位移本就很小（转向期近乎原地），
+                //   亚像素级噪声被 atan2 放大 ⇒ 舰首在 ±90° 之间乱跳 = 「瞬间换个方向」。
+                //   旧判据只兜「完全静止」（|Δ|² < 0.02 ≈ 0.14px），
+                //   兜不住「慢速 + 噪声」这一档。
+                //   正解：转向期（`_uturn` 或 brake/reform 相）本就**该**锁舰队朝向
+                //   —— 物理上太空战舰原地转向时舰首随舰体转，不该跟位移轨迹。
+                const _mPhase = ((fleet as any)._combatControl as any)?.phase as string | undefined;
+                const _inManeuver = _mPhase === 'brake' || _mPhase === 'turn' || _mPhase === 'reform';
                 const _rigid = (fleet as any)._uturn === true
+                    || _inManeuver
                     || (isRetreating && isEngaging) || _backing
                     || (_dx * _dx + _dy * _dy) < 0.02;
-                const _wantH = _rigid ? (fleet.facingSmooth ?? fAngle) : Math.atan2(_dy, _dx);
+                // 非刚性时对差分方向做**死区**（< 0.5px 的位移视为噪声，不改朝向），
+                // 避免 atan2 在近零向量上抖动。
+                const _spd2 = _dx * _dx + _dy * _dy;
+                const _wantH = (_rigid || _spd2 < 0.25)
+                    ? ((u as any).visHeading ?? fleet.facingSmooth ?? fAngle)
+                    : Math.atan2(_dy, _dx);
                 if (typeof (u as any).visHeading !== 'number') (u as any).visHeading = _wantH;
                 (u as any).visHeading = rateLimitAngle((u as any).visHeading, _wantH, UNIT_VIS_TURN_RATE * dt);
                 u.sprite.rotation = (u as any).visHeading;
