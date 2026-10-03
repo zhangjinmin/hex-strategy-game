@@ -127,8 +127,6 @@ export interface Unit {
   atkInterval: number; speed: number; tier: string; lastAtkTime: number; 
   state: 'moving' | 'fighting' | 'garrison';
   supply: number;
-  /** v6.5 导弹弹药（仅驱逐/巡洋有意义）：每轮齐射扣 1，耗尽后只打主炮激光；<=999 视为无限 */
-  missileAmmo?: number;
 }
 
 import type {

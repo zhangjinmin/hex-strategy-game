@@ -70,7 +70,14 @@ console.log('\n=== Battle movement/fire integration ===');
 const sceneSource = fs.readFileSync('./frontend/src/game/scenes/BattleScene.ts', 'utf8');
 check('engaging fleet keeps its bow aimed at the live fire target', () => {
   assert.match(sceneSource, /if \(isEngaging && closestEnemyFleet\)[\s\S]{0,400}fAngle = Math\.atan2\(closestEnemyFleet\.y - fleet\.y/);
-  assert.match(sceneSource, /const _rigid = [\s\S]{0,180}\|\| isEngaging/);
+  // [v66 语义订正 2026-10-02] 逐舰舰首契约：交战中跟**自身航迹**（防「舰首朝前、船体横移」侧滑，
+  //   W1-W3 9c099a5 的 `|| isEngaging` 裸项正是侧滑回归来源）；刚性锁舰队朝向仅限
+  //   拖刀 (isRetreating && isEngaging) **两项与** / _uturn / _backing / 近静止。
+  //   旧金标 `|| isEngaging`（交战即刚性）已废弃，负向守卫防止回退。
+  const rigid = sceneSource.match(/const _rigid = [\s\S]{0,220}?;/);
+  assert.ok(rigid, '_rigid 声明存在');
+  assert.match(rigid[0], /\(isRetreating && isEngaging\)/);
+  assert.doesNotMatch(rigid[0], /\|\|\s*isEngaging\b/);
 });
 check('capture mission ignores objectives already owned by an allied faction', () => {
   const missionBody = sceneSource.slice(sceneSource.indexOf("m.type === 'capture_planet'"), sceneSource.indexOf("m.type === 'hold_point'"));

@@ -187,6 +187,48 @@ export function buildMission(
   }
 }
 
+/** 任务目标解析输入的最小舰队形状（BattleScene.globalFleets 兼容） */
+export interface MissionTargetLike {
+  id: unknown;
+  factionId?: number;
+  x?: number;
+  y?: number;
+  units?: unknown[] | null;
+}
+
+/**
+ * 任务目标解析 —— Mission 契约「attack_fleet/support_fleet 的 targetId = 目标舰队 id **或** factionId」
+ * 的唯一实现点（2026-09-30 三相探针 `_probe_stall.mjs` 取证）。
+ *
+ * 旧实现（BattleScene.executeMissionTick）只按舰队 id 精确查找，而军议面板 targetOptions 写的是
+ * **阵营 id**（CouncilWarRoom.vue）⇒ 演习轨道舰队 id（Math.random 浮点）与阵营 id 永不相交 ⇒
+ * 任务 1 个解算周期内静默 clearMission —— 用户实报"下达任务后战斗僵持打不开"的直接病灶。
+ *
+ * 解析规则（确定性）：
+ *   1. 先在关系合法（relation）的存活舰队里按**舰队 id 精确命中**（战前规划层写舰队 id，语义=打那一支）；
+ *   2. 无精确命中再按 **factionId 命中**（军议 UI 写阵营 id，语义=打该阵营，多支取距 from 最近者）；
+ *   3. 都无 ⇒ 空数组 = 目标已歼灭/任务完成（调用方据此 clearMission）。
+ *
+ * ⚠ 两个 id 空间是小整数时可能碰撞（战役轨道）：碰撞时舰队 id 语义优先 —— 打的仍是 relation
+ * 合法的敌舰（或友舰），任务不会失效也不会追错关系（自队/自己已被 relation 排除），属可接受降级。
+ */
+export function resolveMissionTargets<T extends MissionTargetLike>(
+  fleets: readonly T[],
+  targetId: number | undefined,
+  opts: { relation: (fl: T) => boolean; from?: { x: number; y: number } },
+): T[] {
+  const live = fleets.filter((fl) => opts.relation(fl) && !!fl.units && fl.units.length > 0);
+  const byId = live.filter((fl) => fl.id === targetId);
+  if (byId.length > 0) return byId;
+  const byFac = live.filter((fl) => fl.factionId === targetId);
+  if (byFac.length > 0 && opts.from) {
+    const fx = opts.from.x, fy = opts.from.y;
+    const d2 = (fl: T) => ((fl.x ?? 0) - fx) ** 2 + ((fl.y ?? 0) - fy) ** 2;
+    return byFac.slice().sort((a, b) => d2(a) - d2(b));
+  }
+  return byFac;
+}
+
 /** 直接命令类型（stance/attack 等实时操控）——非总指挥舰队一律拦截 */
 // Recon is a standing team capability; only posture, attack and EW require direct authority.
 export const DIRECT_COMMAND_TYPES = ['stance', 'attack', 'electronic'];
@@ -203,6 +245,38 @@ export function isDirectCommandAllowed(fleet: any, supremeCommanderId: number | 
   if (!isFormalCommandFleet(fleet)) return false;
   if (supremeCommanderId === null || supremeCommanderId === undefined) return true; // 非指挥制/未判定：不拦截
   return fleet?.commanderId === supremeCommanderId;
+}
+
+/**
+ * 直接指令受令编队解析（#20：右键专属我方可控编队，默认我的提督，无需先点选）。
+ *
+ * 用户规格（2026-10-01 真机实报）：右键是「我控制的编队」的专属通道——友军控制不了，
+ * 所以默认受令者就应该是我的（提督旗舰舰队）；只有分兵产生多支可控编队后才需要显式点选消歧。
+ *
+ * 解析顺序（确定性）：
+ *   ① 显式选中且 canControl 通过 → 选中编队（分兵多编队时的唯一消歧手段）；
+ *   ② 无选中 / 选中失效 → 可控编队恰好 1 支（未分兵）⇒ 默认它；
+ *   ③ 0 支（指挥崩溃/全灭）或 >1 支（分兵后）⇒ null（后者由调用方提示先点选）。
+ *
+ * canControl 由调用方注入（BattleScene.canDirectlyControlFleet：指挥崩溃态/战斗舰/同队/总指挥直连四门）。
+ */
+export function pickDirectOrderFleet<T extends { id?: any }>(
+  fleets: readonly T[],
+  selectedId: any,
+  canControl: (f: T) => boolean,
+): T | null {
+  if (selectedId !== null && selectedId !== undefined) {
+    const sel = fleets.find((f) => f.id === selectedId);
+    if (sel && canControl(sel)) return sel;
+    // 选中失效（被歼灭/离场/权限变更）⇒ 落回默认规则（调用方清选中）
+  }
+  let only: T | null = null;
+  for (const f of fleets) {
+    if (!canControl(f)) continue;
+    if (only !== null) return null;   // 分兵后多支可控 ⇒ 需显式选择
+    only = f;
+  }
+  return only;
 }
 
 // ============================================================

@@ -74,11 +74,13 @@ check('fire control rejects targets outside the visible forward firing arc', () 
   authority.isTargetWithinFireArc(0, { x: 0, y: 0 }, { x: 100, y: 0 }) === true
   && authority.isTargetWithinFireArc(0, { x: 0, y: 0 }, { x: -100, y: 0 }) === false
   && scene.includes('isTargetWithinFireArc('));
-check('fire control filters the candidate pool by arc before random selection', () => {
+check('fire control filters the candidate pool by arc before scored selection', () => {
+  // [P1] 选舰由均匀随机改为 clusterAI.pickShip 评分（含滞回）；本断言钉的契约不变：
+  //   **射界过滤必须发生在选舰之前**（先选后拒会因随机候选在舰尾而误压有效射击）。
   const start = scene.indexOf('const inRangeUnits = targetableUnits(fireTargetFleet).filter');
-  const randomPick = scene.indexOf('Math.floor(Math.random() * inRangeUnits.length)', start);
-  const block = scene.slice(start, randomPick);
-  return start >= 0 && randomPick > start && block.includes('isTargetWithinFireArc(');
+  const scoredPick = scene.indexOf('pickShip(_cands', start);
+  const block = scene.slice(start, scoredPick);
+  return start >= 0 && scoredPick > start && block.includes('isTargetWithinFireArc(');
 });
 
 console.log('\n=== Intent labels ===');

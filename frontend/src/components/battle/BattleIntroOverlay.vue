@@ -221,14 +221,26 @@ const startTyping = () => {
 const pickFormation = (v: string) => { (store as any).dispatchDeployAction?.('formation', v); };
 const pickTactic = (v: string) => { (store as any).dispatchDeployAction?.('tactic', v); };
 const startBattle = () => { (store as any).dispatchDeployAction?.('start'); };
-const closeOverlay = () => { closed.value = true; stopTyping(); };
+const closeOverlay = () => {
+  closed.value = true;
+  stopTyping();
+  // [FREEZE-D1] 内嵌 CouncilWarRoom 随本层（v-if）销毁时若鼠标正悬停其上，
+  //   mouseleave 永不触发 ⇒ deployCountdownPaused 永久卡真 ⇒ 倒计时永不归零、部署卡死。
+  //   收起即复位（startBattleAfterDeploy 的复位只覆盖正常开战路径，覆盖不到本路径）。
+  (store as any).deployCountdownPaused = false;
+};
 
-/** 回车 = 开战（本层在 capture 阶段拦下，避免与 Phaser 键盘路径对同一次按键双触发）。
+/** 回车 = 开战（本层在 capture 阶段先走 UI 通道派发）。
+ *  [FREEZE-D2] ⚠ 不再 stopImmediatePropagation 吞掉回车：旧实现把开战唯一入口让给
+ *  `dispatchDeployAction`，若 Phaser dispatcher 未绑定/残留旧场景闭包（挂载竞态）则静默丢弃，
+ *  而 Phaser 自身的 ENTER 兜底路径（BattleScene keydown → startBattleAfterDeploy）永远收不到
+ *  被吞的事件 ⇒ 部署阶段永久卡死。现放行事件让 Phaser 路径兜底 —— startBattleAfterDeploy
+ *  有 deployPhase 守卫（幂等），双触发无害。
  *  Esc = 收起本层（逃生口）。数字键 / T 不拦截：交给 `BattleScene` 既有键盘路径处理后回写镜像。 */
 const onKeydown = (e: KeyboardEvent) => {
   if (!visible.value) return;
   if (e.key === 'Enter') {
-    e.preventDefault(); e.stopImmediatePropagation();
+    e.preventDefault();
     startBattle();
     return;
   }
@@ -255,6 +267,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   stopTyping();
   window.removeEventListener('keydown', onKeydown, true);
+  // [FREEZE-D1] 卸载同 closeOverlay：防内嵌 CouncilWarRoom 悬停态被销毁后标志卡真
+  (store as any).deployCountdownPaused = false;
 });
 </script>
 

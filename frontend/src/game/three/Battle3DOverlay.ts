@@ -22,15 +22,14 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-// [v23 特效真源] 尾焰/激光/导弹/护盾/爆闪的几何·材质·时序统一在本模块实现
+// [v23 特效真源] 尾焰/激光/护盾/爆闪的几何·材质·时序统一在本模块实现
 //   ⇒ 战场与"模型巡览"共用同一套，杜绝"改一边忘一边"（用户实报两者观感不一致）。
 import {
   makeShieldEntry, shieldFire, shieldStep,
   buildLaserEntry, laserStep, disposeLaserEntry,
-  buildMissileSalvo, missileStep, disposeMissileEntry,
   buildHitEntry, hitStep, disposeHitEntry,
   getEnginePortsFor, buildEngineFx,
-  type EnginePort, type LaserEntry, type HitEntry, type ShieldEntry, type MissileEntry,
+  type EnginePort, type LaserEntry, type HitEntry, type ShieldEntry,
 } from './battleFx';
 import { drainFx3d, type Fx3dEvent } from '../battle3dFx';
 import { projectFleetRepresentation } from '../combatRepresentation';
@@ -61,6 +60,7 @@ import {
 import {
   TEAM_LAYERS, TIER_MAX, layerGapFor, layerCountForFootprint, teamGapFor, tierCountFor, tierMultipliers,
   assignFleetTiers, DETACHED_TIER_OFFSET,
+  type TierSticky,
   FORM_ANIM_TAU,
 } from '../../config/fleetTierLayout';
 
@@ -331,6 +331,7 @@ interface FleetBillboard {
  *  v2：'补给'独立映射到 supply（原映射 destroyer 导致运输舰在 3D 里长得像驱逐舰，无法辨识） */
 const CLS_ALIAS: Record<string, string> = {
   '战列': 'battleship', '巡洋': 'cruiser', '驱逐': 'destroyer',
+  '高战': 'fast_battleship',   // v61：gameData/SHIP_TYPE_CN 实际键名，缺键会退化成驱逐舰尺寸
   '突击': 'carrier', '空母': 'carrier', '舰载': 'fighter',
   '电子': 'electronic', '补给': 'supply', '无': 'destroyer',
 };
@@ -378,7 +379,7 @@ interface OverlayOpts {
   perfGovernor?: boolean;
 }
 
-// [v23 特效真源] EnginePort / LaserEntry / HitEntry / ShieldEntry / MissileEntry
+// [v23 特效真源] EnginePort / LaserEntry / HitEntry / ShieldEntry
 //   五套条目结构已统一迁至 `./battleFx` 并在此 import type —— 战场与巡览共用同一结构定义。
 
 /** v5: 3D 舰载机小队（母舰释放 → 突防 → 格斗 → 击落/返航） */
@@ -1072,6 +1073,9 @@ export class Battle3DOverlay {
   private planetCenters: { x: number; y: number; z: number; r: number }[] = [];
   /** 上一帧每支舰队的档位高度偏移（真源在 syncShips 内构建；此处留引用给 __b3dFocus 取景用） */
   private lastTierY = new Map<any, number>();
+  /** [v65] 档位粘滞状态（跨帧持有；真源见 config/fleetTierLayout.TierSticky）——
+   *  防名单抖动（侦察分队放飞/回收、真根覆灭、编制收缩）让整方跳档（用户实报 Z 轴突跳）。 */
+  private tierSticky: TierSticky = new Map();
   /** 【性能】当前生效的舰船模型档位（由 autoLodByLoad 按实体负载自动切换） */
   private detailTier: 'high' | 'medium' | 'low' = 'high';
   /** 【性能】设置面板给的档位**上限**（自动降档只在其之下，不会超过用户设定） */
@@ -1212,8 +1216,6 @@ export class Battle3DOverlay {
   private lasers: LaserEntry[] = [];
   private hits: HitEntry[] = [];
   private shields: ShieldEntry[] = [];
-  /** v5: 3D 导弹弹幕（蛇形推进+尾焰粒子，与激光束视觉明确区分） */
-  private missiles: MissileEntry[] = [];
   /** v5: 3D 舰载机小队（母舰释放→突防→格斗→击落/返航，emperor：撞击判定走事件） */
   private strikes: StrikeSquad[] = [];
 
@@ -1371,6 +1373,11 @@ export class Battle3DOverlay {
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
+    // [VIS-1] 滚轮缩放朝**光标**推进（three r152+ 官方选项），不再朝 controls.target：
+    //   旧实现朝陈旧 target（战场中心）推进 ⇒ 敌群偏轴时拉近即滑出画框
+    //   （用户实报"近景逐渐看不见→最近完全看不见"；probe4 d400→d200 截图复现滑出过程）。
+    //   光标对准敌群拉近 ⇒ 敌群锁定在光标附近，px 随距离单调放大。
+    this.controls.zoomToCursor = true;
     // 纯宇宙：无"地平线穿帮"问题，放开为全向自由旋转（对齐战略地图手感）
     this.controls.minPolarAngle = 0.05;
     this.controls.maxPolarAngle = Math.PI * 0.49;
@@ -1596,7 +1603,7 @@ export class Battle3DOverlay {
         const roots = list.filter((f: any) => f._detachedFrom == null);
         const tiers = tierCountFor(roots.length || list.length);
         const mults = tierMultipliers(tiers);
-        const tierOf = assignFleetTiers(list, gapOf);
+        const tierOf = assignFleetTiers(list, gapOf, DETACHED_TIER_OFFSET, this.tierSticky);
         tierOf.forEach((y, f) => tierY.set(f, y));
         sides.push({
           factionId: sid, fleets: list.length, roots: roots.length, tiers, teamGap: gap,
@@ -3114,12 +3121,15 @@ export class Battle3DOverlay {
     const factionKey: 'empire' | 'alliance' = isEmpire ? 'empire' : 'alliance';
 
     const candidates: string[] = [];
-    if (cls) {
+      if (cls) {
       if (flagshipKey) candidates.push(`flagship_${flagshipKey}.glb`);
       candidates.push(`${factionKey}_${cls}.glb`, `${cls}.glb`);
       // 电子舰已有独立兵种和行为，但专属 GLB 尚未交付；明确回落巡洋舰，
       // 保持阵营外观一致，也避免模型缺失时退化成程序化小船。
       if (cls === 'electronic') candidates.push(`${factionKey}_cruiser.glb`, 'cruiser.glb');
+      // v61：同盟侧无 alliance_fast_battleship.glb（同盟本不该列装高速战列舰，但旧存档/编制
+      // 可能残留）；回落阵营战列舰模型，杜绝候选全空 → 程序化兜底。帝国命中 empire_fast_battleship.glb 不受影响。
+      if (cls === 'fast_battleship') candidates.push(`${factionKey}_battleship.glb`, 'battleship.glb');
     }
 
     let reg: ShipModelReg | null = candidates.length ? acquireShipModelByFiles(candidates) : null;
@@ -3541,7 +3551,7 @@ export class Battle3DOverlay {
     const fleetTierY = assignFleetTiers(aliveFleets, (f: any) => {
       const v = this.fleetVLayout(f);
       return teamGapFor(v.spacing, v.layerGap, v.maxH, v.layers);
-    });
+    }, DETACHED_TIER_OFFSET, this.tierSticky);
     // 供 __b3dFocus（取景调试口）读同一份档位真源，避免它自己再算一遍
     this.lastTierY = fleetTierY;
 
@@ -4363,7 +4373,13 @@ export class Battle3DOverlay {
       const bsS: any = this.battleScene;
       const supremeMark = !fleet._scoutFlight && bsS?.supremeCommanderId != null && fleet.commanderId === bsS.supremeCommanderId ? '◆' : '';
       const sectorName = fleet.scoutSector === 'left' ? '左' : fleet.scoutSector === 'right' ? '右' : '中';
-      const name = fleet._scoutFlight ? `侦察·${sectorName}` : (fac.name || (team === 1 ? '我方舰队' : '敌方舰队'));
+      // [v63] 分舰队对象由 splitFleet `{...parent}` 派生、共用 factionId ⇒ fac.name 与母队同名，
+      //   3D 标签成对出现且无法分辨（用户实报"标签重叠"）。分队（_detachedFrom 非空）加后缀。
+      // [v64] 后缀取 `_maneuverIntent`（战法路数中文意图，同一战法内各路互不相同：左翼包夹/右翼包夹…），
+      //   固定「·分队」在两翼包抄（pincer 一次拆 2 队）下会同名 ⇒ 又回到"无法分辨"；无 intent 才落回「·分队」。
+      const baseName = fac.name || (team === 1 ? '我方舰队' : '敌方舰队');
+      const name = fleet._scoutFlight ? `侦察·${sectorName}`
+        : (fleet._detachedFrom != null ? `${baseName}·${fleet._maneuverIntent || '分队'}` : baseName);
       // [v12.1] 删除「显示 N 艘（1∶K）」后缀：早期测试用，用户判定不需要；标签只留舰队名。
       if (bb.lastTeam !== team) { bb.lastTeam = team; }
       const label = `${supremeMark}${name}`;
@@ -4981,11 +4997,6 @@ export class Battle3DOverlay {
       const from = this.fxPointAt(e.from);
       const to = this.fxPointAt(e.to);
       this.spawnLaser(from, to, e.color, e.power);
-    } else if (e.kind === 'missiles' && e.from && e.to) {
-      // v5：导弹弹幕（独立视觉，不再复用激光束）
-      const from = this.fxPointAt(e.from);
-      const to = this.fxPointAt(e.to);
-      this.spawnMissileSalvo(from, to, e.color, e.count || 4);
     } else if (e.kind === 'strike' && e.from && e.to) {
       // v5：舰载机小队（飞行→格斗→击落→返航）；v6 传阵营 id 供模型按敌我选择
       const from = this.fxPointAt(e.from);
@@ -5108,15 +5119,6 @@ export class Battle3DOverlay {
     if (!L) return;
     this.scene.add(L.mesh);
     this.lasers.push(L);
-  }
-
-  /** [v23 FX] 光子鱼雷的造型（弹尖+细弹体+引擎光点+渐变拖尾）与齐射节奏已迁至
-   *  `./battleFx`（buildMissileSalvo）。本方法只负责加入场景与入池。 */
-  private spawnMissileSalvo(from: THREE.Vector3, to: THREE.Vector3, color: number, count: number) {
-    for (const M of buildMissileSalvo(from, to, color, count, this.hexR)) {
-      this.scene.add(M.mesh);
-      this.missiles.push(M);
-    }
   }
 
   /** v5: 舰载机小队——从母舰释放，突防→近距离格斗（绕目标缠斗）→击落后返航消失。
@@ -5293,8 +5295,6 @@ export class Battle3DOverlay {
     }
     // shield 三段动画（收缩到位 → 平台期 → 膨胀淡出）
     for (const s of this.shields) if (s.active) shieldStep(s, dt);
-    // v5: 导弹弹幕推进
-    this.updateMissiles(dt);
     // v5: 舰载机小队推进
     this.updateStrikes(dt);
     // v6.3：中继补给站陀螺仪双环缓慢自旋（对转，"活着的人造设施"感）
@@ -5309,20 +5309,6 @@ export class Battle3DOverlay {
     }
     // v6.9：伊谢尔伦充能光球推进（膨胀脉动/终段白热闪光）
     this.updateFortressFx(dt);
-  }
-
-  /** v6.5/v13：导弹每帧推进 —— 纯直线弹道、确定性呼吸、出膛淡入，
-   *  实现已迁至 `./battleFx`（missileStep）。本方法只负责命中表现与回收。 */
-  private updateMissiles(dt: number) {
-    for (let i = this.missiles.length - 1; i >= 0; i--) {
-      const M = this.missiles[i];
-      const st = missileStep(M, dt, this.hexR);
-      if (st.hit) this.spawnHit(M.to, M.color);
-      if (st.done) {
-        disposeMissileEntry(this.scene, M);
-        this.missiles.splice(i, 1);
-      }
-    }
   }
 
   /** v5: 舰载机每帧推进（突防 → 格斗 → 击落 → 返航） */
@@ -5724,8 +5710,7 @@ export class Battle3DOverlay {
     this.fleetMarks.clear();
     this.markAgg.clear();
     this.markGroup = null;
-    // v5: 导弹/舰载机引用表清空（几何体/材质由下方 scene.traverse 统一释放）
-    this.missiles.length = 0;
+    // v5: 舰载机引用表清空（几何体/材质由下方 scene.traverse 统一释放）
     this.strikes.length = 0;
     this.shields.length = 0;   // [v12.2 R3-a] 对称清空护盾池引用表（几何/材质由下方 scene.traverse 释放；防实例复用串场）
     // billboard DOM 全量回收（注入的样式表用 id 去重、无副作用，复用不删）

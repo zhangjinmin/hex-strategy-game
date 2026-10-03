@@ -92,6 +92,39 @@ export function isShipAllowedForFaction(faction: string, shipType: string): bool
   return !banned || !banned.includes(shipType);
 }
 
+/** 舰种英文 key → FleetComposition 字段名（编制表口径） */
+const SHIP_TYPE_TO_COMP_FIELD: Record<string, string> = {
+  battleship: 'battleships',
+  fast_battleship: 'fastBattleships',
+  cruiser: 'cruisers',
+  destroyer: 'destroyers',
+  carrier: 'carriers',
+  fighter: 'fighters',
+  supply: 'supplies',
+};
+
+/** 按阵营禁用表修正编制（原地修改并返回同一对象）：
+ *  禁用舰种归零，其舰数并入 battleships（总舰数不变；同盟以标准战列舰为主力）。
+ *  背景：编制生成（gameStore 初始化 / generateSimFullComposition / BattleSetupPanel）
+ *  此前无视 FACTION_SHIP_RESTRICTION，给同盟发 10%~20% 高速战列舰 ——
+ *  同盟既无该舰种设定，也无 alliance_fast_battleship.glb 模型 ⇒ 战场上成批程序化兜底。 */
+export function applyFactionShipRestriction<T extends Record<string, any>>(faction: string, comp: T): T {
+  const banned = FACTION_SHIP_RESTRICTION[faction];
+  const c = comp as Record<string, any>;
+  if (banned) {
+    for (const shipType of banned) {
+      const field = SHIP_TYPE_TO_COMP_FIELD[shipType];
+      if (!field) continue;
+      const n = Number(c[field]) || 0;
+      if (n > 0) {
+        c.battleships = (Number(c.battleships) || 0) + n;
+        c[field] = 0;
+      }
+    }
+  }
+  return comp;
+}
+
 
 export const baseStats: Record<string, any> = {
   // v5 超视距射程分层：激光（战列/高战/空母/电子）远程 / 导弹（巡洋）中程 / 舰载机（驱逐/突击/舰载）近程
@@ -105,6 +138,16 @@ export const baseStats: Record<string, any> = {
   '电子': { hp: 350, atk: 8,  def: 8,  range: 760, interval: 4000, speed: 0.6 },
   '补给': { hp: 500, atk: 5,  def: 5,  range: 300, interval: 5000, speed: 0.5 },
 };
+
+/** [v62] troop 缺失时按 baseStats（真源）合成 TroopLike 兜底。
+ *  背景：troopNames 只有 战列/巡洋/驱逐/突击/电子/补给 六类，`trait_高战_1` 等 id 不存在，
+ *  而 getTroopById 找不到时兜底返回 troopsData[0]（cls='战列'）⇒ 高战/空母/舰载 的 classType
+ *  被静默折叠成'战列'（错误模型 + 错误数值）。战术折算的 troopOf 应改用严格查找 + 本函数合成，
+ *  保持 classType 与 range/interval/speed 都落在 baseStats 真源上。 */
+export function troopLikeFromClass(cls: string): { cls: string; def: number; speed: number; range: number; interval: number } | undefined {
+  const b = baseStats[cls];
+  return b ? { cls, def: b.def, speed: b.speed, range: b.range, interval: b.interval } : undefined;
+}
 
 export const defaultMaps = [
   { id: 'random', name: '随机演算星域', size: '动态', desc: '系统随机生成未知宇宙与核心资源点。' },

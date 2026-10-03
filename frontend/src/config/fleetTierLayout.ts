@@ -266,20 +266,57 @@ export function rootFleetOf<F extends { id?: any; _detachedFrom?: any }>(
 }
 
 /**
+ * [v65] 档位粘滞状态（调用方**跨帧持有**，按 `factionId` 分组）。
+ *
+ * 背景（用户实报「Z 轴上突然一下子上升、一下子下降」，`_diag_zjump.cjs` 实证）：
+ *   档位此前每帧按当帧名单现算 ⇒ 任何名单抖动都会让**整方跳档**：
+ *   · 侦察分队是 `_scoutFlight` 伪舰队（无 `_detachedFrom`）⇒ 被当**根舰队**计入档数与
+ *     round-robin：放飞 ⇒ 档数 2→3（乘数集合 [−.5,+.5]→[−1,0,+1]）全队跳升；
+ *     回收/损失 ⇒ 又跳回（"一下上升，一下下降"的主要来源，AI 周期性放飞 ⇒ 反复出现）；
+ *   · 真根舰队覆灭 ⇒ 幸存根的 round-robin 序号前移 / 档数收缩 ⇒ 幸存者换档；
+ *   · 某队编制收缩（分兵重算 `formationCount0`）⇒ per-side 档距 max 缩水 ⇒ 全队跳降。
+ * 粘滞规则（与 v34c 同一原理：档位是**编制身份**的属性，不是当帧数组位置的属性）：
+ *   · `byId` 登记真舰队全员的档号，**覆灭不回收** ⇒ 幸存者永不换档；
+ *   · `tiers` 单调不减 ⇒ 乘数集合不抖；
+ *   · `gap` 单调不减 ⇒ 编制收缩不引发全队跳降。
+ */
+export interface TierStickySide {
+  /** 档数：单调不减（只随新真根出现而增，不因覆灭/回收收缩） */
+  tiers: number;
+  /** 真舰队 id → 档号（不含 detachedOffset 错位；覆灭不回收） */
+  byId: Map<any, number>;
+  /** 档距（世界单位）：单调不减 */
+  gap: number;
+}
+export type TierSticky = Map<any, TierStickySide>;
+
+/** 伪舰队判定：侦察分队轻量伪舰队（BattleScene `createScoutFlightRuntime` 写 `_scoutFlight`）。 */
+function isPseudoFleet(f: any): boolean {
+  return f != null && (f._scoutFlight === true || f._scout === true);
+}
+
+/**
  * 逐队档位 Y（世界单位）——队间叠层的**单一真源**。
  *
  * 同一方内：档距统一取各队 `teamGapFor` 的**最大值**（保证各档等距、包络整齐）；
  * 档数由**根舰队数**决定；根舰队按根内序号 round-robin 取居中对称档位；
  * 分舰队继承其根的档位（可加 `detachedOffset` 档错位）。
  *
+ * [v65] `sticky` 传入（调用方跨帧持有）时启用**粘滞分配**：真舰队档号一经登记不再变
+ * （含覆灭后幸存者不换档、母队灭后分舰队不跳档），档数/档距单调不减；
+ * 侦察分队等伪舰队**不进**档数与 round-robin，改为**继承挂靠母队的档位 Y**。
+ * `sticky` 不传 = 旧行为逐位保留（含伪舰队按根计数），仅台架对照用。
+ *
  * @param fleets   该方（或全场，函数内部按 `factionId` 分组）的舰队列表
  * @param gapOf    每队的档距（= `teamGapFor(fleetVLayout(f))`）
  * @param detachedOffset 分舰队档位错位（档），默认 `DETACHED_TIER_OFFSET`
+ * @param sticky   档位粘滞状态（可选；传入即启用 v65 粘滞分配）
  */
 export function assignFleetTiers<F extends { id?: any; factionId?: any; _detachedFrom?: any }>(
   fleets: F[],
   gapOf: (f: F) => number,
   detachedOffset: number = DETACHED_TIER_OFFSET,
+  sticky?: TierSticky | null,
 ): Map<F, number> {
   const out = new Map<F, number>();
   const bySide = new Map<any, F[]>();
@@ -287,7 +324,7 @@ export function assignFleetTiers<F extends { id?: any; factionId?: any; _detache
     const arr = bySide.get(f.factionId);
     if (arr) arr.push(f); else bySide.set(f.factionId, [f]);
   }
-  bySide.forEach((list) => {
+  bySide.forEach((list, sid) => {
     let gap = 0;
     for (const f of list) {
       const g = gapOf(f);
@@ -295,17 +332,63 @@ export function assignFleetTiers<F extends { id?: any; factionId?: any; _detache
     }
     const byId = new Map<any, F>();
     for (const f of list) if (f.id != null) byId.set(f.id, f);
-    // 根舰队（无血缘）——档数与档位的**唯一**依据；分舰队不参与计数 ⇒ 分兵不改变任何根的位置
-    const roots = list.filter((f) => f._detachedFrom == null);
-    const tiers = tierCountFor(roots.length || list.length);
-    const rootTier = new Map<F, number>();
-    roots.forEach((f, i) => rootTier.set(f, tierIndexOf(i, tiers)));
-    for (const f of list) {
+
+    if (!sticky) {
+      // —— 旧行为（逐位保留，供台架对照）：伪舰队按根计数、档号按当帧序号现算 ——
+      // 根舰队（无血缘）——档数与档位的**唯一**依据；分舰队不参与计数 ⇒ 分兵不改变任何根的位置
+      const roots = list.filter((f) => f._detachedFrom == null);
+      const tiers = tierCountFor(roots.length || list.length);
+      const rootTier = new Map<F, number>();
+      roots.forEach((f, i) => rootTier.set(f, tierIndexOf(i, tiers)));
+      for (const f of list) {
+        const root = roots.includes(f as F) ? (f as F) : rootFleetOf(f, byId);
+        // 母队已灭 / 链条不可判定 ⇒ 退回第 0 档（至少与主力同层，不悬空）
+        const t = root && rootTier.has(root) ? (rootTier.get(root) as number) : tierIndexOf(0, tiers);
+        const off = f === root ? 0 : detachedOffset;
+        out.set(f, (tierOffsetOf(t, tiers) + off) * gap);
+      }
+      return;
+    }
+
+    // —— [v65] 粘滞分配：真根（无血缘且非伪舰队）才是档数/档位依据 ——
+    const roots = list.filter((f) => f._detachedFrom == null && !isPseudoFleet(f));
+
+    // —— [v65] 粘滞分配 ——
+    const state: TierStickySide = sticky.get(sid) ?? { tiers: 1, byId: new Map<any, number>(), gap: 0 };
+    sticky.set(sid, state);
+    // 档距：取当帧 max 与历史值的较大者（单调不减 ⇒ 编制收缩不跳降）
+    if (gap < state.gap) gap = state.gap; else state.gap = gap;
+    // 档数：单调不减（覆灭/回收不收缩乘数集合）
+    const real = list.filter((f) => !isPseudoFleet(f));
+    const tSticky = Math.max(state.tiers, tierCountFor(roots.length || real.length || 1));
+    state.tiers = tSticky;
+    // 真舰队档号：已登记沿用（永不换档）；未登记的根按序号 round-robin（首帧与旧行为逐位一致）
+    const stickyTierOf = new Map<F, number>();
+    roots.forEach((f, i) => {
+      const t = (f.id != null && state.byId.has(f.id)) ? (state.byId.get(f.id) as number) : tierIndexOf(i, tSticky);
+      stickyTierOf.set(f, t);
+      if (f.id != null) state.byId.set(f.id, t);
+    });
+    for (const f of real) {
+      let t: number;
+      if (f.id != null && state.byId.has(f.id)) {
+        t = state.byId.get(f.id) as number;   // 登记过 ⇒ 沿用（含母队已灭的分舰队 ⇒ 不跳档）
+      } else {
+        const root0 = roots.includes(f as F) ? (f as F) : rootFleetOf(f, byId);
+        t = root0 && stickyTierOf.has(root0) ? (stickyTierOf.get(root0) as number) : tierIndexOf(0, tSticky);
+        if (f.id != null) state.byId.set(f.id, t);
+      }
       const root = roots.includes(f as F) ? (f as F) : rootFleetOf(f, byId);
-      // 母队已灭 / 链条不可判定 ⇒ 退回第 0 档（至少与主力同层，不悬空）
-      const t = root && rootTier.has(root) ? (rootTier.get(root) as number) : tierIndexOf(0, tiers);
       const off = f === root ? 0 : detachedOffset;
-      out.set(f, (tierOffsetOf(t, tiers) + off) * gap);
+      out.set(f, (tierOffsetOf(t, tSticky) + off) * gap);
+    }
+    // 伪舰队（侦察分队）：继承挂靠母队的档位 Y —— 放飞/回收不再搅动任何真舰队
+    for (const f of list) {
+      if (!isPseudoFleet(f)) continue;
+      const pid = (f as any).parentFleetId;
+      const parent = pid != null ? byId.get(pid) : undefined;
+      const py = parent ? out.get(parent as F) : undefined;
+      out.set(f, py ?? (tierOffsetOf(tierIndexOf(0, tSticky), tSticky) + detachedOffset) * gap);
     }
   });
   return out;

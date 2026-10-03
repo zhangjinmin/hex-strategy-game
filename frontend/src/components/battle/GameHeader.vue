@@ -68,10 +68,12 @@ const handleImgError = (e: Event) => {
 /* 完全独立锚定：faction-infos 绝对定位贴左、GameControls 绝对定位贴右，
    二者不在同一 flex 流里，舰队卡再多/换行也不会把右侧按钮推出视口（实报 bug 根治） */
 .ui-header { position: absolute; top: 15px; left: 0; right: 0; z-index: 10; pointer-events: none; }
-/* 舰队卡贴左，纵向弹性上限 132px（约两行卡），超出裁剪。
+/* 舰队卡贴左。纵向上限 = 完整两行卡 + 行距（L2 实测卡高 94px ⇒ 2×94+10=198px，取 200），
+   超出滚动而非裁剪——旧上限 132px 在 [v57] 卡片加高后（三细条+编制行）只剩 28px 给第二行，
+   实报"左上角只有一半"（第二行恰好切在标题条）。留足整行余量：裁半行永远比滚动条更像 bug。
    横向预留 580px 给右侧控制区：实测 GameControls 宽 434px（演习）/ 549px（战役），
    旧的 380px 预留不足，卡片排满时最右侧卡片会钻到按钮底下（1920 下重叠 84px，战役 199px）。 */
-.faction-infos { position: absolute; top: 0; left: 15px; display: flex; gap: 10px; flex-wrap: wrap; pointer-events: auto; max-width: calc(100% - 580px); max-height: 132px; overflow: hidden; }
+.faction-infos { position: absolute; top: 0; left: 15px; display: flex; gap: 10px; flex-wrap: wrap; pointer-events: auto; max-width: calc(100% - 580px); max-height: 200px; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.25) transparent; }
 /* 控制区贴右：绝对锚定，不受左侧内容宽度影响 */
 .ui-header > :deep(.game-controls),
 .game-controls { position: absolute; top: 0; right: 15px; flex: 0 0 auto; }

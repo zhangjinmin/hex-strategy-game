@@ -8,9 +8,9 @@
 
 /** 3D 特效事件（kind 决定可选字段的含义，消费逻辑见 Battle3DOverlay.handleFx） */
 export interface Fx3dEvent {
-  kind: 'laser' | 'shield' | 'hit' | 'capture' | 'strike' | 'missiles' | 'fortress_charge' | 'fortress_beam'
+  kind: 'laser' | 'shield' | 'hit' | 'capture' | 'strike' | 'fortress_charge' | 'fortress_beam'
     | 'pointer_chevron' | 'pointer_target_lock' | 'pointer_clear';
-  /** laser / strike / missiles：发射端像素坐标 */
+  /** laser / strike：发射端像素坐标 */
   from?: { x: number; y: number };
   /** laser：目标端像素坐标 */
   to?: { x: number; y: number };
@@ -22,14 +22,14 @@ export interface Fx3dEvent {
   color: number;
   /** 阵营 id（capture 用；strike 用：3D 侧按敌我选择舰载机模型） */
   factionId?: number;
-  /** laser 附加标记：>=2 表示导弹/鱼雷齐射（视觉上更细更慢） */
+  /** laser 附加标记：>=2 表示齐射（视觉上更细更慢） */
   power?: number;
   /** shield：受击舰舰种（中英文均可，dimsOf 可解）→ 3D 护盾尺寸与舰长挂钩（v6：
    *  废弃"舰队展开半径"口径——护盾是单舰偏导盾，尺寸应与舰艇相关，用户定案） */
   shipClass?: string;
   /** 兼容保留：未传 shipClass 时的回退尺寸（世界像素单位） */
   size?: number;
-  /** strike / missiles：弹数（舰载机架数 / 导弹枚数） */
+  /** strike：弹数（舰载机架数） */
   count?: number;
   /** strike：每架舰载机命中结算伤害 */
   dmg?: number;

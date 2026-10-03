@@ -60,7 +60,6 @@
       <div class="gh-fx">
         <span class="gh-fx-label">特效测试（第一艘舰为靶）：</span>
         <button @click="fireLaser">⚡ 激光</button>
-        <button @click="fireMissiles">🚀 导弹</button>
         <button @click="fireShield">🛡 护盾</button>
         <button @click="fireHit">💥 命中</button>
       </div>
@@ -103,15 +102,14 @@ import { listScenePropFiles, acquireScenePropByFiles, buildScenePropFromModel, g
 // 动作模型（FBX，自带动画）：assets/anim/ 下的 .fbx —— 丢进文件夹即出现，零登记；
 //   一个 fbx = 一段动作（循环播），故不做动作切换 UI。
 import { listAnimModelFiles, acquireAnimModel, instantiateAnimModel, ANIM_CN, ANIM_SHOW_HEIGHT, type AnimModelReg } from '../../game/three/animModels';
-// [v23 特效同源] 激光/导弹/护盾/爆闪/尾焰全部来自 `game/three/battleFx` ——
+// [v23 特效同源] 激光/护盾/爆闪/尾焰全部来自 `game/three/battleFx` ——
 //   战场 Battle3DOverlay 用的是同一个模块，巡览所见即战场所得。
 import {
   makeShieldEntry, shieldFire, shieldStep,
   buildLaserEntry, laserStep, disposeLaserEntry,
-  buildMissileSalvo, missileStep, disposeMissileEntry,
   buildHitEntry, hitStep, disposeHitEntry,
   getEnginePortsFor, buildEngineFx, ENGINE_PORT_MARKS_RUNTIME, ENGINE_PORT_OPTS_RUNTIME,
-  type ShieldEntry, type LaserEntry, type HitEntry, type MissileEntry,
+  type ShieldEntry, type LaserEntry, type HitEntry,
   type PortShapeMode, type PortScanResult,
 } from '../../game/three/battleFx';
 import { admiralsData } from '../../config/admiralsData';
@@ -203,7 +201,6 @@ const PROP_CN: Record<string, string> = {
 const FX_HEX_R = 26;
 
 const fxShields: ShieldEntry[] = [];
-const fxMissiles: MissileEntry[] = [];
 const fxHits: HitEntry[] = [];
 const fxLasers: LaserEntry[] = [];
 let fxTarget: THREE.Group | null = null;   // 靶舰（第一艘就绪舰）
@@ -234,17 +231,6 @@ function fxSpawnLaser() {
   fxSpawnHit(to, COLOR.alliance);
 }
 
-function fxSpawnMissiles() {
-  const t = fxTargetPoint();
-  if (!t || !scene) return;
-  const from = fxAttackFrom(1);
-  const to = t.pos.clone();
-  const color = COLOR.empire;
-  for (const M of buildMissileSalvo(from, to, color, 4, FX_HEX_R)) {
-    scene.add(M.mesh);
-    fxMissiles.push(M);
-  }
-}
 
 function fxSpawnShield() {
   const t = fxTargetPoint();
@@ -287,20 +273,9 @@ function fxUpdate(dt: number) {
   }
   // shield 三段动画
   for (const s of fxShields) if (s.active) shieldStep(s, dt);
-  // missiles
-  for (let i = fxMissiles.length - 1; i >= 0; i--) {
-    const M = fxMissiles[i];
-    const st = missileStep(M, dt, FX_HEX_R);
-    if (st.hit) fxSpawnHit(M.to, M.color);
-    if (st.done) {
-      disposeMissileEntry(sc, M);
-      fxMissiles.splice(i, 1);
-    }
-  }
 }
 
 function fireLaser() { fxSpawnLaser(); }
-function fireMissiles() { fxSpawnMissiles(); }
 function fireShield() { fxSpawnShield(); }
 function fireHit() {
   const t = fxTargetPoint();
@@ -1172,7 +1147,6 @@ onBeforeUnmount(() => {
   // 特效测试台清理：共享模块造的对象不持有额外资源，交给下方 scene.traverse 统一释放
   fxTarget = null;
   fxShields.length = 0;
-  fxMissiles.length = 0;
   fxHits.length = 0;
   fxLasers.length = 0;
   scene?.traverse((o) => {

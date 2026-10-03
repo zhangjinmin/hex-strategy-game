@@ -173,7 +173,7 @@ import { ref, computed } from 'vue';
 import { useGameStore, RANK_NAMES, getPortrait } from '../../store/gameStore';
 import { useSettingsStore } from '../../store/settingsStore';
 import { totalShips } from '../../types/game';
-import { diffConfig } from '../../config/gameData';
+import { diffConfig, applyFactionShipRestriction } from '../../config/gameData';
 import { TAG_META_MAP } from '../../config/tagConfig';
 import ShipGalleryOverlay from '../battle/ShipGalleryOverlay.vue';
 
@@ -286,7 +286,7 @@ const getEffective = (id: number) => {
   if (typeof (store as any).getEffectiveStats === 'function') return (store as any).getEffectiveStats(id);
   return null;
 };
-const getSimFullComp = (rankName: string) => {
+const getSimFullComp = (rankName: string, faction?: string) => {
   const rankMap: Record<string, number> = {
     '准尉': 1, '少尉': 2, '中尉': 3, '上尉': 4,
     '少校': 5, '中校': 6, '上校': 7,
@@ -294,21 +294,21 @@ const getSimFullComp = (rankName: string) => {
   };
   const rank = rankMap[rankName] || 9;
   if (typeof (store as any).generateSimFullComposition === 'function') {
-    return (store as any).generateSimFullComposition(rank);
+    return (store as any).generateSimFullComposition(rank, faction);
   }
   // 兜底算法
   const total = typeof (store as any).getShipLimit === 'function' ? (store as any).getShipLimit(rank) : 5000;
-  return { battleships: Math.floor(total * 0.25), fastBattleships: Math.floor(total * 0.1), cruisers: Math.floor(total * 0.25), destroyers: Math.floor(total * 0.25), carriers: Math.floor(total * 0.05), fighters: Math.floor(total * 0.05), supplies: Math.max(1, Math.floor(total * 0.05)) };
+  return applyFactionShipRestriction(faction || '', { battleships: Math.floor(total * 0.25), fastBattleships: Math.floor(total * 0.1), cruisers: Math.floor(total * 0.25), destroyers: Math.floor(total * 0.25), carriers: Math.floor(total * 0.05), fighters: Math.floor(total * 0.05), supplies: Math.max(1, Math.floor(total * 0.05)) });
 };
-const getSimShipTotal = (rankName: string) => {
-  const comp = getSimFullComp(rankName);
+const getSimShipTotal = (rankName: string, faction?: string) => {
+  const comp = getSimFullComp(rankName, faction);
   return totalShips(comp);
 };
 const getShipCount = (id: number) => {
   if (isSimMode.value) {
     const adm = safeAllAdmirals.value.find((a: any) => a.id === id);
     if (!adm) return 0;
-    return getSimShipTotal(adm.rankName || '少将');
+    return getSimShipTotal(adm.rankName || '少将', adm.faction);
   }
   const adm = safeAllAdmirals.value.find((a: any) => a.id === id);
   if (!adm) return 0;

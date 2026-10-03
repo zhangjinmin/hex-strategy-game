@@ -9,6 +9,11 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+// [v62] meshopt 解码器：alliance_battleship.lod1/lod2.glb 是 EXT_meshopt_compression 压缩产物
+// （extensionsRequired 含该扩展）。不注册解码器时 GLTFLoader 解析必抛
+// "setMeshoptDecoder must be called before loading compressed files" ⇒ reg='failed'
+// ⇒ 该舰种在 medium/low 档永久程序化兜底（用户实报"同盟侧大量兜底模型"的根因）。
+import { MeshoptDecoder } from 'three/examples/jsm/libs/meshopt_decoder.module.js';
 // [v27] 模型自带的 FX 锚点（Blender 空物体）—— 命名约定与类型都放在 battleFx 里，单一真源
 import { FX_ANCHOR_RE, type FxAnchor } from './battleFx';
 import shipLodManifest from '../../assets/ship/shipLodManifest.json';
@@ -94,12 +99,16 @@ function resolveDetailFileName(baseName: string): string {
 /** 舰种名归一：中英双轨 → 规范 key（战役英文 / 模拟中文混用） */
 export const SHIP_CLASS_ALIAS: Record<string, string> = {
   battleship: 'battleship', '战列': 'battleship',
-  fast_battleship: 'fast_battleship', '高速战列': 'fast_battleship',
+  // '高战' 是 gameData/shipScaling（SHIP_TYPE_CN）的实际键名；'高速战列' 为兼容旧文案保留。
+  // 缺 '高战' 时 cls 解析为 null ⇒ 候选文件列表为空 ⇒ 永久程序化兜底（v61 修复）。
+  fast_battleship: 'fast_battleship', '高速战列': 'fast_battleship', '高战': 'fast_battleship',
   cruiser: 'cruiser', '巡洋': 'cruiser',
   destroyer: 'destroyer', '驱逐': 'destroyer',
   carrier: 'carrier', 'CV': 'carrier', '突击': 'carrier', '空母': 'carrier',
   electronic: 'electronic', '电子': 'electronic',
   supply: 'supply', '补给': 'supply',
+  // '无' = 武装商船（gameData REFUGEE.cls）：按 classToTypeCode 的 AUX 口径归入补给族
+  '无': 'supply',
   fighter: 'fighter', '战斗机': 'fighter', '舰载': 'fighter',
 };
 
@@ -334,6 +343,9 @@ export function acquireShipModelByFiles(candidates: string[]): ShipModelReg | nu
     const url = SHIP_MODEL_FILES[hit];
     const fileName = hit.split('/').pop() || f;
     let reg = shipModelRegistry.get(url);
+    // [v62] 已知解析失败的文件跳过、继续试下一个候选 —— 兑现"候选顺序即回退顺序"契约。
+    // 此前取到首个存在的文件即 return，该文件加载失败时永久兜底，即使后续候选完好。
+    if (reg && reg.status === 'failed') continue;
     if (!reg) {
       reg = { status: 'loading', fileName, baseName: f, version: 0 };
       shipModelRegistry.set(url, reg);
@@ -411,7 +423,8 @@ function pumpLoadQueue(): void {
 /** 加载单个舰船模型（每 URL 一次；解析为线条化几何：合并、去贴图属性、归一化、轮廓线框）。
  *  done 回调在所有终态（成功/无网格/合并失败/解析异常/加载失败）都会触发一次，用于释放队列槽位。 */
 function runShipModelLoad(url: string, reg: ShipModelReg, done: () => void): void {
-  new GLTFLoader().load(
+  // [v62] 必须注册 MeshoptDecoder —— 压缩 GLB（EXT_meshopt_compression）否则解析必败。
+  new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).load(
     url,
     (gltf) => {
       try {

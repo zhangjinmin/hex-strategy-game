@@ -12,7 +12,7 @@ import {
   isPoliticalTag,
 } from '../config/tagConfig';
 import type { PersonalityTag, AbilityTag, PoliticalTag } from '../types/game';
-import { classToTypeCode, REFUGEE, availableFactions, diffConfig, defaultMaps, generateInitialTroops } from '../config/gameData';
+import { classToTypeCode, REFUGEE, availableFactions, diffConfig, defaultMaps, generateInitialTroops, applyFactionShipRestriction } from '../config/gameData';
 import { admiralsData, BaseAdmiral, Admiral } from '../config/admiralsData';
 import { assignFleetByNovel } from '../config/fleetAssignment';
 import { canPropose, canCommandFleet, findSuperior, ROLE_PERMISSIONS_V2, ROLE_ADMIN_PERMISSIONS, ROLE_LOCAL_PERMISSIONS, ROLE_ENEMY_PERMISSIONS, ROLE_FLEET_AUTHORITY } from '../config/roleConfig';
@@ -639,15 +639,18 @@ export const useGameStore = defineStore('game', () => {
   const simSelectedAdmirals = ref<number[]>([]);
 
   // 按军衔生成满编舰队 composition（总舰数=getShipLimit，按比例拆分舰种）
-  const generateSimFullComposition = (rank: number): FleetComposition => {
+  // v61：编制遵守 FACTION_SHIP_RESTRICTION（同盟无高速战列舰）——禁用舰种归零、份额并入战列。
+  const generateSimFullComposition = (rank: number, faction?: string): FleetComposition => {
     const total = getShipLimit(rank);
-    if (rank <= 8)      return { battleships: Math.floor(total * 0.1), fastBattleships: 0, cruisers: Math.floor(total * 0.3), destroyers: Math.floor(total * 0.4), carriers: 0, fighters: Math.floor(total * 0.15), supplies: Math.max(1, Math.floor(total * 0.05)) };
-    if (rank <= 9)      return { battleships: Math.floor(total * 0.2), fastBattleships: 0, cruisers: Math.floor(total * 0.3), destroyers: Math.floor(total * 0.3), carriers: Math.floor(total * 0.05), fighters: Math.floor(total * 0.1), supplies: Math.max(1, Math.floor(total * 0.05)) };
-    if (rank <= 10)     return { battleships: Math.floor(total * 0.3), fastBattleships: Math.floor(total * 0.1), cruisers: Math.floor(total * 0.25), destroyers: Math.floor(total * 0.2), carriers: Math.floor(total * 0.05), fighters: Math.floor(total * 0.05), supplies: Math.max(1, Math.floor(total * 0.05)) };
-    if (rank <= 11)     return { battleships: Math.floor(total * 0.4), fastBattleships: Math.floor(total * 0.1), cruisers: Math.floor(total * 0.2), destroyers: Math.floor(total * 0.15), carriers: Math.floor(total * 0.05), fighters: Math.floor(total * 0.05), supplies: Math.max(1, Math.floor(total * 0.05)) };
+    let comp: FleetComposition;
+    if (rank <= 8)      comp = { battleships: Math.floor(total * 0.1), fastBattleships: 0, cruisers: Math.floor(total * 0.3), destroyers: Math.floor(total * 0.4), carriers: 0, fighters: Math.floor(total * 0.15), supplies: Math.max(1, Math.floor(total * 0.05)) };
+    else if (rank <= 9) comp = { battleships: Math.floor(total * 0.2), fastBattleships: 0, cruisers: Math.floor(total * 0.3), destroyers: Math.floor(total * 0.3), carriers: Math.floor(total * 0.05), fighters: Math.floor(total * 0.1), supplies: Math.max(1, Math.floor(total * 0.05)) };
+    else if (rank <= 10) comp = { battleships: Math.floor(total * 0.3), fastBattleships: Math.floor(total * 0.1), cruisers: Math.floor(total * 0.25), destroyers: Math.floor(total * 0.2), carriers: Math.floor(total * 0.05), fighters: Math.floor(total * 0.05), supplies: Math.max(1, Math.floor(total * 0.05)) };
+    else if (rank <= 11) comp = { battleships: Math.floor(total * 0.4), fastBattleships: Math.floor(total * 0.1), cruisers: Math.floor(total * 0.2), destroyers: Math.floor(total * 0.15), carriers: Math.floor(total * 0.05), fighters: Math.floor(total * 0.05), supplies: Math.max(1, Math.floor(total * 0.05)) };
     // 保底 ≥1：rank12/13+ 此前连 supplies 字段都没有（undefined→无补给舰槽位→后勤战在高军衔档根本无法演示）
-    if (rank <= 12)     return { battleships: Math.floor(total * 0.5), fastBattleships: Math.floor(total * 0.15), cruisers: Math.floor(total * 0.2), destroyers: Math.floor(total * 0.1), carriers: Math.floor(total * 0.03), fighters: Math.floor(total * 0.02), supplies: Math.max(1, Math.floor(total * 0.05)) };
-    return { battleships: Math.floor(total * 0.55), fastBattleships: Math.floor(total * 0.2), cruisers: Math.floor(total * 0.15), destroyers: Math.floor(total * 0.05), carriers: Math.floor(total * 0.03), fighters: Math.floor(total * 0.02), supplies: Math.max(1, Math.floor(total * 0.05)) };
+    else if (rank <= 12) comp = { battleships: Math.floor(total * 0.5), fastBattleships: Math.floor(total * 0.15), cruisers: Math.floor(total * 0.2), destroyers: Math.floor(total * 0.1), carriers: Math.floor(total * 0.03), fighters: Math.floor(total * 0.02), supplies: Math.max(1, Math.floor(total * 0.05)) };
+    else comp = { battleships: Math.floor(total * 0.55), fastBattleships: Math.floor(total * 0.2), cruisers: Math.floor(total * 0.15), destroyers: Math.floor(total * 0.05), carriers: Math.floor(total * 0.03), fighters: Math.floor(total * 0.02), supplies: Math.max(1, Math.floor(total * 0.05)) };
+    return applyFactionShipRestriction(faction || '', comp);
   };
 
   const enterSimMode = () => {
@@ -685,7 +688,7 @@ export const useGameStore = defineStore('game', () => {
       const adm = baseAdmirals.find(a => a.id === admId);
       if (!adm) return null;
       const rank = fullTitleMap[adm.rankName] || 9;
-      const comp = generateSimFullComposition(rank);
+      const comp = generateSimFullComposition(rank, adm.faction);
       return {
         id: simFleetId + idx,
         factionId: playerFactionId,
@@ -732,7 +735,7 @@ export const useGameStore = defineStore('game', () => {
       const eAdm = enemyPool[i];
       if (!eAdm) continue;
       const rank = fullTitleMap[eAdm.rankName] || 9;
-      const comp = generateSimFullComposition(rank);
+      const comp = generateSimFullComposition(rank, eAdm.faction);
       mockDefenders.push({
         id: 9100 + i,
         factionId: enemyFactionId,
@@ -1523,14 +1526,14 @@ export const useGameStore = defineStore('game', () => {
         
         const rank = fullTitleMap[adm.rankName] || 9;
         const totalShips = getShipLimit(rank);
-        const fleetComp: FleetComposition = {
+        const fleetComp: FleetComposition = applyFactionShipRestriction(adm.faction, {
           battleships: Math.floor(totalShips * 0.25),
           fastBattleships: Math.floor(totalShips * 0.1),
           cruisers: Math.floor(totalShips * 0.3),
           destroyers: Math.floor(totalShips * 0.25),
           carriers: Math.floor(totalShips * 0.05),
           fighters: Math.floor(totalShips * 0.05),
-        };
+        });
         
         strategicFleets.value.push({
           id: fleetId,
@@ -1567,14 +1570,14 @@ export const useGameStore = defineStore('game', () => {
       adm.currentNodeId = nodeId;
       const r = getMilitaryRank(adm.rankName) || 9;
       const limit = getShipLimit(r);
-      const comp: FleetComposition = {
+      const comp: FleetComposition = applyFactionShipRestriction(adm.faction, {
         battleships: Math.floor(limit * 0.3),
         fastBattleships: Math.floor(limit * 0.1),
         cruisers: Math.floor(limit * 0.3),
         destroyers: Math.floor(limit * 0.2),
         carriers: Math.floor(limit * 0.05),
         fighters: Math.floor(limit * 0.05),
-      };
+      });
       const fId = nextFleetId++;
       const fn = factionId === FACTION_EMPIRE_ID ? ++empireFleetCounter : ++allianceFleetCounter;
       strategicFleets.value.push({
