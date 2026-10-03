@@ -7155,12 +7155,27 @@ export class BattleScene extends Phaser.Scene {
                         //   且该分支**绕过**正常档的角速度惯量与制动律 ⇒ 前面的参数改动全部被架空。
                         //   现在：舰种 omegaMax（含高速舵效衰减）× RATE_MUL × 战术 rateMul
                         //   ⇒ 战列 free 档 180° ≈ 14.3/6 = 2.4s，仍是"应急快转"但不再是瞬时扭头。
-                        const uStep = kinOmegaNow * FACING_TURN.RATE_MUL * _td.rateMul * dt;
-                        if (Math.abs(dF) <= uStep) {
+                        // [v70] 原地转向**必须走角速度积分**（用户实报「转 40° 突然一下转过去」）。
+                        //   旧实现是**纯位置积分**：facingSmooth += sign(dF)·uStep
+                        //   ⇒ 转 40° 与转 180° 都是「匀速甩过去」，小角度看起来就是瞬间完成，
+                        //   且完全绕过角速度惯量与制动律（v65 #18 修过的过冲问题在此复现）。
+                        //   现在：角加速度 → 角速度 → 角度，临界制动律保证不过冲，
+                        //   小角度自然缓慢、大角度才需要完整转向时间。
+                        //   RATE_MUL 保留为**战术倍率**（应急快转仍可用），但不再是"绕过物理的旁路"。
+                        const uRateCap = kinOmegaNow * FACING_TURN.RATE_MUL * _td.rateMul;
+                        const uAccel = Math.min(kinProfile.alphaMax, TURN_RATE_ACCEL) * dt;
+                        // 临界制动包络：允许的最大角速度（保证能在剩余角差内停下）
+                        const uBrake = Math.sqrt(2 * uAccel * BRAKE_SAFETY * Math.abs(dF));
+                        const uWant = Math.sign(dF) * Math.min(uRateCap, uBrake);
+                        if (Math.abs(dF) <= 1e-4) {
                             fleet.facingSmooth = fAngle; fleet.facingRate = 0;
                         } else {
-                            fleet.facingSmooth += Math.sign(dF) * uStep;
-                            fleet.facingRate = Math.sign(dF) * uStep;
+                            fleet.facingRate += Math.max(-uAccel, Math.min(uAccel, uWant - fleet.facingRate));
+                            // 硬钳在包络内（跨相位交接护栏，同 v65 #18）
+                            if (Math.abs(fleet.facingRate) > uBrake) {
+                                fleet.facingRate = Math.sign(fleet.facingRate) * uBrake;
+                            }
+                            fleet.facingSmooth += fleet.facingRate;
                         }
                     }
                     // [v47] 协议期只快转舰体（facingSmooth）；格位冻结（formFacing 管理器），退出帧一步重排
@@ -7337,11 +7352,22 @@ export class BattleScene extends Phaser.Scene {
                 if (typeof ff0 !== 'number') {
                     (fleet as any).formFacing = fleet.facingSmooth ?? fleet.facingAngle ?? 0;
                 } else if (control.phase === 'reform') {
-                    (fleet as any).formFacing = advanceFormationFacing(
-                        ff0,
-                        fleet.facingSmooth ?? ff0,
-                        FORM_FACING_RATE * dt,
-                    );
+                    // [v70] **格位翻转只在 turn→reform 交接的那一帧置位**（toggle），
+                    //   不是整个 reform 期间持续为 true —— 否则每次掉头都会把槽位反复镜像，
+                    //   队列在两种排列间来回跳 ⇒ 又变成新的抖动源。
+                    //   用 _uturnJustEnded（combatControl 已提供）作为唯一触发点。
+                    if ((fleet as any)._uturnJustEnded) {
+                        (fleet as any)._slotFlip = !(fleet as any)._slotFlip;
+                    }
+                    // [v70] 阵面**一步到位**（用户实报「掉头出现大范围阵型变换/首尾变换」）。
+                    //   旧实现以 FORM_FACING_RATE=90°/s 连续旋转 180° 需 2s，
+                    //   这 2s 内槽位目标绕中心**公转** ⇒ 全部舰船沿圆弧追槽位
+                    //   ⇒ 视觉即「整支舰队大范围扫过」= 用户看到的大范围阵型变换。
+                    //   ⚠ 注释里写「画圆不可构造」，但连续旋转阵面恰恰在构造公转，
+                    //     v31-D/v41b/v42 四代失败都源于对「阵面能否连续改」的判断失误。
+                    //   正解：阵面在 reform 起始帧**一次性对齐**新舰首，
+                    //     随后每艘舰沿**直线**追自己的新槽位（见 unit 循环的 slotSwap 处理）。
+                    (fleet as any).formFacing = fleet.facingSmooth ?? ff0;
                 }
             }
 
@@ -7465,9 +7491,27 @@ export class BattleScene extends Phaser.Scene {
                 // [阵型] 用部署期固定的 formationSlot，不用循环 index——
                 // fleet.units 在单位被击毁时会被 filter 重赋值，index 会整体前移导致幸存舰瞬移。
                 // 兜底 index：未写入 formationSlot 的路径退回循环下标 —— formOffsets 的长度本身就按 fleet.units.length 枚举，形态仍正确，不会塌到同一格。
-                const slotIdx = (typeof u.formationSlot === 'number' && u.formationSlot >= 0)
+                // [v70] 掉头时的**格位身份反转**（用户预想：「原来的头部变成阵型的尾部，
+                //   原来的尾部变成阵型的头部，再适当调整下」，而不是大范围扫过）。
+                //
+                //   物理正解：掉头 = 停船 → 原地转舰首 → 舰队**换向**。
+                //   换向时每艘舰应去的是「新航向下的同序号槽位」——
+                //   由于阵型槽位沿舰首方向编号（前 0、中 1、后 2…），
+                //   舰首转 180° 后同序号槽位自然落到原队形的**对侧**，
+                //   于是「原头部(new 0) 跑到 new 尾部」= 首尾交换，且**每艘走直线**，
+                //   不绕中心公转 ⇒ 消除大范围阵型变换。
+                //
+                //   实现：`slotFlip` 标记在 reform 起始帧置位一次，
+                //   用 (formationCount0-1 - slotIdx) 取对侧槽位（对称阵型的标准做法）。
+                //   ⚠ 非对称/越界时回退原 slot（不越界、不塌中心）。
+                const rawSlot = (typeof u.formationSlot === 'number' && u.formationSlot >= 0)
                     ? u.formationSlot
                     : index;
+                let slotIdx = rawSlot;
+                const fc0 = (fleet as any).formationCount0;
+                if ((fleet as any)._slotFlip && typeof fc0 === 'number' && fc0 > 0 && rawSlot < fc0) {
+                    slotIdx = fc0 - 1 - rawSlot;
+                }
                 // [v14 ③1] 阵位像素偏移：过渡中 = 旧/新像素偏移按 morphE 插值；否则 = 目标阵位 × 格距
                 // [FIX-stance-snap] 越界槽位兜底 [0,0] → ringCell()：旧实现把越界单位全塌到舰队中心，
                 //   姿态/阵型切换瞬间一眼就是"全体极速吸向一个固定点"。

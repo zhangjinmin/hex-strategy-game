@@ -22,6 +22,8 @@ export const BATTLE_TRANSIENT_FIELDS: readonly string[] = [
   '_phaseState',
   // [v68 阶段B] 舰载机编队运行时（fighterGroups/fighterDots 为场景级 Map，不在此表）
   '_returnUntil',
+  // [v70] 掉头格位翻转标记（战局重开必须复位，否则首局翻转态污染次局阵型）
+  '_slotFlip',
 ];
 
 const TRANSIENT_SET: ReadonlySet<string> = new Set(BATTLE_TRANSIENT_FIELDS);
