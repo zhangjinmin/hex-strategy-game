@@ -18,6 +18,10 @@ export const BATTLE_TRANSIENT_FIELDS: readonly string[] = [
   '_intelContactState', '_intelDisplayMode', '_intelLastKnown', '_scoutReports',
   // W2 侦察分队运行时（阵营级）
   '_lastScoutContactAt', '_scoutCooldownUntil', '_intelArchive',
+  // [v67 阶段A] 战斗距离阶段状态（四阶段机读态；阈值缓存为场景级、非 JSON 键，不登记）
+  '_phaseState',
+  // [v68 阶段B] 舰载机编队运行时（fighterGroups/fighterDots 为场景级 Map，不在此表）
+  '_returnUntil',
 ];
 
 const TRANSIENT_SET: ReadonlySet<string> = new Set(BATTLE_TRANSIENT_FIELDS);

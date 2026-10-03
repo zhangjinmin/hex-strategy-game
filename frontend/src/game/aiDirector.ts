@@ -224,6 +224,14 @@ export function strikeRangeFrom(ships: readonly ShipCombatProfile[]): number {
 export type CombatFormation = 'wedge' | 'line' | 'spindle' | 'circle' | 'square';
 
 export interface FormationSituation {
+  /**
+   * [v67 阶段A] 战斗阶段给出的阵型偏好（combatPhase.combatPhaseFormationHint）。
+   * ⚠ 只作**偏好**注入，仍要让位给下方的态势判据（集火包围/优势楔形/劣势纺锤），
+   *   因为那些是玩家可读的战术意图（包围、突破、防御），优先级高于"阶段默认"。
+   *   阶段偏好的真正价值是：让 chooseFormation 在**均势**（powerRatio≈1）这个
+   *   旧表没有覆盖的灰区里，按阶段给出不同答案 —— 旧表在灰区恒返回 'line'。
+   */
+  phaseHint?: readonly string[] | null;
   /** 有几支友军与本舰队盯同一目标 */
   alliesOnTarget: number;
   /** 兵力比 = 我/敌（>1 优势） */
@@ -243,8 +251,32 @@ export function chooseFormation(s: FormationSituation): CombatFormation {
   if (s.avoiding) return 'spindle';
   if (s.alliesOnTarget >= 2) return 'circle';   // 3+ 舰队集火 → 包围
   if (s.aggressive && s.powerRatio > 1.3) return 'wedge';  // 优势+激进 → 楔形突破
-  if (s.powerRatio > 0.8) return 'line';        // 均势 → 战列对射
+  if (s.powerRatio > 0.8) {
+    // 均势（0.8~1.3）—— 旧表恒返回 'line'，是"对射到死"的阵型层根因：
+    //   远距对射与集火突进用同一种线阵，玩家看不到任何战术变化。
+    // [v67 阶段A] 此处改为按阶段偏好取阵型（far/approach/assault 各不同），
+    //   使"距离变了 ⇒ 阵型变了"成为可感知的事实。
+    return pickFromPhaseHint(s.phaseHint, 'line');
+  }
   return 'spindle';                             // 劣势 → 纺锤防御
+}
+
+/**
+ * [v67 阶段A] 从阶段偏好中取一个合法阵型（过滤掉非法名），空/全非法时回退 fallback。
+ * ⚠ 阶段偏好是 string[]（来自 combatPhase 的 PHASE_FORMATION_HINT），
+ *   而本模块的 CombatFormation 是联合类型 —— 此处做**唯一一次**收窄，
+ *   避免把 string 直接当 CombatFormation 返回（TS 会放行但运行时可能是脏值）。
+ */
+function pickFromPhaseHint(
+  hint: readonly string[] | null | undefined,
+  fallback: CombatFormation,
+): CombatFormation {
+  const valid: readonly CombatFormation[] = ['wedge', 'line', 'spindle', 'circle', 'square'];
+  if (!hint) return fallback;
+  for (const h of hint) {
+    if ((valid as readonly string[]).includes(h)) return h as CombatFormation;
+  }
+  return fallback;
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -273,12 +305,25 @@ export interface FormationCommitSituation {
   previous: CombatFormationCommitment | null | undefined;
   /** 仅撤离/规避等安全性命令可以中断当前承诺。 */
   emergency: boolean;
+  /**
+   * [v67 阶段A] 本帧战斗阶段是否发生跃迁（far→approach→assault→brawl）。
+   * · 阶段跃迁是**可解释的**换阵型时机，与 emergency 同级（都属"不该被承诺锁住"的情形）；
+   * · 但走独立 reason 以便战报区分（见 CombatFormationCommitResult.reason）。
+   * · 阶段不变时不得传 true，否则会退化成每帧刷新阵型（正是承诺机制要防的）。
+   */
+  phaseChanged?: boolean;
 }
 
 export interface FormationCommitResult {
   formation: CombatFormation;
   state: CombatFormationCommitment;
-  reason: 'opening' | 'held' | 'retarget' | 'emergency' | 'inactive';
+  /**
+   * [v67 阶段A] 新增 phaseRetarget：战斗阶段跃迁导致的换阵型。
+   * ⚠ 必须与 'emergency' 分开记账 —— 两者都能改阵型，但语义不同：
+   *   emergency = 安全性命令（撤离/规避），phaseRetarget = 战术阶段推进。
+   *   战报与台架需要区分，否则无法回答"阵型变化是因为打不过还是因为打进入下一阶段"。
+   */
+  reason: 'opening' | 'held' | 'retarget' | 'emergency' | 'inactive' | 'phaseRetarget';
 }
 
 /**
@@ -299,6 +344,16 @@ export function stabilizeCombatFormation(s: FormationCommitSituation): Formation
       formation: s.candidate,
       state: { active: true, targetId: s.targetId, formation: s.candidate },
       reason: 'emergency',
+    };
+  }
+  // [v67 阶段A] 阶段跃迁：与 emergency 同级的合法换阵型时机，但独立记账。
+  //   放在 targetId 比较**之前** ⇒ 即使目标没换（仍是同一舰队），阶段推进也能换阵型，
+  //   否则会出现"阶段变了但阵型被承诺锁死"的矛盾（S3 突进却仍是 S1 的线阵）。
+  if (s.phaseChanged) {
+    return {
+      formation: s.candidate,
+      state: { active: true, targetId: s.targetId, formation: s.candidate },
+      reason: 'phaseRetarget',
     };
   }
   if (s.previous?.active && s.previous.targetId === s.targetId) {
