@@ -66,6 +66,15 @@ import {
     type AdmiralDoctrine, type RetreatTier,
 } from '../retreatDoctrine';
 import { aggression, supplyDecision, turnDiscipline, approachLateralOffset } from '../combatDoctrine';
+// [v69] 舰种运动学表（30 号文档 §4.2）：让舰种真正参与运动学。
+//   旧实现五舰种在机动性上完全同质（共享 FLEET_BASE_SPEED 0.30 / UNIT_MOTION_LIMITS），
+//   且 `u.speed` 被解构后从未被消费 ⇒ 玩家没理由偏好重舰或轻舰。
+//   本表提供按舰种加权的 vMax / omegaMax / accel + 高速舵效衰减。
+//   核心判据：转弯半径 R = v/ω 必须 > 舰长（旧值 0.69L 是「移动很奇怪」的最直接一刀）。
+import {
+    fleetProfile, effectiveOmegaMax, EMPTY_FLEET_PROFILE,
+    type FleetKinematicsProfile,
+} from '../../config/shipKinematics';
 import { advanceManeuver, maneuverOrder, updateContact, type ContactState, type ManeuverState } from '../combatControl';
 import { escortDestination } from '../tacticalTasks';
 import {
@@ -7060,8 +7069,26 @@ export class BattleScene extends Phaser.Scene {
             //   该分离是此前"船尾给敌人"实报的修复，硬点 3 要求保留 ⇒ 单值方案无法同时满足，故用双平滑器。
             //   时间基准：与位移同源（位移 = speed * dt 每帧）⇒ 步长 = HEADING_TURN_RATE * dt。
             // [R10-B1-BEGIN]
-            const headingStep = HEADING_TURN_RATE * dt;   // 满转率（rad/帧）
-            const rateAccel = TURN_RATE_ACCEL * dt;       // 角加速度上限（rad/帧²）
+            // [v69] 舰种运动学剖面（**必须早于 headingStep 声明** —— const 无 TDZ 提升）。
+            //   按 hullLen²（面积/质量感）加权聚合 ⇒ 8 战列 + 2 驱逐的转向接近纯战列，
+            //   而非被算术平均拉到"中速"。排除 '补给'（运输舰极重会拖垮整队）。
+            //   ⚠ 空编队/纯补给 ⇒ EMPTY_FLEET_PROFILE，退化路径与新表一致不突变。
+            const kinProfile: FleetKinematicsProfile = fleetProfile(fleet.units);
+            // [v69] 满转率改由**舰种**决定 + **高速舵效衰减**（旧实现角速率与速度完全无关）。
+            //   战列 omegaMax=0.00367 ⇒ 180° 需 14.3s（旧 HEADING_TURN_RATE=π/240 ⇒ 4.0s，快 3.6 倍），
+            //   且满速时再降 45% ⇒ ~25.9s ⇒ 「掉头是一次战术决策」而非随手操作。
+            //   ⚠ 与 fleetBaseSpeed 共用同一 kinProfile，避免两次聚合。
+            const kinSpeedNow = Math.hypot(fleet.vx || 0, fleet.vy || 0);
+            const kinOmegaNow = effectiveOmegaMax(
+                { vMax: kinProfile.vMax, omegaMax: kinProfile.omegaMax } as any, kinSpeedNow,
+            );
+            const headingStep = kinOmegaNow * dt;   // 满转率（rad/帧，舰种 + 速度自适应）
+            // 角加速度同样按舰种缩放：重舰建立满转率更慢。
+            //   τ_turn = omegaMax / alphaMax：战列 0.00367/0.00012 = 30.6 帧(0.51s)，
+            //   驱逐 0.02364/0.00090 = 26.3 帧，比例接近但绝对值不同。
+            //   ⚠ 与 accel 同理取 min(kinProfile.alphaMax, TURN_RATE_ACCEL)：
+            //   应急路径（uturn 快档）不得比旧值更慢，否则掉头协议失效。
+            const rateAccel = Math.min(kinProfile.alphaMax, TURN_RATE_ACCEL) * dt;
             // [v30] **姿态控制转向**：太空战舰的转身 = 原地姿态调整（RCS），**不是飞机式弧线**。
             //   ⇒ 取消 v29 的"位移航向平滑器 `fleet.heading`"（它必然让舰队中心走弧线 ⇒ 圆阵像"风暴"、
             //     掉头像"沿弧线切换"）；位移方向改回**直接取目标方向**（`moveAngle`）；
@@ -7122,7 +7149,13 @@ export class BattleScene extends Phaser.Scene {
                         //   配合 v46-D 的距离口径，denied 只在真正接舷（<250px）时出现。
                         fleet.facingRate = 0;
                     } else {
-                        const uStep = HEADING_TURN_RATE * FACING_TURN.RATE_MUL * _td.rateMul * dt;
+                        // [v69] 掉头快档也必须走**舰种**角速率，不能用旧 HEADING_TURN_RATE。
+                        //   ⚠ 这是「移动还是不行」的直接原因：快档乘 RATE_MUL=6 ⇒
+                        //   旧实现战列 180° 掉头仅 0.67s（270°/s，物理不可能），
+                        //   且该分支**绕过**正常档的角速度惯量与制动律 ⇒ 前面的参数改动全部被架空。
+                        //   现在：舰种 omegaMax（含高速舵效衰减）× RATE_MUL × 战术 rateMul
+                        //   ⇒ 战列 free 档 180° ≈ 14.3/6 = 2.4s，仍是"应急快转"但不再是瞬时扭头。
+                        const uStep = kinOmegaNow * FACING_TURN.RATE_MUL * _td.rateMul * dt;
                         if (Math.abs(dF) <= uStep) {
                             fleet.facingSmooth = fAngle; fleet.facingRate = 0;
                         } else {
@@ -7214,7 +7247,7 @@ export class BattleScene extends Phaser.Scene {
             // [v33 P1-4.3] 阵型崩溃 → 机动乘区（旧案「机动 −50%」）。
             //   与撤退速度乘区**叠乘**是期望行为：一支崩溃且正在撤离的舰队应当几乎挪不动。
             const collapseSpeedMul = collapseMuls((fleet as any)._formationCollapsed === true).speed;
-            const fleetBaseSpeed = ((FLEET_BASE_SPEED + (myFac.admiralStats?.mobility || 0) * 0.003) * fleetSupplyFactor * moraleSpeedMult) * retreatSpeedBonus * cpSpeedMult * thrustFactor * collapseSpeedMul;
+            const fleetBaseSpeed = ((kinProfile.vMax + (myFac.admiralStats?.mobility || 0) * 0.003) * fleetSupplyFactor * moraleSpeedMult) * retreatSpeedBonus * cpSpeedMult * thrustFactor * collapseSpeedMul;
 
             // 【C3 修复】排斥力限幅：原敌我排斥力可达 ~3.0/帧，远超自身速度(0.05~0.3)，
             // 会把舰队以数倍极速向后/侧向推开 → 倒车、横移、贴脸低频振荡。
@@ -7280,9 +7313,12 @@ export class BattleScene extends Phaser.Scene {
             // 吸收补给/撤退/地形倍率的逐帧硬切（否则目标一变速度瞬变 → 发飘/瞬移感）。
             const desiredVX = rawVX, desiredVY = rawVY;   // 本帧期望位移（已含 dt 与各倍率）
             if (typeof fleet.vx !== 'number') { fleet.vx = 0; fleet.vy = 0; }
-            // [v29] 惯性增强：0.18（τ≈0.08s，几乎瞬时）→ FLEET_ACCEL（τ≈0.27s）⇒ 起步 / 改向有"质量感"。
-            //   这是"像点不像舰"的第二条根因（第一条是角速度无惯量，见本文件顶部 v29 参数块）。
-            const accel = Math.min(1, FLEET_ACCEL * dt);
+            // [v69] 惯性/限速：时间常数由**舰种 accel** 决定（面积加权）。
+            //   战列 accel=0.0060 ⇒ τ≈2.8s，0→95% 需 8.3s（旧 FLEET_ACCEL 0.055 ⇒ 0.81s，快 10 倍）。
+            //   这是"战舰有质量"的第一来源：起步慢、停船慢、变向有惯性。
+            //   ⚠ 取 min(kinProfile.accel, FLEET_ACCEL)：应急（溃散 3× 加速）不得慢于旧值，
+            //     否则撤退/溃散会被新参数拖成龟速（v33 溃散档依赖速度倍率生效）。
+            const accel = Math.min(1, Math.min(kinProfile.accel, FLEET_ACCEL) * dt);
             fleet.vx += (desiredVX - fleet.vx) * accel;
             fleet.vy += (desiredVY - fleet.vy) * accel;
             fleet.x += fleet.vx;
