@@ -7058,9 +7058,24 @@ export class BattleScene extends Phaser.Scene {
                 }
                 fleet.facingAngle = fAngle;
             } else if (isEngaging && closestEnemyFleet) {
-                // 已抵达射击位置停船：火炮锁定敌军，移动方向不变
-                fAngle = Math.atan2(closestEnemyFleet.y - fleet.y, closestEnemyFleet.x - fleet.x);
-                fleet.facingAngle = fAngle;
+                // [v72] 已抵达射击位置停船：**火控解算独立于舰首**（结构性修正）。
+                //
+                //   v71 取证（_probe_heading3.mjs 场景2）：本分支把 fAngle 切到「朝敌」，
+                //   而 facingSmooth 以有限角速率去追它 ⇒ 实测舰首在 100 帧内**回转 90°**
+                //   （41.8°→10.3°）。阵面 = 舰首 ⇒ 阵型跟着一起甩 ⇒ 用户实报
+                //   「阵型指向右下角但移动往右上角」「战舰瞬间换个方向」。
+                //
+                //   物理正解：**炮口方向 ≠ 舰首方向**。真实战舰的主炮塔独立转向
+                //   （银英设定：炮塔可回转 360°），舰首朝向由**航行**决定，不由火控决定。
+                //   ⇒ 停船时舰首应**保持当前朝向**（不追敌），只让炮塔转（30 号 §5 的炮塔层待做）。
+                //
+                //   本帧只更新**火控朝向**（供开火射界用），不写 fleet.facingAngle。
+                const _fireAngle = Math.atan2(
+                    closestEnemyFleet.y - fleet.y, closestEnemyFleet.x - fleet.x,
+                );
+                (fleet as any)._fireControlAngle = _fireAngle;   // 火控解算（炮塔消费）
+                // ⚠ 刻意**不改** fAngle / fleet.facingAngle：舰首保持停船时的航向。
+                fAngle = fleet.facingAngle || fAngle;
             }
 
             // 战术控制器是大机动唯一入口：接战锁定时只能倒退脱离；脱战后才会
@@ -7168,7 +7183,13 @@ export class BattleScene extends Phaser.Scene {
                 // 航向差重新判定，否则脱离接触中的舰队会绕过接战锁而重新获得掉头许可。
                 const dF = Math.atan2(Math.sin(fAngle - fleet.facingSmooth), Math.cos(fAngle - fleet.facingSmooth));
                 if ((fleet as any)._uturn === true) {
-                    // 协议期：快档、无惯量、formFacing 同步（阵位/托盘/位移一个真源 ⇒ 整阵绕锚点刚性转）
+                    // [v72] 协议期：formFacing **冻结**（原为"同步旋转"）。
+                    //   v71 取证（C 组）：formFacing 同步 ⇒ 首舰目标在 60 帧内**绕中心划整圈**
+                    //   ⇒ 用户实报「固定方向不动、然后快速画圈移动」「诡异的移动」——
+                    //   注释里原写的「整阵绕锚点刚性转」正是这个症状的**实现**，不是解法。
+                    //   物理正解：原地转向时**阵列不动**（真空无外力，舰队质心不能公转），
+                    //   只有各舰在原地转舰首。阵面朝向要等转向结束（reform 相）再一次性对齐。
+                    // 协议期：快转舰首、阵面冻结、槽位不动 ⇒ 视觉上是「整队原地转舰首」
                     // [v42b] 交战中的转向纪律（恢复 v40 语义，但作用于**舰体速率**而非格位）：
                     //   denied(交战中大角度) ⇒ rateMul 0.06~0.16 ⇒ 不狂转（用户：「还在对战就不能转向」）。
                     //   ⚠ v42 曾把本消费整段删掉 ⇒ 交战中也全速转身 = 用户实报「摇头晃脑/神经病」。
@@ -7432,11 +7453,17 @@ export class BattleScene extends Phaser.Scene {
                     if ((fleet as any)._uturnJustEnded) {
                         (fleet as any)._reformFromFacing = ff0;
                     }
-                    const ffRate = Math.max(
-                        FORM_FACING_RATE * dt,
-                        // 兜底：阵面至少要能跟上当前角速率，否则滞后角会持续累积
-                        (kinOmegaNow + Math.abs(fleet.facingRate || 0)) * dt,
-                    );
+                    // [v72] 阵面速率 = **纯舰首角速率**（v71 的 max() 是无效改动）。
+                    //   v71 取证复盘：`max(FORM_FACING_RATE*dt, kinOmegaNow*dt)` 中
+                    //   FORM_FACING_RATE=90°/s 比战列 kinOmegaNow(12.6°/s) **大 7 倍**
+                    //   ⇒ max 恒取前者 ⇒ 「与舰首同源」等于没写，阵面仍以 90°/s
+                    //   旋转 180° 需 2s，这 2s 槽位绕中心公转
+                    //   ⇒ 用户实报「固定方向不动、然后快速画圈移动」。
+                    //
+                    //   正确口径：阵面与舰首**同速旋转**，两者相对角差恒为 0
+                    //   ⇒ 槽位目标相对舰船近似静止 ⇒ 无论 45° 还是 180° 都不公转、不画圈。
+                    //   ⚠ 必须**不加** max 兜底：一旦兜底值 > 舰首角速率，公转立刻回来。
+                    const ffRate = kinOmegaNow * dt;
                     (fleet as any).formFacing = advanceFormationFacing(
                         ff0, fleet.facingSmooth ?? ff0, ffRate,
                     );

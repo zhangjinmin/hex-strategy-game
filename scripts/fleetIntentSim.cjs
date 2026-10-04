@@ -68,8 +68,35 @@ check('autonomy falls through support, search and patrol in order', () => {
 
 console.log('\n=== Battle movement/fire integration ===');
 const sceneSource = fs.readFileSync('./frontend/src/game/scenes/BattleScene.ts', 'utf8');
-check('engaging fleet keeps its bow aimed at the live fire target', () => {
-  assert.match(sceneSource, /if \(isEngaging && closestEnemyFleet\)[\s\S]{0,400}fAngle = Math\.atan2\(closestEnemyFleet\.y - fleet\.y/);
+check('[v72] engaging fleet decouples fire control from hull heading', () => {
+  // [v72 契约订正 2026-10-04] 旧金标锁「交战中 fAngle 必须朝敌」，那正是 v72 改掉的病根：
+  //   _probe_heading3.mjs 场景2 实测该分支让 facingSmooth 在 100 帧内回转 90°
+  //   ⇒ 阵型跟着甩 ⇒ 用户实报「阵型指向右下但移动往右上」「战舰瞬间换个方向」。
+  // 新契约：交战中**火控解算独立**（_fireControlAngle，供炮塔消费），
+  //   舰首保持停船时的航向，不再被火控拉扯。
+  assert.match(sceneSource,
+    /if \(isEngaging && closestEnemyFleet\)[\s\S]{0,900}_fireControlAngle = _fireAngle/);
+  // 负向守卫：该分支内**不得**再写 fleet.facingAngle（否则舰首又被火控拖走）
+  const fireBranch = sceneSource.match(/if \(isEngaging && closestEnemyFleet\)[\s\S]{0,1400}?\n {12}\}/);
+  assert.ok(fireBranch, '交战分支存在');
+  assert.doesNotMatch(fireBranch[0], /fleet\.facingAngle = _fireAngle/,
+    'fire-control branch must not write fleet.facingAngle (v72 decoupling)');
+  // 火控解算必须落库存（供 30 号 §5 炮塔层消费）
+  assert.match(sceneSource, /_fireControlAngle/);
+}
+);
+check('legacy contract is not silently restored (facingAngle must not be re-bound to the enemy)', () => {
+  // 负向守卫必须**只看该分支内部**：早先用 {0,900} 窗口会一路吃到下一个代码块
+  // 里的合法 `fleet.facingAngle = fAngle`（distToTarget>5 分支）⇒ 误报。
+  // 正确做法：先截出分支体，再在体内做否定匹配。
+  const fireBranch = sceneSource.match(
+    /if \(isEngaging && closestEnemyFleet\) \{[\s\S]{0,1400}?\n {12}\}/);
+  assert.ok(fireBranch, '交战分支存在');
+  assert.doesNotMatch(fireBranch[0], /fleet\.facingAngle = fAngle/,
+    'v71 fire-control coupling must stay removed inside the engaging branch');
+  // 同时确认 distToTarget>5 分支仍保留原有的 facingAngle 写入（未被误伤）。
+  // 窗口需 ≥ 实测距离（BattleScene 中两处相距约 700+ 字符）。
+  assert.match(sceneSource, /distToTarget > 5[\s\S]{0,1200}fleet\.facingAngle = fAngle/);
   // [v66 语义订正 2026-10-02] 逐舰舰首契约：交战中跟**自身航迹**（防「舰首朝前、船体横移」侧滑，
   //   W1-W3 9c099a5 的 `|| isEngaging` 裸项正是侧滑回归来源）；刚性锁舰队朝向仅限
   //   拖刀 (isRetreating && isEngaging) **两项与** / _uturn / _backing / 近静止。
