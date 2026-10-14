@@ -41,7 +41,17 @@ export function projectFleetRepresentation(
     const ratio = u.maxHp > 0 ? Math.max(0, Math.min(1, u.hp / u.maxHp)) : 0;
     return sum + (u.shipCount ?? 1) * ratio;
   }, 0));
-  const requested = hpPct > 0 ? Math.max(1, Math.round(Math.max(0, visualCapacity) * hpPct)) : 0;
+  // [v78] **折算数量量化到 5% 档**（用户建议：「动态折算只能在切入战场的第一轮计算，
+  //   因为后面战损之后阵型是确实要减少的」）。
+  //   原实现 `round(capacity × hpPct)` 每帧跟随血量连续变化 ⇒ 血量在临界点附近
+  //   微幅波动时 visibleCount 反复增减 ⇒ 单位忽隐忽现（观感"闪烁"）。
+  //   量化后：血量每变化 5% 才触发一次显示数量调整 ⇒ 战损仍会减少阵型，但步进稳定。
+  //   ⚠ 只量化**数量**，不改变"按空间序均匀抽稀"的口径（那是 v78 的另一处修复）。
+  const QUANT = 20;   // 1/20 = 5% 档
+  const hpQuant = hpPct > 0 ? Math.max(1 / QUANT, Math.round(hpPct * QUANT) / QUANT) : 0;
+  const requested = hpQuant > 0
+    ? Math.max(1, Math.round(Math.max(0, visualCapacity) * hpQuant))
+    : 0;
   const visibleCount = Math.min(live.length, requested);
   // [v72] 裁剪必须**均匀散布在编队中**，不能取前 N 个（用户实报近景阵型变长条）。
   //   旧实现 `slice(0, visibleCount)` 取的是数组前段 ⇒ 大编队被裁剪时
@@ -70,4 +80,44 @@ export function projectFleetRepresentation(
   }
   const visibleIndexes = picked.map((x) => x.index).sort((a, b) => a - b);
   return { hpPct, effectiveShips, visibleCount, visibleIndexes };
+}
+
+/**
+ * [v78] 按**阵位空间序**折算（3D 层专用入口）。
+ *
+ * 用户实报：「整个阵型的后半部分是模型，前半部分是圆点」「拉更近后前半的圆点
+ * 不见了，模型也没有」；并正确判断 **这是折算的问题，不是 LOD 阈值**。
+ *
+ * 根因：`fleet.units` 的顺序在战损时会被 `filter` 重赋值、下标整体前移 ⇒
+ *   **数组下标序 ≠ 阵位空间序**。在错乱的序上做等间隔抽稀 ⇒
+ *   被抽中的单位在空间上**聚集** ⇒ 「某一段全是模型、另一段只有点/没有」。
+ *
+ * 修复：按 `formationSlot`（部署期固定、与阵位一一对应）排空间序，
+ *   在空间序上抽稀，再把结果映射回原下标 ⇒ 抽稀在阵型上均匀分布
+ *   （战损时是「整队等比稀疏」，而不是「砍掉一半」）。
+ *
+ * ⚠ `formationSlot` 缺失时退回下标（不改变行为）。
+ * ⚠ 容量 = 全员时跳过排序（零开销），与旧路径逐位一致。
+ */
+export function projectFleetRepresentationBySlot(
+  units: readonly (RepresentationUnit & { formationSlot?: number })[],
+  visualCapacity?: number,
+): FleetRepresentation {
+  const n = units.length;
+  const cap = visualCapacity ?? n;
+  if (cap >= n || n === 0) return projectFleetRepresentation(units, cap);
+
+  const order: number[] = new Array(n);
+  for (let i = 0; i < n; i++) order[i] = i;
+  order.sort((a, b) => {
+    const sa = units[a].formationSlot; const sb = units[b].formationSlot;
+    const ka = (typeof sa === 'number' && sa >= 0) ? sa : a;
+    const kb = (typeof sb === 'number' && sb >= 0) ? sb : b;
+    return ka - kb || a - b;
+  });
+  const inner = projectFleetRepresentation(order.map((i) => units[i]), cap);
+  return {
+    ...inner,
+    visibleIndexes: inner.visibleIndexes.map((p) => order[p]).sort((a, b) => a - b),
+  };
 }

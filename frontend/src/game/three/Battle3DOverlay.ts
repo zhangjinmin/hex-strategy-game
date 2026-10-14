@@ -32,7 +32,7 @@ import {
   type EnginePort, type LaserEntry, type HitEntry, type ShieldEntry,
 } from './battleFx';
 import { drainFx3d, type Fx3dEvent } from '../battle3dFx';
-import { projectFleetRepresentation } from '../combatRepresentation';
+import { projectFleetRepresentation, projectFleetRepresentationBySlot } from '../combatRepresentation';
 import {
   SHIP_CLASS_ALIAS, FLAGSHIP_MODEL_ALIAS,
   acquireShipModelByFiles, setShipModelDetail, type ShipModelReg,
@@ -3703,7 +3703,19 @@ export class Battle3DOverlay {
       // 30% fleet HP visibly means roughly 30% of the deployed formation.
       const visualCapacity = (fleet as any)._visualCapacity ?? units.length;
       (fleet as any)._visualCapacity = visualCapacity;
-      const representation = projectFleetRepresentation(units, visualCapacity);
+      // ── [v78] 折算必须按**阵位空间序**，不能按数组序 ──────────────────────
+      //   用户实报：「整个阵型的后半部分是模型，前半部分是圆点」「拉更近后前半的
+      //   圆点不见了，模型也没有」—— 用户的判断正确：**这是折算的问题，不是 LOD 阈值**。
+      //
+      //   根因：`visibleIndexes` 装的是**数组下标**，而 `fleet.units` 的顺序在战损时
+      //   会被 `filter` 重赋值、下标整体前移（见 BattleScene 的 units 维护），
+      //   ⇒ 下标序 ≠ 阵位空间序。等间隔抽样作用在"错乱的序"上，
+      //   ⇒ 被抽中的下标在空间上**聚集**（表现为"某一段有模型、另一段只有点/没有"）。
+      //
+      //   修复：先按 `formationSlot`（部署期固定、与阵位一一对应）排出**空间序**，
+      //   在空间序上做折算，再把结果映射回原下标。
+      //   ⇒ 抽样在阵型上均匀分布（战损时是"整队等比稀疏"，而不是"砍掉一半"）。
+      const representation = projectFleetRepresentationBySlot(units, visualCapacity);
       const visibleIndexes = new Set(representation.visibleIndexes);
       // [R10-B1] 哨兵朝向与舰体同源：优先 2D 限速平滑值 facingSmooth（缺省回退权威 facingAngle），
       //   使"点团微网格跟随舰体"在转向期也随舰首缓转（而非瞬时跳）

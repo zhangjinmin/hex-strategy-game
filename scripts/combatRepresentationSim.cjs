@@ -66,5 +66,70 @@ console.log('\n=== [v72] culling must preserve formation shape ===');
   check('severely damaged slots are preferentially culled', keptWounded <= 3, `保留重伤 ${keptWounded}/6`);
 }
 
+console.log('\n=== [v78] 折算必须按阵位空间序（用户实报"前半圆点后半模型"）===');
+{
+  // 模拟战损后 units 顺序错乱：数组序与 formationSlot 序**不一致**
+  //   数组序:  slot 5, 3, 0, 4, 1, 2
+  const scrambled = [
+    { hp: 100, maxHp: 100, formationSlot: 5 },
+    { hp: 100, maxHp: 100, formationSlot: 3 },
+    { hp: 100, maxHp: 100, formationSlot: 0 },
+    { hp: 100, maxHp: 100, formationSlot: 4 },
+    { hp: 100, maxHp: 100, formationSlot: 1 },
+    { hp: 100, maxHp: 100, formationSlot: 2 },
+  ];
+  const slotOfIndex = scrambled.map((u) => u.formationSlot);
+
+  // 旧路径（数组序抽稀）
+  const oldWay = R.projectFleetRepresentation(scrambled, 3).visibleIndexes;
+  // 新路径（空间序抽稀 + 映射回原下标）
+  const newWay = R.projectFleetRepresentationBySlot(scrambled, 3).visibleIndexes;
+
+  const oldSlots = oldWay.map((i) => slotOfIndex[i]).sort((a, b) => a - b);
+  const newSlots = newWay.map((i) => slotOfIndex[i]).sort((a, b) => a - b);
+
+  console.log('    数组序 slot: [' + slotOfIndex.join(',') + ']');
+  console.log('    旧(数组序)选中 slot: [' + oldSlots.join(',') + ']');
+  console.log('    新(空间序)选中 slot: [' + newSlots.join(',') + ']');
+
+  // 实算：数组序 [5,3,0,4,1,2]，6 选 3 等间隔取 pos=1,3,5
+  //   旧（数组序）⇒ 下标 [1,3,5] ⇒ slot [3,4,2] ⇒ 排序 [2,3,4]（间距 1,1 = **聚集**）
+  //   新（空间序）⇒ order 按 slot 升序后取 pos=1,3,5 ⇒ slot [1,3,5]（间距 2,2 = **均匀**）
+  check('旧路径在错乱序上产生**聚集**（这正是用户看到的"前后分离"）',
+    JSON.stringify(oldSlots) === JSON.stringify([2, 3, 4]),
+    '[' + oldSlots.join(',') + ']');
+  check('新路径按空间序抽稀 ⇒ 均匀分布（1,3,5）',
+    JSON.stringify(newSlots) === JSON.stringify([1, 3, 5]),
+    '[' + newSlots.join(',') + ']');
+  check('新路径 slot 间距均匀 2,2（无"前半/后半"分离）',
+    newSlots[1] - newSlots[0] === 2 && newSlots[2] - newSlots[1] === 2,
+    `间距 ${newSlots[1] - newSlots[0]},${newSlots[2] - newSlots[1]}`);
+  check('旧路径间距 1,1（聚集 — 对照）',
+    oldSlots[1] - oldSlots[0] === 1 && oldSlots[2] - oldSlots[1] === 1,
+    `间距 ${oldSlots[1] - oldSlots[0]},${oldSlots[2] - oldSlots[1]}`);
+  check('容量=全员时新旧路径完全一致（零行为变更）',
+    R.projectFleetRepresentationBySlot(scrambled, 6).visibleIndexes.join(',') ===
+    R.projectFleetRepresentation(scrambled, 6).visibleIndexes.join(','));
+  check('空数组不崩', R.projectFleetRepresentationBySlot([], 3).visibleCount === 0);
+}
+
+console.log('\n=== [v78] 折算数量量化到 5% 档（防血量微变导致忽隐忽现）===');
+{
+  const mk = (hp) => Array.from({ length: 100 }, () => ({ hp, maxHp: 100 }));
+  const c = (hp) => R.projectFleetRepresentation(mk(hp), 100).visibleCount;
+  check('满血 = 全员', c(100) === 100, String(c(100)));
+  // 5% 档边界 = 0.975（19.5/20）：≥0.975 ⇒ 1.00 档；0.925~0.975 ⇒ 0.95 档
+  check('血量 100→98 不改变数量（98% ≥ 97.5% ⇒ 仍在 1.00 档）',
+    c(98) === c(100), `${c(98)} vs ${c(100)}`);
+  check('血量 100→96 落 0.95 档 ⇒ 数量减少（量化生效）',
+    c(96) < c(100) && c(96) === 95, `${c(96)} vs ${c(100)}`);
+  check('量化后数量单调不增（血量降⇒数量不增）',
+    c(100) >= c(90) && c(90) >= c(80) && c(80) >= c(50));
+  check('同档内不抖动：93 与 94 同档（均 0.95）', c(93) === c(94), `${c(93)} vs ${c(94)}`);
+  check('量化步进为 5%（相邻档差 5 个/百）',
+    c(100) - c(94) === 5, `${c(100)} - ${c(94)} = ${c(100) - c(94)}`);
+  check('零血 ⇒ 零可见', c(0) === 0, String(c(0)));
+}
+
 console.log(`\n${passed + failed} assertions: ${passed} passed / ${failed} failed`);
 process.exitCode = failed === 0 ? 0 : 1;
