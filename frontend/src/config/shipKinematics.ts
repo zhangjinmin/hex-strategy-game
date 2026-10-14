@@ -71,18 +71,18 @@ export interface ShipKinematics {
  *  舰载  R = 1.20/1.00    = 1.2px 特殊单位（跟随母舰，不独立归位）
  */
 export const SHIP_KINEMATICS: Readonly<Record<string, ShipKinematics>> = Object.freeze({
-  '战列': { hullLen: 33, realLengthM: 900,  vMax: 0.22, omegaMax: 0.00367, alphaMax: 0.00012, accel: 0.0060, role: '重舰·掉头需决策' },
+  '战列': { hullLen: 33, realLengthM: 900,  vMax: 0.22, omegaMax: 0.00367, alphaMax: 0.00012, accel: 0.00042, role: '重舰·掉头需决策' },
   // ⚠ hullLen 严格对齐 BattleScene:1590 部署期真源「cls === '战列' || cls === '突击' → 33」
-  '高战': { hullLen: 33, realLengthM: 760,  vMax: 0.28, omegaMax: 0.00519, alphaMax: 0.00018, accel: 0.0075, role: '高速战列·机动重舰' },
-  '巡洋': { hullLen: 25, realLengthM: 570,  vMax: 0.34, omegaMax: 0.00895, alphaMax: 0.00032, accel: 0.0090, role: '机动主力' },
-  '驱逐': { hullLen: 18, realLengthM: 260,  vMax: 0.52, omegaMax: 0.02364, alphaMax: 0.00090, accel: 0.0130, role: '快速迂回·不宜硬拼' },
+  '高战': { hullLen: 33, realLengthM: 760,  vMax: 0.28, omegaMax: 0.00519, alphaMax: 0.00018, accel: 0.00066, role: '高速战列·机动重舰' },
+  '巡洋': { hullLen: 25, realLengthM: 570,  vMax: 0.34, omegaMax: 0.00895, alphaMax: 0.00032, accel: 0.00096, role: '机动主力' },
+  '驱逐': { hullLen: 18, realLengthM: 260,  vMax: 0.52, omegaMax: 0.02364, alphaMax: 0.00090, accel: 0.00217, role: '快速迂回·不宜硬拼' },
   // ⚠ hullLen = 42：部署期空母走 isFlagship 分支（shipLen=42，BattleScene:1586-1588）
-  '空母': { hullLen: 42, realLengthM: 1100, vMax: 0.16, omegaMax: 0.00182, alphaMax: 0.00006, accel: 0.0042, role: '几乎不能转向' },
+  '空母': { hullLen: 42, realLengthM: 1100, vMax: 0.16, omegaMax: 0.00182, alphaMax: 0.00006, accel: 0.00021, role: '几乎不能转向' },
   // ⚠ hullLen = 18：部署期「其余 → 18」兜底分支（BattleScene:1593）
-  '舰载': { hullLen: 18, realLengthM: 180,  vMax: 1.20, omegaMax: 1.00000, alphaMax: 0.05000, accel: 0.0300, role: '特殊单位·随母舰' },
-  '突击': { hullLen: 33, realLengthM: 520,  vMax: 0.46, omegaMax: 0.01095, alphaMax: 0.00040, accel: 0.0120, role: '高速突击' },
-  '电子': { hullLen: 25, realLengthM: 480,  vMax: 0.30, omegaMax: 0.00789, alphaMax: 0.00028, accel: 0.0080, role: '支援' },
-  '补给': { hullLen: 40, realLengthM: 1800, vMax: 0.16, omegaMax: 0.00160, alphaMax: 0.00005, accel: 0.0040, role: '极重·后勤核心' },
+  '舰载': { hullLen: 18, realLengthM: 180,  vMax: 1.20, omegaMax: 1.00000, alphaMax: 0.05000, accel: 0.01118, role: '特殊单位·随母舰' },
+  '突击': { hullLen: 33, realLengthM: 520,  vMax: 0.46, omegaMax: 0.01095, alphaMax: 0.00040, accel: 0.00173, role: '高速突击' },
+  '电子': { hullLen: 25, realLengthM: 480,  vMax: 0.30, omegaMax: 0.00789, alphaMax: 0.00028, accel: 0.00076, role: '支援' },
+  '补给': { hullLen: 40, realLengthM: 1800, vMax: 0.16, omegaMax: 0.00160, alphaMax: 0.00005, accel: 0.00020, role: '极重·后勤核心' },
 });
 
 /** 兜底档案：未知舰种按巡洋处理（不做死代码，直接给可跑的中间值） */
@@ -121,9 +121,14 @@ export function turn180Seconds(k: ShipKinematics): number {
   return k.omegaMax > 0 ? (Math.PI / k.omegaMax) * (1000 / 60) / 1000 : Infinity;
 }
 
-/** 0→95% 速度耗时（秒@60fps）。指数趋近 v += (vd−v)·a·dt ⇒ t95 = 3/a 帧。 */
+/**
+ * 0→95% 速度耗时（秒@60fps）。
+ * ⚠ [v73] **硬上限（推力）语义**：帧数 = 0.95·vMax/accel。
+ *   旧实现用指数趋近的 3/accel ⇒ 与实际的推力积分差 13.6 倍 ⇒ 标定完全失真。
+ *   本表 accel 已按硬上限语义重新标定（战列 accel 0.0060 → 0.00042）。
+ */
 export function speedRampSeconds(k: ShipKinematics): number {
-  return k.accel > 0 ? (3 / k.accel) * (1000 / 60) / 1000 : Infinity;
+  return k.accel > 0 ? ((0.95 * k.vMax) / k.accel) * (1000 / 60) / 1000 : Infinity;
 }
 
 // ══════════════════════════════════════════════════════════════════════

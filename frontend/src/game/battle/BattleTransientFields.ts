@@ -26,6 +26,8 @@ export const BATTLE_TRANSIENT_FIELDS: readonly string[] = [
   '_slotFlip',
   // [v71] reform 起始时的阵面朝向（SLOT_FLIP 的 90° 判据比较基准）
   '_reformFromFacing',
+  // [v73] 紧凑转收拢系数（0=展开 / 1=完全收拢；战局重开必须复位）
+  '_compactTurn',
 ];
 
 const TRANSIENT_SET: ReadonlySet<string> = new Set(BATTLE_TRANSIENT_FIELDS);

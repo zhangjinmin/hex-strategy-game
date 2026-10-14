@@ -265,6 +265,12 @@ const DETACH_SPACING = 200;
 /** 阵型朝向的跟随速率（rad/帧）= 90°/s。输入已是**平滑过的实际速度方向**，此处限速仅防抖。 */
 const FORM_FACING_RATE = Math.PI / 120;
 /**
+ * [v73] 紧凑转时横向偏移的保留比例（0.45 ⇒ 收拢到 45%，halfWidth 约减半）。
+ *   物理依据：ω ≤ vMax/halfWidth ⇒ halfWidth 减半 ⇒ ω 上限翻倍 ⇒ 掉头时间减半。
+ *   0.45 而非更小：保留足够阵型辨识度（不会缩成一个点），又能显著提速。
+ */
+const COMPACT_TURN_LATERAL_KEEP = 0.45;
+/**
  * [v71] reform 结束的阵位收敛阈值（px）。
  * · 含义：全体舰船到各自槽位的最大偏差 ≤ 此值 ⇒ 认为「已就位」，可恢复巡航。
  * · 取值依据：排距 FORMATION_SPACING=26 的 ~23%（6px）—— 略严于"看起来齐了"，
@@ -7389,16 +7395,56 @@ export class BattleScene extends Phaser.Scene {
             // 吸收补给/撤退/地形倍率的逐帧硬切（否则目标一变速度瞬变 → 发飘/瞬移感）。
             const desiredVX = rawVX, desiredVY = rawVY;   // 本帧期望位移（已含 dt 与各倍率）
             if (typeof fleet.vx !== 'number') { fleet.vx = 0; fleet.vy = 0; }
-            // [v69] 惯性/限速：时间常数由**舰种 accel** 决定（面积加权）。
-            //   战列 accel=0.0060 ⇒ τ≈2.8s，0→95% 需 8.3s（旧 FLEET_ACCEL 0.055 ⇒ 0.81s，快 10 倍）。
-            //   这是"战舰有质量"的第一来源：起步慢、停船慢、变向有惯性。
+            // [v73] **推力硬上限**积分（取代指数趋近）。
+            //
+            //   指数趋近的问题：v += (vd−v)·a·dt 是**一阶低通**，永远达不到 vd，
+            //     且改向时速度按指数衰减 ⇒ 「飘」。太空是真空：不给推力就匀速直行，
+            //     改变速度必须花时间 ⇒ 硬上限 |Δv| ≤ a·level·dt 才是"战舰有质量"。
+            //
+            //   物理量级（与 fleetRigid 台架同源）：
+            //     · 起步：0→95% 需 0.95/accel 帧（战列 accel=0.006 ⇒ 8.3s）
+            //     · 停船：距离 = v²/(2a)（战列 v=0.22 ⇒ 4.03px）
+            //     · 改向：垂直分量被 a·dt 逐帧吃掉 ⇒ 有惯性、不发飘
+            //
             //   ⚠ 取 min(kinProfile.accel, FLEET_ACCEL)：应急（溃散 3× 加速）不得慢于旧值，
             //     否则撤退/溃散会被新参数拖成龟速（v33 溃散档依赖速度倍率生效）。
-            const accel = Math.min(1, Math.min(kinProfile.accel, FLEET_ACCEL) * dt);
-            fleet.vx += (desiredVX - fleet.vx) * accel;
-            fleet.vy += (desiredVY - fleet.vy) * accel;
+            const kinAccel = Math.min(kinProfile.accel, FLEET_ACCEL);
+            // [v73] **加速度随推力档缩放**：level = 期望速率 / 巡航速率。
+            //   ⚠ 必须缩放，否则溃散档（期望速率 3× vMax）会用同一 accel
+            //     ⇒ 达到溃散速度要 3× 时间（战列 25s）⇒ 撤退变龟速。
+            //   缩放后"相对加速时间"恒定：任何倍率下都是 8.3s 达到该档的 95%。
+            //   ⚠ level 无上限钳制：溃散/撤退倍率本就 >1，钳住会让高倍率失效。
+            const _desiredMag = Math.hypot(desiredVX, desiredVY);
+            const _level = kinProfile.vMax > 0 ? _desiredMag / kinProfile.vMax : 1;
+            const dvCap = kinAccel * Math.max(0, _level) * dt;  // 本帧允许的速度变化量
+            let dvx = desiredVX - fleet.vx;
+            let dvy = desiredVY - fleet.vy;
+            const dvMag = Math.hypot(dvx, dvy);
+            if (dvMag > dvCap && dvMag > 1e-9) {
+                dvx = (dvx / dvMag) * dvCap;                   // 只走允许的量，余量下帧继续
+                dvy = (dvy / dvMag) * dvCap;
+            }
+            fleet.vx += dvx;
+            fleet.vy += dvy;
             fleet.x += fleet.vx;
             fleet.y += fleet.vy;
+
+            // ── [v73] **紧凑转**（compact turn）────────────────────────────
+            //   物理约束：ω ≤ vMax/halfWidth（fleetRigid.omegaCapFor）。
+            //   大编队 halfWidth 大 ⇒ ω 上限小 ⇒ 180° 掉头 60~95s ⇒ **不可玩**。
+            //   解法（对应真实海军"纵队转弯"）：转向期间把阵型**横向收拢**到 45%，
+            //   halfWidth 减半 ⇒ ω 上限翻倍 ⇒ 掉头时间减半；转完再展开。
+            //   ⚠ 这是"改变编队几何"而非"让船画弧"—— 外翼舰只是离中心更近，
+            //     不需要超出推力的横向速度 ⇒ 不会散架。
+            {
+                const _ct = (fleet as any)._compactTurn as number | undefined;
+                const wantCompact = ((fleet as any)._uturn === true) || control.phase === 'turn';
+                const target = wantCompact ? 1 : 0;
+                // 收拢/展开速率：1.2s 完成（够快不至于拖慢转向，够慢不至突兀）
+                const step = 0.85 * dt;
+                const next = Math.max(0, Math.min(1, (_ct ?? 0) + (target > (_ct ?? 0) ? step : -step)));
+                (fleet as any)._compactTurn = next;
+            }
 
             // [v47 wheel-and-reform] 阵面朝向（formFacing）唯一真源 —— "原地转向 → 列队重排"的实现体：
             //   · 未初始化 → 建（= 部署朝向）；
@@ -7412,7 +7458,11 @@ export class BattleScene extends Phaser.Scene {
                 const ff0 = (fleet as any).formFacing;
                 if (typeof ff0 !== 'number') {
                     (fleet as any).formFacing = fleet.facingSmooth ?? fleet.facingAngle ?? 0;
-                } else if (control.phase === 'reform') {
+                } else if (control.phase === 'reform' || (fleet as any)._uturn !== true) {
+                    // [v73] **所有非协议期**都同步（原仅 reform 相）。
+                    //   cruise 时若阵面冻结，转向一开始阵面滞后 ⇒ 槽位目标相对舰船公转
+                    //   ⇒ "阵型指向与移动方向不一致"（图1 症状）回归。
+                    //   reform 与 cruise 走同一条同步路径 ⇒ 阵型朝向恒等于舰队朝向。
                     // [v71] **格位身份反转只对「真正的掉头」生效**（v70 的缺陷已修）。
                     //
                     //   v70 症状：45° 转向也出现前后阵型大幅变动。根因 = 门限缺失：
@@ -7463,9 +7513,12 @@ export class BattleScene extends Phaser.Scene {
                     //   正确口径：阵面与舰首**同速旋转**，两者相对角差恒为 0
                     //   ⇒ 槽位目标相对舰船近似静止 ⇒ 无论 45° 还是 180° 都不公转、不画圈。
                     //   ⚠ 必须**不加** max 兜底：一旦兜底值 > 舰首角速率，公转立刻回来。
-                    const ffRate = kinOmegaNow * dt;
+                    // [v73] 阵面与舰首**严格同步**（同一角速率积分，差恒为 0）。
+                    //   这是刚体模型的直接结果：阵面 = 舰队朝向，一体的。
+                    //   ⚠ 绝对不要加任何兜底速率：一旦兜底值 > 舰首角速率，
+                    //     阵面就会"超前"于舰首 ⇒ 槽位目标相对舰船公转 ⇒ 画圈/挤压回归。
                     (fleet as any).formFacing = advanceFormationFacing(
-                        ff0, fleet.facingSmooth ?? ff0, ffRate,
+                        ff0, fleet.facingSmooth ?? ff0, kinOmegaNow * dt,
                     );
                 }
             }
@@ -7635,8 +7688,15 @@ export class BattleScene extends Phaser.Scene {
                 //   不再用 `facingSmooth`（舰首朝向）—— 后者会让阵型随舰首转身**绕中心画圆**，
                 //   与"战舰各自缓慢转身"正相反（这正是用户第三次反馈的精确来源）。
                 const _ff = (fleet as any).formFacing ?? fleet.facingSmooth;
-                const rx = ox * Math.cos(_ff) - oy * Math.sin(_ff);
-                const ry = ox * Math.sin(_ff) + oy * Math.cos(_ff);
+                // [v73] **紧凑转**：转向期间把阵型横向（lateral）分量收拢。
+                //   ox/oy 是阵型格位的纵向/横向偏移（格位单位 × formSpacing）。
+                //   只压 lateral（横向）不压 along（纵向）⇒ 纵队变密、横队变窄，
+                //   但首尾次序不变 ⇒ 视觉是"收拢再展开"，不是"重排"。
+                //   ⚠ 只作用于**槽位目标**，不影响 u.sprite 实际位置 ⇒ 船自己会
+                //     沿直线走近的新槽位（stepShipSlotFollow 的既有行为）。
+                const _ctK = 1 - COMPACT_TURN_LATERAL_KEEP * ((fleet as any)._compactTurn ?? 0);
+                const rx = ox * Math.cos(_ff) - (oy * _ctK) * Math.sin(_ff);
+                const ry = ox * Math.sin(_ff) + (oy * _ctK) * Math.cos(_ff);
 
 
                 const targetUnitX = fleet.x + rx;

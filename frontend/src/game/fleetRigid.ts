@@ -220,9 +220,17 @@ export function stopDistance(v: number, accel: number): number {
   return accel > 0 ? (v * v) / (2 * accel) : Infinity;
 }
 
-/** 0→95% 速度耗时（秒@60fps）= 3/accel 帧 */
-export function rampSeconds(accel: number): number {
-  return accel > 0 ? (3 / accel) * (1000 / 60) / 1000 : Infinity;
+/**
+ * 0→95% 速度耗时（秒@60fps）。
+ * ⚠ [v73] 硬上限语义：线性加速 ⇒ 帧数 = 0.95·vMax/accel。
+ *   **不是** 3/accel（那是"指数趋近"的 3τ，本模块不用指数趋近）。
+ *   两种语义差 13.6 倍（accel=0.006 时：线性 0.6s vs 指数 8.3s），
+ *   混淆会让"战舰有质量"的设计意图完全落空。
+ * @param accel 满速档位下的加速度（px/帧²）
+ * @param vMax  巡航速度（px/帧）
+ */
+export function rampSeconds(accel: number, vMax = 1): number {
+  return accel > 0 ? ((0.95 * vMax) / accel) * (1000 / 60) / 1000 : Infinity;
 }
 
 /** 180° 掉头耗时（秒@60fps）= π/ω × 60 */

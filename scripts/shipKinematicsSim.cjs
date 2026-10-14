@@ -54,6 +54,14 @@ console.log('\n=== C. 加速：推力有限性 ===');
   check('加速排序：空母 > 战列 > 巡洋 > 驱逐（越重越慢起步）',
     a['空母'] > a['战列'] && a['战列'] > a['巡洋'] && a['巡洋'] > a['驱逐'],
     `空母${a['空母'].toFixed(1)} 战列${a['战列'].toFixed(1)} 巡洋${a['巡洋'].toFixed(1)} 驱逐${a['驱逐'].toFixed(1)}`);
+  // [v73] 硬上限语义自洽：帧数 = 0.95·vMax/accel，与 speedRampSeconds 一致
+  for (const ct of ['战列', '巡洋', '驱逐']) {
+    const k = K.SHIP_KINEMATICS[ct];
+    const frames = (0.95 * k.vMax) / k.accel;
+    check(`${ct} accel 与 ramp 自洽（0.95·vMax/accel）`,
+      Math.abs(K.speedRampSeconds(k) - frames / 60) < 0.05,
+      `${frames.toFixed(0)}帧 / ${K.speedRampSeconds(k).toFixed(1)}s`);
+  }
   check('补给起步最慢（>=12s）', a['补给'] >= 12, a['补给'].toFixed(1) + 's');
 }
 

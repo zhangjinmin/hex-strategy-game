@@ -35,11 +35,16 @@ console.log('\n=== A. 编队约束：ω ≤ vMax/halfWidth ===');
 console.log('\n=== B. 推力有限性：起步慢、停船慢 ===');
 {
   // 0→95% 速度
-  // rampSeconds 内部：(3/accel) 帧 × (1000/60) ms/帧 ÷ 1000 = 秒
-  check('rampSeconds = 3/accel 帧折秒',
-    near(R.rampSeconds(0.006), (3 / 0.006) * (1000 / 60) / 1000, 1e-3),
-    R.rampSeconds(0.006).toFixed(3) + 's');
-  check('重舰（accel 0.006）起步 8.3s', near(R.rampSeconds(0.006), 8.33, 0.05), R.rampSeconds(0.006).toFixed(2));
+  // [v73] 硬上限语义：帧数 = 0.95·vMax/accel（**不是** 3/accel 的指数趋近）
+  check('rampSeconds = 0.95·vMax/accel（硬上限，非指数趋近）',
+    near(R.rampSeconds(0.006, 0.22), (0.95 * 0.22 / 0.006) * (1000 / 60) / 1000, 1e-3),
+    R.rampSeconds(0.006, 0.22).toFixed(2) + 's');
+  check('硬上限语义比指数趋近快 13.6 倍（语义混淆的量化后果）',
+    R.rampSeconds(0.006, 0.22) < (3 / 0.006) * (1000 / 60) / 1000 / 10,
+    `${R.rampSeconds(0.006, 0.22).toFixed(2)}s vs 8.33s`);
+  // 注意：8.3s 需配 vMax=0.22 的硬上限 accel=0.00042，而非指数趋近的 0.006
+  check('战列（accel 0.00042, vMax 0.22）起步 8.3s',
+    near(R.rampSeconds(0.00042, 0.22), 8.33, 0.15), R.rampSeconds(0.00042, 0.22).toFixed(2) + 's');
   check('停船距离 = v²/(2a)', near(R.stopDistance(0.22, 0.006), 0.22 * 0.22 / 0.012, 1e-6));
   check('高速停船距离显著（不能瞬停）', R.stopDistance(0.22, 0.006) > 3, R.stopDistance(0.22, 0.006).toFixed(2) + 'px');
   check('加速度越大停船越短', R.stopDistance(0.22, 0.006) > R.stopDistance(0.22, 0.013));
