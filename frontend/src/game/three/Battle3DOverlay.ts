@@ -1029,6 +1029,15 @@ export class Battle3DOverlay {
   private hexR = 26;
   /** 地图跨度（`buildSpaceWorld` 时计算：max(宽,高)），固定雾参数与相机预设用 */
   private mapSpan = 0;
+  /** [v76] 初始相机高度（相机取景时的 y）。缩放档判据的基准 —— 见 updateLodTier。 */
+  private initCamY = 0;
+  /**
+   * [v76] 当前 LOD 档位。用户明确要求「近景要全模型」（两次实报近景点模共存）。
+   * ⚠ 判据必须用**相机高度**（camera.position.y），不能用
+   *   `camera.position.distanceTo(controls.target)` —— 后者被"跟随舰队"逻辑污染
+   *   （只移 target 不移 position ⇒ 测的是舰队距相机多远，不是缩放级别）。
+   */
+  private lodNear = false;
   // （原 `tileByKey` + `tileKey(q,r)` 整数编码：只服务六棱柱 `heightAtPx` 查询，已随之删除）
 
   /**
@@ -1524,7 +1533,7 @@ export class Battle3DOverlay {
         for (const v of list) {
           sx += v.u.sprite.x; sy += v.u.sprite.y; n++;
           pmin = Math.min(pmin, v.px); pmax = Math.max(pmax, v.px);
-          if (v.px >= MESH_IN_HI) near++; else if (v.px >= DOT_IN_LO) mid++; else far++;
+          if (v.px >= this.lodHi) near++; else if (v.px >= DOT_IN_LO) mid++; else far++;
         }
         const px = list.map((v) => v.px).sort((a, b) => a - b);
         const centX = n ? sx / n : 0, centY = n ? sy / n : 0;
@@ -2410,6 +2419,7 @@ export class Battle3DOverlay {
     this.controls.minDistance = this.hexR * 4;
     this.controls.maxDistance = dist * 2.2;
     this.controls.update();
+    this.initCamY = Math.abs(this.camera.position.y);   // [v76] 缩放档判据基准
     this.syncClipPlanes(this.camera.position.distanceTo(this.controls.target), true);
 
     // 选中环按空间尺度
@@ -2965,7 +2975,7 @@ export class Battle3DOverlay {
     // 参考舰长取战列舰：与 demo 的 SHIP_LEN 同为"单位长度"语义
     const refPx = this.pxOf(this.controls.target, this.dimsOf('battleship').L);
     const fadeOut = 1 - sstep(DOT_IN_LO, DOT_IN_HI, refPx);
-    const meshOff = 1 - sstep(MESH_IN_LO, MESH_IN_HI, refPx);
+    const meshOff = 1 - sstep(this.lodLo, this.lodHi, refPx);
     // 【标记层可见性策略】远景：填充 = 1（此时它是唯一的舰队表示）
     //   中景：填充 → MARKER_FLOOR(0.05)、描边 → MARKER_FLOOR_OUTLINE(0.35)（退成"队形轮廓"）
     //   近景：随 meshOff 归零（实体已能表达阵型）
@@ -3546,7 +3556,40 @@ export class Battle3DOverlay {
     }
   }
 
+  /**
+   * [v76] 按**相机高度**更新 LOD 档位（用户明确要求「近景要全模型」）。
+   *
+   * 判据：ratio = |camera.position.y| / initCamY
+   *   · ratio < 0.55（拉近）⇒ 近景档：门槛压到 5/9/6/5 ⇒ **几乎全模型**
+   *   · ratio > 0.70（拉远）⇒ 远景档：原值 14/26/17/15 ⇒ 保留点阵（雷达观感）
+   *   中间为滞回带（防相机在阈值附近抖动导致全场 grow 突变闪烁）。
+   *
+   * ⚠ 为什么用 camera.position.y 而非 distanceTo(controls.target)：
+   *   "跟随舰队"逻辑**只移动 target 不移动 position**（见 updateCamera-follow 段），
+   *   故 camD 实际是"舰队距相机多远"，与用户缩放无关 ⇒ 判档必然失效（v74 的教训）。
+   *   相机高度只受 OrbitControls dolly 影响 ⇒ 是缩放级别的可靠代理量。
+   */
+  private updateLodTier(): void {
+    const baseY = this.initCamY > 0 ? this.initCamY : 1;
+    const ratio = Math.abs(this.camera.position.y) / baseY;
+    // 滞回：已在近景时用更松的退出线（0.92），否则用进入线（0.78）。
+    //   ⚠ 阈值标定（实测）：初始 ratio = 1.00；拉近到初始的 78% 以内即为近景。
+    //     dist=400 ⇒ 0.50 近景 / 600 ⇒ 0.74 近景 / 806（初始）⇒ 1.00 远景。
+    //   初版用 0.55/0.70 过严 —— 只拉近 25%（dist 600）就退回远景档，
+    //   而用户的"近景"未必拉到极限。
+    const enter = this.lodNear ? 0.92 : 0.78;
+    const next = ratio < enter;
+    if (next !== this.lodNear) this.lodNear = next;
+  }
+
+  /** [v76] 当前档位的四个阈值（近景档极低 ⇒ 近景全模型；远景档原值 ⇒ 保留点阵） */
+  private get lodLo(): number { return this.lodNear ? 5 : MESH_IN_LO; }
+  private get lodHi(): number { return this.lodNear ? 9 : MESH_IN_HI; }
+  private get lodKeep(): number { return this.lodNear ? 6 : MESH_KEEP; }
+  private get lodDrop(): number { return this.lodNear ? 5 : MESH_DROP; }
+
   private syncShips(dt: number) {
+    this.updateLodTier();   // [v76] 先定档，同帧内所有消费点读一致值
     const bs = this.battleScene;
     const fleets: any[] = typeof (bs as any).getRenderableFleets === 'function'
       ? (bs as any).getRenderableFleets()
@@ -3687,9 +3730,9 @@ export class Battle3DOverlay {
     for (const v of vis.values()) {
       if (this.ships.has(v.key)) {
         // 已持实体：低于滞回下阈才归还（滞回避免相机推拉时每帧 buildShip/dispose 造成卡顿）
-        if (v.fleetPx >= MESH_DROP) cand.push(v);
+        if (v.fleetPx >= this.lodDrop) cand.push(v);
         else if (dropped < MESH_DROP_PER_FRAME) { this.dropMesh(v.key); dropped++; }
-      } else if (v.fleetPx >= MESH_KEEP) {
+      } else if (v.fleetPx >= this.lodKeep) {
         cand.push(v);
       }
     }
@@ -3851,7 +3894,7 @@ export class Battle3DOverlay {
       v.x = x; v.y = y; v.z = z;
       v.yaw = g.rotation.y;
       // [v75] 用 fleetPx（舰队代表）⇒ 整队同步长出/淡出，同队不会一半模型一半点
-      v.grow = sstep(MESH_IN_LO, MESH_IN_HI, v.fleetPx);
+      v.grow = sstep(this.lodLo, this.lodHi, v.fleetPx);
     }
 
     // 销毁已死 unit 的实体（生命结束才销毁；低于滞回下阈的已在第二遍归还）
@@ -4030,12 +4073,12 @@ export class Battle3DOverlay {
     this.flagVisBuf.length = 0;   // 【旗舰方案】第三遍用的旗舰 UnitVis 缓存（复用，不 new）
     for (const v of this.unitVis.values()) {
       const px = v.px;
-      if (px >= MESH_IN_HI) near += 1;
+      if (px >= this.lodHi) near += 1;
       else if (px >= DOT_IN_LO) mid += 1;
       else far += 1;
 
       const hasMesh = this.ships.has(v.key);
-      if (!hasMesh && v.fleetPx >= MESH_KEEP) pooled += 1;
+      if (!hasMesh && v.fleetPx >= this.lodKeep) pooled += 1;
       // 【旗舰方案】旗舰 UnitVis 直接在此登记（flagshipSet 装的是 u，UnitVis.u 才是同一个 u）：
       // 第三遍据此补写"自身没长实体却被同格邻舰挤掉的旗舰"，无需从 u 反查 key（避免 key 规则耦合）。
       if (this.flagshipSet.has(v.u)) this.flagVisBuf.push(v);
