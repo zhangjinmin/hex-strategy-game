@@ -278,6 +278,14 @@ interface UnitVis {
   grow: number;
   /** 舰首朝向（绕 y 弧度）。点团微网格要跟着舰体一起转，否则过渡帧里点团是歪的 */
   yaw: number;
+  /**
+   * [v75] **所属舰队的代表 px**（全队成员 px 的均值）。
+   * LOD 决策一律用它，而不是逐舰的 `px`。理由（用户实报「同一个舰队看到的点+模型」）：
+   * 逐舰判定时，同一舰队内近处舰拿到实体、远处舰保持光点 ⇒ 视觉上"点模混合"。
+   * 用舰队均值 ⇒ **整队一起切档**（要么全模型、要么全点），符合"舰队是一个整体"的感知。
+   * ⚠ `px` 保留原语义（点径/分桶/尺寸用它），仅**决策**改用 `fleetPx`。
+   */
+  fleetPx: number;
 }
 /**
  * 单支分舰队的阵型标记（填充面 + 描边圈各 1 个对象）。
@@ -447,25 +455,24 @@ const FLAME_CAP = FLAME_PER_SHIP * FLAME_CAP_SHIPS;
 const DOT_IN_LO = 3.2;
 const DOT_IN_HI = 5.0;
 /** px：实体淡入区间。34px 是能看清舰体轮廓的下限，56px 后完全交给实体 */
-/* 【v73】LOD 阈值收紧（用户实报「切近景还是很多点，没切成舰船模型」）。
-   实测链：战列世界长度 L = 0.733×√3×hexR×0.40 ⇒ px = L·H/(2·tan(25°)·d)：
-     · 初始相机 d = span×0.62：大图 1550 ⇒ px≈10（**纯点**）、小图 806 ⇒ px≈19（过渡带）
-     · 旧过渡带 MESH_IN_LO(14)~MESH_IN_HI(26) 宽 12px，此区间点 alpha 仍有 0.78→0
-       ⇒ 模型与点重叠发糊，用户读作「还是点」
-   收紧后：px ≥ 15 即纯模型；9~15 为 6px 窄过渡；< 9 纯点。
-   ⇒ 相机距 ~1000（战列）以内就是纯模型，初始视角（span×0.50，见 initCamera）即可达标。
-   单调关系保持：MESH_IN_LO(9) < MESH_DROP(10) < MESH_KEEP(12) < MESH_IN_HI(15)。 */
-const MESH_IN_LO = 9;
-const MESH_IN_HI = 15;
+/* 【v75】**恢复 v60-v66 的阈值**（用户实报「最早的版本这个没问题」）。
+   v73 曾把本组收紧到 9/15/12/10，实测后果（用户截图）：
+     · 「远景状态下也能看到模型」—— px 12~17 的单位原为纯点，降门槛后变成模型
+     · 「近景同一舰队点+模型混合」—— 更多单位落进变宽的过渡带
+   ⇒ 阈值是**感知校准**过的，不应为"更早出现模型"而单方面下调。
+   回归 14/26/17/15，配下方"舰队级统一判定"解决同队混合。
+   单调关系：MESH_IN_LO(14) < MESH_DROP(15) < MESH_KEEP(17) < MESH_IN_HI(26)。 */
+const MESH_IN_LO = 14;
+const MESH_IN_HI = 26;
 /** 队内垂直层数：单一真源 = config/fleetTierLayout.ts 的 TEAM_LAYERS（5，demo 滑杆 1~5，用户定 5）。 */
 // const TEAM_LAYERS 已迁至 config/fleetTierLayout.ts（与队间档距同文件，避免两处各写一份）
 /** 默认相机俯角（弧度，35°）：0.96 rad（55°）是近俯视，垂直分层会被压成一摞读不出来。 */
 const CAM_ELEV = 0.6109;
 /** px：实体池滞回（创建阈 > 销毁阈）。缺滞回会在相机推拉时每帧 buildShip/dispose → 卡顿
  *  （随 SHIP_VISUAL_SCALE 等比下调，与 MESH_IN 同源换算） */
-/* 【v73】与 MESH_IN_LO/HI 同步收紧（旧 17/15）。px ≥ 12 即分配实体。 */
-const MESH_KEEP = 12;
-const MESH_DROP = 10;
+/* 【v75】恢复原值（v73 曾收到 12/10，见上方说明）。 */
+const MESH_KEEP = 17;
+const MESH_DROP = 15;
 /** ⚠【已过时·仅存备查】实体硬上限的历史注释。当前语义见下方 `MAX_MESHES` 的正式注释；
  *  且光点层缓冲**已改用 `DOT_SLOTS` 分配**（不再是这里的 "光点层按 MAX_MESHES 分配"）。
  *  实体硬上限。= N_MAX（兵力折算层的全场实体预算），故正常情况下不触发；留作极端机位兜底。
@@ -1022,16 +1029,6 @@ export class Battle3DOverlay {
   private hexR = 26;
   /** 地图跨度（`buildSpaceWorld` 时计算：max(宽,高)），固定雾参数与相机预设用 */
   private mapSpan = 0;
-  /**
-   * [v74] 当前生效的 LOD 阈值（远/近景两套，按相机距离切换）。
-   * 用户实报「近景依然点点和模型共存」⇒ 固定阈值在近景下仍把远处单位留成点。
-   * 近景档把门槛压到极低（几乎全模型），远景档保留点阵（雷达观感）。
-   */
-  private lod = { lo: 9, hi: 15, keep: 12, drop: 10 };
-  /** 近景档阈值：px ≥ 6 即纯模型（战场基本全模型，除极远单位） */
-  private static readonly LOD_NEAR = { lo: 3, hi: 6, keep: 4, drop: 3 };
-  /** 远景档阈值：保留点阵（雷达观感），实体只给足够近的单位 */
-  private static readonly LOD_FAR = { lo: 9, hi: 15, keep: 12, drop: 10 };
   // （原 `tileByKey` + `tileKey(q,r)` 整数编码：只服务六棱柱 `heightAtPx` 查询，已随之删除）
 
   /**
@@ -1527,7 +1524,7 @@ export class Battle3DOverlay {
         for (const v of list) {
           sx += v.u.sprite.x; sy += v.u.sprite.y; n++;
           pmin = Math.min(pmin, v.px); pmax = Math.max(pmax, v.px);
-          if (v.px >= this.lod.hi) near++; else if (v.px >= DOT_IN_LO) mid++; else far++;
+          if (v.px >= MESH_IN_HI) near++; else if (v.px >= DOT_IN_LO) mid++; else far++;
         }
         const px = list.map((v) => v.px).sort((a, b) => a - b);
         const centX = n ? sx / n : 0, centY = n ? sy / n : 0;
@@ -2403,12 +2400,11 @@ export class Battle3DOverlay {
     // ── 3. 相机取景：35° 俯角对准战场中心，距离上下限按跨度 ──
     // v6.8：网格已贴合地图本体（×1.15），相机距离同步收敛（原 1.05 是给 2.6×
     //   大平面配的取景距离，网格缩小后不变会把地图拍得过小、四周露黑边）
-    // 【v73】初始距离下调（0.62→0.50 / hexR×24→×20）：使初始视角下
-    //   战列 px 即达纯模型档（> MESH_IN_HI 15）。实测：span=1300 ⇒ d=650 ⇒ px≈23.5；
-    //   span=2500(hexR=50, L=25.4) ⇒ d=1250 ⇒ px≈23.5。
-    //   ⚠ 相机仍需能看到全图：0.50×span + 35° 俯角的视野覆盖足够（原 0.62 是给
-    //     2.6× 大平面配的余量，网格已 ×1.15 贴合地图本体，v6.8 已收紧过一次）。
-    const dist = Math.max(span * 0.50, this.hexR * 20);
+    // 【v75】**恢复 v60-v66 的取景距离**（用户实报「最早的版本这个没问题」）。
+    //   v73 曾下调到 0.50/×20 以"让初始视角就是纯模型"，但那会改变
+    //   用户已适应的工作距离（且配合已撤销的阈值收紧，把混合带挪到了常用视角）。
+    //   取景距离与 LOD 阈值是**一对**校准值，只改一个必然破坏既有观感。
+    const dist = Math.max(span * 0.62, this.hexR * 24);
     this.controls.target.set(cx, 0, -cy);
     this.camera.position.set(cx, dist * Math.sin(CAM_ELEV), -cy + dist * Math.cos(CAM_ELEV));
     this.controls.minDistance = this.hexR * 4;
@@ -2969,7 +2965,7 @@ export class Battle3DOverlay {
     // 参考舰长取战列舰：与 demo 的 SHIP_LEN 同为"单位长度"语义
     const refPx = this.pxOf(this.controls.target, this.dimsOf('battleship').L);
     const fadeOut = 1 - sstep(DOT_IN_LO, DOT_IN_HI, refPx);
-    const meshOff = 1 - sstep(this.lod.lo, this.lod.hi, refPx);
+    const meshOff = 1 - sstep(MESH_IN_LO, MESH_IN_HI, refPx);
     // 【标记层可见性策略】远景：填充 = 1（此时它是唯一的舰队表示）
     //   中景：填充 → MARKER_FLOOR(0.05)、描边 → MARKER_FLOOR_OUTLINE(0.35)（退成"队形轮廓"）
     //   近景：随 meshOff 归零（实体已能表达阵型）
@@ -3550,27 +3546,7 @@ export class Battle3DOverlay {
     }
   }
 
-  /**
-   * [v74] 按相机距离更新 LOD 阈值档位。
-   * · 近景（相机距 target < 跨度×0.45）：门槛压到 3/6 ⇒ **几乎全是模型**
-   * · 远景：保留 9/15 ⇒ 点阵（银英雷达观感，用户明确要求保留）
-   * 每帧一次，在 syncShips 开头调用（同一帧内所有消费点读到一致值）。
-   */
-  private updateLodTier(): void {
-    const span = this.mapSpan > 0 ? this.mapSpan : 2000;
-    let camD = span;
-    try {
-      camD = this.camera.position.distanceTo(this.controls.target);
-    } catch { /* 相机未就绪：用 span 走远景档 */ }
-    const isNear = camD < span * 0.45;
-    const want = isNear ? Battle3DOverlay.LOD_NEAR : Battle3DOverlay.LOD_FAR;
-    const l = this.lod;
-    if (l && l.lo === want.lo && l.hi === want.hi) return;   // 档位未变，免写
-    this.lod = { ...want };
-  }
-
   private syncShips(dt: number) {
-    this.updateLodTier();   // [v74] 先定档，同帧内所有消费点读一致值
     const bs = this.battleScene;
     const fleets: any[] = typeof (bs as any).getRenderableFleets === 'function'
       ? (bs as any).getRenderableFleets()
@@ -3661,7 +3637,7 @@ export class Battle3DOverlay {
         let vv = vis.get(key);
         if (!vv) {
           // 字段占位，随即被下方逐项覆盖；字段集合与顺序固定 = hidden class 稳定
-          vv = { key, u, fleet, x: 0, y: 0, z: 0, h: 0, seen: true, px: 0, sx: 0, sy: 0, shipLen: 0, shipW: 0, grow: 0, yaw: 0 };
+          vv = { key, u, fleet, x: 0, y: 0, z: 0, h: 0, seen: true, px: 0, sx: 0, sy: 0, shipLen: 0, shipW: 0, grow: 0, yaw: 0, fleetPx: 0 };
           vis.set(key, vv);
         }
         vv.u = u; vv.fleet = fleet; vv.seen = true;
@@ -3681,6 +3657,27 @@ export class Battle3DOverlay {
     // 放在第一遍之后、第二遍之前：二/三遍与后续各消费者见到的都只剩本帧存活单位，语义与旧 clear()+重建一致。
     for (const [k, vv2] of vis) { if (!vv2.seen) vis.delete(k); }
 
+    // ── [v75] 舰队级 LOD：算每舰队的代表 px（成员均值）并回填 ──────────────
+    //   用户实报「近景的状态下同一个舰队看到的点+模型」—— 逐舰判定时，
+    //   同队内近处舰拿到实体、远处舰保持光点 ⇒ 视觉上"点模混合"。
+    //   改为**整队统一**：用舰队成员 px 均值做一次判定 ⇒ 要么全模型、要么全点。
+    //   ⚠ 用均值而非 max：max 会让"有一艘特别近"就整队变模型（远处舰模型过小）;
+    //     均值代表"这支舰队的典型视觉尺寸"，与"舰队是一个整体"的感知一致。
+    //   ⚠ 同一舰队的所有成员在空间上聚集（阵型间距 ≪ 相机距离），
+    //     故成员 px 本就接近，均值不会掩盖真实差异。
+    {
+      const acc = new Map<any, { sum: number; n: number }>();
+      for (const v of vis.values()) {
+        let a = acc.get(v.fleet);
+        if (!a) { a = { sum: 0, n: 0 }; acc.set(v.fleet, a); }
+        a.sum += v.px; a.n += 1;
+      }
+      for (const v of vis.values()) {
+        const a = acc.get(v.fleet);
+        v.fleetPx = a && a.n > 0 ? a.sum / a.n : v.px;
+      }
+    }
+
     // ── 第二遍：实体池（MESH_KEEP/MESH_DROP 滞回，按 px 降序取前 MAX_MESHES）──
     const cand: UnitVis[] = [];
     // [v12.1 C2] 本帧**回收预算共享**：滞回回收（下阈值）与超预算回收（上阈值以上被挤出）
@@ -3690,13 +3687,13 @@ export class Battle3DOverlay {
     for (const v of vis.values()) {
       if (this.ships.has(v.key)) {
         // 已持实体：低于滞回下阈才归还（滞回避免相机推拉时每帧 buildShip/dispose 造成卡顿）
-        if (v.px >= this.lod.drop) cand.push(v);
+        if (v.fleetPx >= MESH_DROP) cand.push(v);
         else if (dropped < MESH_DROP_PER_FRAME) { this.dropMesh(v.key); dropped++; }
-      } else if (v.px >= this.lod.keep) {
+      } else if (v.fleetPx >= MESH_KEEP) {
         cand.push(v);
       }
     }
-    cand.sort((a, b) => b.px - a.px);
+    cand.sort((a, b) => b.fleetPx - a.fleetPx);
     // [WS7] 预算 = 开 governor 时随帧时自适应收缩，否则恒 = MAX_MESHES（与改动前逐位同行为）。
     // 被预算挤出的舰**不销毁光点**：writeDotLayers 对全部 unitVis 写点，故它们自然退回中景光点层。
     const budget = this.perfOn ? this.lastStats.meshBudget : MAX_MESHES;
@@ -3853,7 +3850,8 @@ export class Battle3DOverlay {
       // 回写可见性：billboard 质心用实体实际位；grow 由 meshOn 决定（三层淡化同源）
       v.x = x; v.y = y; v.z = z;
       v.yaw = g.rotation.y;
-      v.grow = sstep(this.lod.lo, this.lod.hi, v.px);
+      // [v75] 用 fleetPx（舰队代表）⇒ 整队同步长出/淡出，同队不会一半模型一半点
+      v.grow = sstep(MESH_IN_LO, MESH_IN_HI, v.fleetPx);
     }
 
     // 销毁已死 unit 的实体（生命结束才销毁；低于滞回下阈的已在第二遍归还）
@@ -3955,10 +3953,9 @@ export class Battle3DOverlay {
     const hasMesh = this.ships.has(v.key);
     // grow 只对"确实拿到实体"的舰生效：落选 / 未长成实体的舰 grow = 0 → 点满亮，绝不留洞
     const grow = hasMesh ? v.grow : 0;
-    // 【v73】模型已长出 55% 以上 ⇒ 点**完全让位**（不再只是 alpha 衰减）。
-    //   旧实现 grow=0.5 时点 alpha 仍 0.39，配 3.6px 点径在模型旁很显眼
-    //   ⇒ 用户实报「切近景还是有很多点点点」。硬阈值比连续衰减更干净。
-    if (hasMesh && grow > 0.55) return 0;
+    // 【v75】删除 v73 加的「grow>0.55 硬截断」—— 回归 v60-v66 的**连续 alpha 衰减**。
+    //   那个硬阈值虽能让点更早让位，但它是一处**未经验证的额外改动**；
+    //   用户实报「最早的版本这个没问题」⇒ 一律回归原行为，只保留已论证的改动。
     // alpha 下限 0.78：远景清楚可见。**不得再出现 alpha 被距离打到 0 的分支** ——
     // "太远"由屏幕空间点距下限 DOT_PITCH_MIN_PX 表达，不再由亮度表达。
     const a = (1 - grow) * (0.78 + 0.22 * sstep(DOT_IN_LO, DOT_IN_HI, v.px));
@@ -4033,12 +4030,12 @@ export class Battle3DOverlay {
     this.flagVisBuf.length = 0;   // 【旗舰方案】第三遍用的旗舰 UnitVis 缓存（复用，不 new）
     for (const v of this.unitVis.values()) {
       const px = v.px;
-      if (px >= this.lod.hi) near += 1;
+      if (px >= MESH_IN_HI) near += 1;
       else if (px >= DOT_IN_LO) mid += 1;
       else far += 1;
 
       const hasMesh = this.ships.has(v.key);
-      if (!hasMesh && px >= this.lod.keep) pooled += 1;
+      if (!hasMesh && v.fleetPx >= MESH_KEEP) pooled += 1;
       // 【旗舰方案】旗舰 UnitVis 直接在此登记（flagshipSet 装的是 u，UnitVis.u 才是同一个 u）：
       // 第三遍据此补写"自身没长实体却被同格邻舰挤掉的旗舰"，无需从 u 反查 key（避免 key 规则耦合）。
       if (this.flagshipSet.has(v.u)) this.flagVisBuf.push(v);
