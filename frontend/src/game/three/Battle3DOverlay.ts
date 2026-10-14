@@ -1032,6 +1032,16 @@ export class Battle3DOverlay {
   /** [v76] 初始相机高度（相机取景时的 y）。缩放档判据的基准 —— 见 updateLodTier。 */
   private initCamY = 0;
   /**
+   * [v77] 调试隐藏开关（URL 参数 `?hide=flame,stars,dots,halo`）。
+   * 用途：用户报「贴脸还有圆点」但无法确认来源 ⇒ 提供二分定位手段，
+   *   逐个隐藏候选点云，一次就能确定是哪个图层。
+   * 候选：flame=尾焰粒子 / stars=星空 / dots=舰船光点 / halo=光晕层。
+   * ⚠ 生产环境不带参数时为空集 ⇒ 零行为变更。
+   */
+  private debugHide: ReadonlySet<string> = new Set();
+  /** [v77] 星空对象引用缓存（供调试开关用；星空创建时未存字段） */
+  private _starsRef: THREE.Points | null = null;
+  /**
    * [v76] 当前 LOD 档位。用户明确要求「近景要全模型」（两次实报近景点模共存）。
    * ⚠ 判据必须用**相机高度**（camera.position.y），不能用
    *   `camera.position.distanceTo(controls.target)` —— 后者被"跟随舰队"逻辑污染
@@ -1859,6 +1869,7 @@ export class Battle3DOverlay {
       fog: false,
     }));
     pts.frustumCulled = false;
+    pts.name = 'sceneStars';   // [v77] 供调试隐藏开关 getObjectByName 定位
     this.scene.add(pts);
   }
 
@@ -3582,6 +3593,61 @@ export class Battle3DOverlay {
     if (next !== this.lodNear) this.lodNear = next;
   }
 
+  /**
+   * [v77] **近景档：点云类图层退场**（用户实报「拉到贴脸了还有圆点，这是绝对的问题」）。
+   *
+   * 贴脸时视锥内单位极少 ⇒ 不可能是"没拿到实体的舰船"（预算/阈值问题），
+   * 只能是**非舰船的点云图层**。逐项分析：
+   *   · 尾焰粒子（7/舰）：`gl_PointSize = aSize·uPix·(260/距离)`
+   *     ⇒ **距离越小点越大**（贴脸 d≈104 时约 7.5px，比远景更显眼）⇒ 头号嫌疑
+   *   · 星空：r=2500~4000、size=hexR×1.2 ⇒ 投影恒约 12px，与缩放无关（背景星）
+   * 处置：
+   *   · 尾焰粒子在近景**整体退场** —— 它本是"远景批量渲染 1 draw call"的优化产物；
+   *     近景有舰船模型 + 喷口辉光（buildEngineFx 的 flame/glow）承担尾焰语义，不必用粒子。
+   *   · 星空在近景**降透明度**（0.7→0.22）—— 保留太空感但不与"舰船圆点"混淆。
+   * ⚠ 两者都只在 `lodNear` 生效；远景档完全恢复原行为（雷达点阵观感不变）。
+   */
+  private applyNearTierLayerPolicy(): void {
+    // 尾焰粒子：近景隐藏（debugHide 显式指定 hide=flame 时同样隐藏）
+    if (this.flamePoints && !this.debugHide.has('flame')) {
+      this.flamePoints.visible = !this.lodNear;
+    }
+    // 星空：近景降透明度（缓存引用 —— 星空创建时未持字段）
+    if (!this._starsRef) {
+      this._starsRef = (this.scene.getObjectByName('sceneStars') as THREE.Points | null) ?? null;
+    }
+    if (this._starsRef && !this.debugHide.has('stars')) {
+      const m = this._starsRef.material as THREE.PointsMaterial;
+      if (m) m.opacity = this.lodNear ? 0.22 : 0.7;
+    }
+  }
+
+  /**
+   * [v77] 应用调试隐藏开关。URL 形如 `?hide=flame,stars`。
+   * ⚠ 只影响 `visible`，不改任何 LOD/分配逻辑 ⇒ 移除参数即完全恢复。
+   */
+  private applyDebugHide(): void {
+    // 惰性读一次 URL（构造期可能早于 location 可用；且参数不会中途变）
+    if (!(this as any)._debugHideParsed) {
+      (this as any)._debugHideParsed = true;
+      try {
+        const raw = new URLSearchParams(window.location.search).get('hide') || '';
+        this.debugHide = new Set(raw.split(',').map((x) => x.trim()).filter(Boolean));
+      } catch { /* 非浏览器环境：保持空集 */ }
+    }
+    if (this.debugHide.size === 0) return;
+    if (this.flamePoints) this.flamePoints.visible = !this.debugHide.has('flame');
+    if (this.dotPoints) this.dotPoints.visible = this.dotPoints.visible && !this.debugHide.has('dots');
+    if (this.haloPoints) this.haloPoints.visible = this.haloPoints.visible && !this.debugHide.has('halo');
+    if (this.debugHide.has('stars')) {
+      // 星空在 init 时创建并 add 到 scene，未持字段 ⇒ 按名字取一次并缓存
+      if (!this._starsRef) {
+        this._starsRef = (this.scene.getObjectByName('sceneStars') as THREE.Points | null) ?? null;
+      }
+      if (this._starsRef) this._starsRef.visible = false;
+    }
+  }
+
   /** [v76] 当前档位的四个阈值（近景档极低 ⇒ 近景全模型；远景档原值 ⇒ 保留点阵） */
   private get lodLo(): number { return this.lodNear ? 5 : MESH_IN_LO; }
   private get lodHi(): number { return this.lodNear ? 9 : MESH_IN_HI; }
@@ -3590,6 +3656,8 @@ export class Battle3DOverlay {
 
   private syncShips(dt: number) {
     this.updateLodTier();   // [v76] 先定档，同帧内所有消费点读一致值
+    this.applyDebugHide();  // [v77] 调试隐藏开关（生产环境为空集 ⇒ 无行为变更）
+    this.applyNearTierLayerPolicy();   // [v77] 近景档：粒子/星空退场
     const bs = this.battleScene;
     const fleets: any[] = typeof (bs as any).getRenderableFleets === 'function'
       ? (bs as any).getRenderableFleets()
