@@ -97,14 +97,23 @@ check('legacy contract is not silently restored (facingAngle must not be re-boun
   // 同时确认 distToTarget>5 分支仍保留原有的 facingAngle 写入（未被误伤）。
   // 窗口需 ≥ 实测距离（BattleScene 中两处相距约 700+ 字符）。
   assert.match(sceneSource, /distToTarget > 5[\s\S]{0,1200}fleet\.facingAngle = fAngle/);
-  // [v66 语义订正 2026-10-02] 逐舰舰首契约：交战中跟**自身航迹**（防「舰首朝前、船体横移」侧滑，
-  //   W1-W3 9c099a5 的 `|| isEngaging` 裸项正是侧滑回归来源）；刚性锁舰队朝向仅限
-  //   拖刀 (isRetreating && isEngaging) **两项与** / _uturn / _backing / 近静止。
-  //   旧金标 `|| isEngaging`（交战即刚性）已废弃，负向守卫防止回退。
-  const rigid = sceneSource.match(/const _rigid = [\s\S]{0,220}?;/);
-  assert.ok(rigid, '_rigid 声明存在');
-  assert.match(rigid[0], /\(isRetreating && isEngaging\)/);
-  assert.doesNotMatch(rigid[0], /\|\|\s*isEngaging\b/);
+  // [v74 契约订正 2026-10-14] **舰首朝向 = 舰队姿态，始终**。
+  //
+  // 旧契约（v47~v73）：`_wantH = atan2(_dy,_dx)` 用自身位移差分求舰首方向，
+  //   并用 `_rigid` 在拖刀/掉头/近静止时例外锁舰队朝向。
+  // 为什么废弃（用户实报「近景各种朝向的舰船都有，朝向乱七八糟」）：
+  //   刚体模型下每舰位移 = 中心位移 + **旋转分量**，两者方向不同：
+  //     ① 紧凑转压缩 lateral ⇒ 每舰产生与舰队朝向**垂直**的位移
+  //     ② 推力硬上限 ⇒ 惯性滑行（中心速度旧方向 ≠ 队列姿态新方向）
+  //     ③ 每舰位置不同 ⇒ 旋转分量不同 ⇒ **每舰朝向各不相同**
+  // 新契约：舰首朝向直接取舰队姿态 `facingSmooth`（刚体 heading）。
+  //   战舰允许惯性滑行（速度 ≠ 舰首方向）—— 这是"重"的体现，不是要修的侧滑。
+  assert.match(sceneSource, /const _wantH = fleet\.facingSmooth \?\? fleet\.facingAngle \?\? fAngle;/);
+  // 负向守卫：位移差分路径必须彻底移除（回退即"朝向乱"复发）
+  assert.doesNotMatch(sceneSource, /_wantH\s*=\s*\(_rigid[\s\S]{0,80}Math\.atan2\(_dy, _dx\)/,
+    'displacement-diff heading path must stay removed (v74)');
+  assert.doesNotMatch(sceneSource, /const _rigid = /,
+    '_rigid block must stay removed (v74: no per-ship rigid exception needed)');
 });
 check('capture mission ignores objectives already owned by an allied faction', () => {
   const missionBody = sceneSource.slice(sceneSource.indexOf("m.type === 'capture_planet'"), sceneSource.indexOf("m.type === 'hold_point'"));

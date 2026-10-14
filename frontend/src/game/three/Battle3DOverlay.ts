@@ -1022,6 +1022,16 @@ export class Battle3DOverlay {
   private hexR = 26;
   /** 地图跨度（`buildSpaceWorld` 时计算：max(宽,高)），固定雾参数与相机预设用 */
   private mapSpan = 0;
+  /**
+   * [v74] 当前生效的 LOD 阈值（远/近景两套，按相机距离切换）。
+   * 用户实报「近景依然点点和模型共存」⇒ 固定阈值在近景下仍把远处单位留成点。
+   * 近景档把门槛压到极低（几乎全模型），远景档保留点阵（雷达观感）。
+   */
+  private lod = { lo: 9, hi: 15, keep: 12, drop: 10 };
+  /** 近景档阈值：px ≥ 6 即纯模型（战场基本全模型，除极远单位） */
+  private static readonly LOD_NEAR = { lo: 3, hi: 6, keep: 4, drop: 3 };
+  /** 远景档阈值：保留点阵（雷达观感），实体只给足够近的单位 */
+  private static readonly LOD_FAR = { lo: 9, hi: 15, keep: 12, drop: 10 };
   // （原 `tileByKey` + `tileKey(q,r)` 整数编码：只服务六棱柱 `heightAtPx` 查询，已随之删除）
 
   /**
@@ -1517,7 +1527,7 @@ export class Battle3DOverlay {
         for (const v of list) {
           sx += v.u.sprite.x; sy += v.u.sprite.y; n++;
           pmin = Math.min(pmin, v.px); pmax = Math.max(pmax, v.px);
-          if (v.px >= MESH_IN_HI) near++; else if (v.px >= DOT_IN_LO) mid++; else far++;
+          if (v.px >= this.lod.hi) near++; else if (v.px >= DOT_IN_LO) mid++; else far++;
         }
         const px = list.map((v) => v.px).sort((a, b) => a - b);
         const centX = n ? sx / n : 0, centY = n ? sy / n : 0;
@@ -2959,7 +2969,7 @@ export class Battle3DOverlay {
     // 参考舰长取战列舰：与 demo 的 SHIP_LEN 同为"单位长度"语义
     const refPx = this.pxOf(this.controls.target, this.dimsOf('battleship').L);
     const fadeOut = 1 - sstep(DOT_IN_LO, DOT_IN_HI, refPx);
-    const meshOff = 1 - sstep(MESH_IN_LO, MESH_IN_HI, refPx);
+    const meshOff = 1 - sstep(this.lod.lo, this.lod.hi, refPx);
     // 【标记层可见性策略】远景：填充 = 1（此时它是唯一的舰队表示）
     //   中景：填充 → MARKER_FLOOR(0.05)、描边 → MARKER_FLOOR_OUTLINE(0.35)（退成"队形轮廓"）
     //   近景：随 meshOff 归零（实体已能表达阵型）
@@ -3540,7 +3550,27 @@ export class Battle3DOverlay {
     }
   }
 
+  /**
+   * [v74] 按相机距离更新 LOD 阈值档位。
+   * · 近景（相机距 target < 跨度×0.45）：门槛压到 3/6 ⇒ **几乎全是模型**
+   * · 远景：保留 9/15 ⇒ 点阵（银英雷达观感，用户明确要求保留）
+   * 每帧一次，在 syncShips 开头调用（同一帧内所有消费点读到一致值）。
+   */
+  private updateLodTier(): void {
+    const span = this.mapSpan > 0 ? this.mapSpan : 2000;
+    let camD = span;
+    try {
+      camD = this.camera.position.distanceTo(this.controls.target);
+    } catch { /* 相机未就绪：用 span 走远景档 */ }
+    const isNear = camD < span * 0.45;
+    const want = isNear ? Battle3DOverlay.LOD_NEAR : Battle3DOverlay.LOD_FAR;
+    const l = this.lod;
+    if (l && l.lo === want.lo && l.hi === want.hi) return;   // 档位未变，免写
+    this.lod = { ...want };
+  }
+
   private syncShips(dt: number) {
+    this.updateLodTier();   // [v74] 先定档，同帧内所有消费点读一致值
     const bs = this.battleScene;
     const fleets: any[] = typeof (bs as any).getRenderableFleets === 'function'
       ? (bs as any).getRenderableFleets()
@@ -3660,9 +3690,9 @@ export class Battle3DOverlay {
     for (const v of vis.values()) {
       if (this.ships.has(v.key)) {
         // 已持实体：低于滞回下阈才归还（滞回避免相机推拉时每帧 buildShip/dispose 造成卡顿）
-        if (v.px >= MESH_DROP) cand.push(v);
+        if (v.px >= this.lod.drop) cand.push(v);
         else if (dropped < MESH_DROP_PER_FRAME) { this.dropMesh(v.key); dropped++; }
-      } else if (v.px >= MESH_KEEP) {
+      } else if (v.px >= this.lod.keep) {
         cand.push(v);
       }
     }
@@ -3823,7 +3853,7 @@ export class Battle3DOverlay {
       // 回写可见性：billboard 质心用实体实际位；grow 由 meshOn 决定（三层淡化同源）
       v.x = x; v.y = y; v.z = z;
       v.yaw = g.rotation.y;
-      v.grow = sstep(MESH_IN_LO, MESH_IN_HI, v.px);
+      v.grow = sstep(this.lod.lo, this.lod.hi, v.px);
     }
 
     // 销毁已死 unit 的实体（生命结束才销毁；低于滞回下阈的已在第二遍归还）
@@ -4003,12 +4033,12 @@ export class Battle3DOverlay {
     this.flagVisBuf.length = 0;   // 【旗舰方案】第三遍用的旗舰 UnitVis 缓存（复用，不 new）
     for (const v of this.unitVis.values()) {
       const px = v.px;
-      if (px >= MESH_IN_HI) near += 1;
+      if (px >= this.lod.hi) near += 1;
       else if (px >= DOT_IN_LO) mid += 1;
       else far += 1;
 
       const hasMesh = this.ships.has(v.key);
-      if (!hasMesh && px >= MESH_KEEP) pooled += 1;
+      if (!hasMesh && px >= this.lod.keep) pooled += 1;
       // 【旗舰方案】旗舰 UnitVis 直接在此登记（flagshipSet 装的是 u，UnitVis.u 才是同一个 u）：
       // 第三遍据此补写"自身没长实体却被同格邻舰挤掉的旗舰"，无需从 u 反查 key（避免 key 规则耦合）。
       if (this.flagshipSet.has(v.u)) this.flagVisBuf.push(v);

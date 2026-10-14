@@ -7732,38 +7732,42 @@ export class BattleScene extends Phaser.Scene {
                  
                 u.sprite.setAlpha(uDist > 320 ? 0.4 : 1.0);
                 // [v47 visHeading] 逐舰物理舰首 = 跟随**自身位移航迹**（限速 UNIT_VIS_TURN_RATE×dt）。
-                //   旧实现 sprite.rotation 全舰队刚性 = facingSmooth，而每舰真实位移方向是"冲向
-                //   移动格位"的方向 —— 转弯/变阵期两者差 60~180° ⇒ 舰首朝前、船体侧滑 = 用户实报
-                //   「转向后所有战舰摇头晃脑边晃边前进」。现在舰首贴着航迹走，物理上不再侧移。
-                //   刚性例外（舰首本就不该跟航迹的姿态）：wheel 原地转向期 / 拖刀 / 顶敌倒退 / 静止。
-                //   ⚠⚠ 拖刀 = (isRetreating && isEngaging) **两项与**，不是裸 isEngaging ——
-                //   W1-W3（9c099a5）曾把条件扩大成无条件交战刚性，交战中（900px 即置位）全队舰首
-                //   锁舰队朝向、位移仍追槽位 ⇒ 侧滑 max 180°（2026-10-02 探针实测 >45° 占 2.6%）
-                //   = 用户实报「飘着移动」。交战中舰首必须跟航迹；仅拖刀允许舰首朝敌、位移后退。
-                const _ux = u.sprite.x, _uy = u.sprite.y;
-                const _dx = _ux - ((u as any)._px ?? _ux);
-                const _dy = _uy - ((u as any)._py ?? _uy);
-                (u as any)._px = _ux; (u as any)._py = _uy;
-                // [v71] 刚性判据**补上「转向期」**（用户实报「里面的战舰瞬间换个方向」）。
-                //   根因：`_wantH = atan2(_dy, _dx)` 用**有限差分**求位移方向。
-                //   转向期间（brake/turn/reform）位移本就很小（转向期近乎原地），
-                //   亚像素级噪声被 atan2 放大 ⇒ 舰首在 ±90° 之间乱跳 = 「瞬间换个方向」。
-                //   旧判据只兜「完全静止」（|Δ|² < 0.02 ≈ 0.14px），
-                //   兜不住「慢速 + 噪声」这一档。
-                //   正解：转向期（`_uturn` 或 brake/reform 相）本就**该**锁舰队朝向
-                //   —— 物理上太空战舰原地转向时舰首随舰体转，不该跟位移轨迹。
-                const _mPhase = ((fleet as any)._combatControl as any)?.phase as string | undefined;
-                const _inManeuver = _mPhase === 'brake' || _mPhase === 'turn' || _mPhase === 'reform';
-                const _rigid = (fleet as any)._uturn === true
-                    || _inManeuver
-                    || (isRetreating && isEngaging) || _backing
-                    || (_dx * _dx + _dy * _dy) < 0.02;
-                // 非刚性时对差分方向做**死区**（< 0.5px 的位移视为噪声，不改朝向），
-                // 避免 atan2 在近零向量上抖动。
-                const _spd2 = _dx * _dx + _dy * _dy;
-                const _wantH = (_rigid || _spd2 < 0.25)
-                    ? ((u as any).visHeading ?? fleet.facingSmooth ?? fAngle)
-                    : Math.atan2(_dy, _dx);
+                // [v74] **舰首朝向 = 舰队姿态**（v73 刚体模型的直接结果）。
+                //
+                //   v47~v73 用 `_wantH = atan2(_dy,_dx)`（自身位移差分）求舰首方向，
+                //   并在拖刀/掉头/近静止时用 `_rigid` 例外锁舰队朝向。
+                //   用户实报「近景各种朝向的舰船都有，朝向乱七八糟」——
+                //   根因是刚体模型下每舰位移 = 中心位移 + **旋转分量**，两者方向不同：
+                //     ① 紧凑转压缩 lateral ⇒ 每舰产生与舰队朝向**垂直**的位移
+                //     ② 推力硬上限 ⇒ 惯性滑行（中心速度旧方向 ≠ 队列姿态新方向）
+                //     ③ 每舰位置不同 ⇒ 旋转分量不同 ⇒ **每舰朝向各不相同**
+                //
+                //   物理正解：**刚体航行时所有舰船姿态一致**。舰首朝向由舰队姿态
+                //     （facingSmooth = 刚体 heading）单点给出，不由逐舰位移决定。
+                //   ⚠ 战舰允许**惯性滑行**（速度 ≠ 舰首方向）—— 这是"重"的体现，不是侧滑 bug。
+                //   ⚠ 拖刀（舰首朝敌、质心后退）仍成立：fAngle 已设为朝敌，
+                //     facingSmooth 追它 ⇒ 舰首朝敌而质心后退，无需位移差分参与。
+                // [v74] **舰首朝向 = 舰队姿态，始终**（彻底删除位移差分路径）。
+                //
+                //   用户实报：「近景中各种朝向的舰船都有，朝向乱七八糟」。
+                //
+                //   根因（v73 刚体模型下的结构性冲突）：
+                //     `_wantH = atan2(_dy, _dx)` 用**自身位移差分**求舰首方向，
+                //     但刚体模型下每舰位移 = 中心位移 + 旋转分量，两者方向不同：
+                //       ① 紧凑转压缩 lateral ⇒ 每舰产生**横向位移**（与舰队朝向垂直）
+                //       ② 推力硬上限产生惯性滑行 ⇒ 中心速度（旧方向）≠ 队列姿态（新方向）
+                //       ③ 每舰位置不同 ⇒ 旋转分量不同 ⇒ **每舰朝向各不相同**
+                //     ⇒ 视觉上「朝向乱七八糟」（截图实证）。
+                //
+                //   物理正解：**刚体航行时所有舰船姿态一致**。舰首朝向由舰队姿态
+                //     （facingSmooth，即刚体的 heading）决定，不由逐舰位移决定。
+                //     ⚠ 战舰允许**惯性滑行**（速度方向 ≠ 舰首方向）—— 这正是"重"的体现，
+                //       不是要修正的侧滑。v47 时代用位移差分是为了"消除侧滑观感"，
+                //       但那是在"舰队中心 = 无质量点"的旧架构下的补丁；刚体模型下
+                //       舰队朝向本身就是运动意图方向，舰首朝它就是正确的。
+                //     ⚠ 拖刀（舰首朝敌、位移后退）仍成立：fAngle 已被设为朝敌，
+                //       facingSmooth 追它 ⇒ 舰首朝敌而质心后退，无需位移差分参与。
+                const _wantH = fleet.facingSmooth ?? fleet.facingAngle ?? fAngle;
                 if (typeof (u as any).visHeading !== 'number') (u as any).visHeading = _wantH;
                 (u as any).visHeading = rateLimitAngle((u as any).visHeading, _wantH, UNIT_VIS_TURN_RATE * dt);
                 u.sprite.rotation = (u as any).visHeading;
