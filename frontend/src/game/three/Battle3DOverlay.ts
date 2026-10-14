@@ -447,21 +447,25 @@ const FLAME_CAP = FLAME_PER_SHIP * FLAME_CAP_SHIPS;
 const DOT_IN_LO = 3.2;
 const DOT_IN_HI = 5.0;
 /** px：实体淡入区间。34px 是能看清舰体轮廓的下限，56px 后完全交给实体 */
-/* 【大军团】阈值已按 `SHIP_VISUAL_SCALE = 0.40` 等比下调（34→14 / 56→26 / 44→17 / 36→15）。
-   为什么必须跟着缩：px = 舰长 /(2·tan(fov/2)·d)·H，舰长缩到 0.30 倍后同一机位的 px 也缩到 0.30 倍
-   ⇒ 若阈值不动，"几千艘小舰的密集阵列"这一档在等效距离上根本触发不了，中景只剩光点。
-   下调后实体档在等效距离上与缩舰前一致，而场上实体数由 `N_MAX` / 性能兜底把关（见 WS7）。
-   顺序关系保持单调：MESH_IN_LO(14) < MESH_DROP(15) < MESH_KEEP(17) < MESH_IN_HI(26)。 */
-const MESH_IN_LO = 14;
-const MESH_IN_HI = 26;
+/* 【v73】LOD 阈值收紧（用户实报「切近景还是很多点，没切成舰船模型」）。
+   实测链：战列世界长度 L = 0.733×√3×hexR×0.40 ⇒ px = L·H/(2·tan(25°)·d)：
+     · 初始相机 d = span×0.62：大图 1550 ⇒ px≈10（**纯点**）、小图 806 ⇒ px≈19（过渡带）
+     · 旧过渡带 MESH_IN_LO(14)~MESH_IN_HI(26) 宽 12px，此区间点 alpha 仍有 0.78→0
+       ⇒ 模型与点重叠发糊，用户读作「还是点」
+   收紧后：px ≥ 15 即纯模型；9~15 为 6px 窄过渡；< 9 纯点。
+   ⇒ 相机距 ~1000（战列）以内就是纯模型，初始视角（span×0.50，见 initCamera）即可达标。
+   单调关系保持：MESH_IN_LO(9) < MESH_DROP(10) < MESH_KEEP(12) < MESH_IN_HI(15)。 */
+const MESH_IN_LO = 9;
+const MESH_IN_HI = 15;
 /** 队内垂直层数：单一真源 = config/fleetTierLayout.ts 的 TEAM_LAYERS（5，demo 滑杆 1~5，用户定 5）。 */
 // const TEAM_LAYERS 已迁至 config/fleetTierLayout.ts（与队间档距同文件，避免两处各写一份）
 /** 默认相机俯角（弧度，35°）：0.96 rad（55°）是近俯视，垂直分层会被压成一摞读不出来。 */
 const CAM_ELEV = 0.6109;
 /** px：实体池滞回（创建阈 > 销毁阈）。缺滞回会在相机推拉时每帧 buildShip/dispose → 卡顿
  *  （随 SHIP_VISUAL_SCALE 等比下调，与 MESH_IN 同源换算） */
-const MESH_KEEP = 17;
-const MESH_DROP = 15;
+/* 【v73】与 MESH_IN_LO/HI 同步收紧（旧 17/15）。px ≥ 12 即分配实体。 */
+const MESH_KEEP = 12;
+const MESH_DROP = 10;
 /** ⚠【已过时·仅存备查】实体硬上限的历史注释。当前语义见下方 `MAX_MESHES` 的正式注释；
  *  且光点层缓冲**已改用 `DOT_SLOTS` 分配**（不再是这里的 "光点层按 MAX_MESHES 分配"）。
  *  实体硬上限。= N_MAX（兵力折算层的全场实体预算），故正常情况下不触发；留作极端机位兜底。
@@ -2389,7 +2393,12 @@ export class Battle3DOverlay {
     // ── 3. 相机取景：35° 俯角对准战场中心，距离上下限按跨度 ──
     // v6.8：网格已贴合地图本体（×1.15），相机距离同步收敛（原 1.05 是给 2.6×
     //   大平面配的取景距离，网格缩小后不变会把地图拍得过小、四周露黑边）
-    const dist = Math.max(span * 0.62, this.hexR * 24);
+    // 【v73】初始距离下调（0.62→0.50 / hexR×24→×20）：使初始视角下
+    //   战列 px 即达纯模型档（> MESH_IN_HI 15）。实测：span=1300 ⇒ d=650 ⇒ px≈23.5；
+    //   span=2500(hexR=50, L=25.4) ⇒ d=1250 ⇒ px≈23.5。
+    //   ⚠ 相机仍需能看到全图：0.50×span + 35° 俯角的视野覆盖足够（原 0.62 是给
+    //     2.6× 大平面配的余量，网格已 ×1.15 贴合地图本体，v6.8 已收紧过一次）。
+    const dist = Math.max(span * 0.50, this.hexR * 20);
     this.controls.target.set(cx, 0, -cy);
     this.camera.position.set(cx, dist * Math.sin(CAM_ELEV), -cy + dist * Math.cos(CAM_ELEV));
     this.controls.minDistance = this.hexR * 4;
@@ -3916,6 +3925,10 @@ export class Battle3DOverlay {
     const hasMesh = this.ships.has(v.key);
     // grow 只对"确实拿到实体"的舰生效：落选 / 未长成实体的舰 grow = 0 → 点满亮，绝不留洞
     const grow = hasMesh ? v.grow : 0;
+    // 【v73】模型已长出 55% 以上 ⇒ 点**完全让位**（不再只是 alpha 衰减）。
+    //   旧实现 grow=0.5 时点 alpha 仍 0.39，配 3.6px 点径在模型旁很显眼
+    //   ⇒ 用户实报「切近景还是有很多点点点」。硬阈值比连续衰减更干净。
+    if (hasMesh && grow > 0.55) return 0;
     // alpha 下限 0.78：远景清楚可见。**不得再出现 alpha 被距离打到 0 的分支** ——
     // "太远"由屏幕空间点距下限 DOT_PITCH_MIN_PX 表达，不再由亮度表达。
     const a = (1 - grow) * (0.78 + 0.22 * sstep(DOT_IN_LO, DOT_IN_HI, v.px));
