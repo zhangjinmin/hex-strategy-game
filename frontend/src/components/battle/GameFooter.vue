@@ -8,7 +8,9 @@
     </span>
     
     <template v-else>
-      <span class="hidden-on-mobile">态势: {{ diffName }} | 指令: 空格·指挥点面板 · 1-5·阵型 · X·分舰队</span>
+      <!-- [W5.1] 战中 `1-5` = 速度档（阵型键只在部署期有效）。旧文案写「1-5·阵型」与实现矛盾，
+           是"想调速却改了阵型"的误导来源之一 —— 此处按阶段写成正确语义。 -->
+      <span class="hidden-on-mobile">态势: {{ diffName }} | 指令: 空格·指挥点面板 · 1-5·速度档 · X·分舰队</span>
       <span class="mobile-only-text">触控空域建立跃迁点</span>
     </template>
   </div>

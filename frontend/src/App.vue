@@ -69,6 +69,8 @@
       <div v-if="is3dBattle && battle3dReady" class="view-preset-group">
         <button class="view-preset-btn" title="27° 侧视" @click="setViewPreset('tilt')">27°</button>
         <button class="view-preset-btn" title="正俯视" @click="setViewPreset('top')">俯视</button>
+        <!-- [W5.5] 视角辅助：找不到自己舰队时的「一键回家」入口（走 overlay 正式方法） -->
+        <button class="view-preset-btn" title="回到玩家主舰队" @click="focusMainFleet">⚑ 主队</button>
       </div>
 
       <!-- 提督扮演：军议面板（仅指挥制）+ 关闭态的开启按钮（显著化：任务指令唯一入口） -->
@@ -284,6 +286,8 @@ let battle3dOverlay: Battle3DOverlay | null = null;
 let battle3dReadyTimer: number | null = null;
 
 const setViewPreset = (p: 'tilt' | 'top') => battle3dOverlay?.setViewPreset(p);
+// [W5.5] 回到玩家主舰队：走 overlay 正式方法；失败（无玩家舰队）时忽略（按钮为纯辅助入口）
+const focusMainFleet = () => { battle3dOverlay?.focusOnPlayerMainFleet(); };
 
 const clear3dReadyTimer = () => {
   if (battle3dReadyTimer !== null) {
@@ -438,6 +442,11 @@ const handleKeyDown = (e: KeyboardEvent) => {
     store.returnToMetaMenu();
   }
   else if (['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5'].includes(e.code)) {
+    // [W5.1 补 · lead 裁决] 部署期 1-5 归「阵型」（由 BattleScene 的部署期分支负责），
+    //   此处不得顺带改速度档 —— 否则键位表「部署期=阵型 / 战中=速度档」与实现不符，
+    //   且玩家按 1 选阵型时会静默把开战后的速度档设成顺手按的那个值。
+    const inDeployPhase = (store.battleDeployPhase as any)?.value ?? (store as any).battleDeployPhase;
+    if (inDeployPhase) return;
     const idx = parseInt(e.key) - 1;
     const gears = (store.speedGears as any).value ?? store.speedGears;
     if (gears && gears[idx] !== undefined) {

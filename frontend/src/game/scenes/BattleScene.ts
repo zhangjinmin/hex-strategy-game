@@ -552,6 +552,8 @@ export class BattleScene extends Phaser.Scene {
     private intentLines!: Phaser.GameObjects.Graphics;
     private damageNumbers: { sprite: Phaser.GameObjects.Text; timer: number }[] = [];
     private spaceKey!: Phaser.Input.Keyboard.Key;
+    /** [W5.2] 「⚡指挥点」UI 按钮请求的上次消费值（`commandBridge.panelToggleRequest` 比对用） */
+    private _lastPanelToggleReq = 0;
 
     constructor(config?: string | Phaser.Types.Scenes.SettingsConfig) {
         super(config || { key: 'BattleScene' });
@@ -821,7 +823,7 @@ export class BattleScene extends Phaser.Scene {
             }
 
             // [v31-C] **玩家主动分舰队**：`X` 键把"当前选中的己方舰队"按战法拆成多路。
-            //   选中 = 战场点击己方舰队拾取（`battleSelectedFleetId`）；与 1-5 阵型键正交。
+            //   选中 = 战场点击己方舰队拾取（`battleSelectedFleetId`）；与 1-5 键正交。
             //   这是用户裁定"玩家可主动拆分自己的舰队"的入口。
             if (keyName === 'X') {
                 if (this.store.isPaused || this.store.gameOver) return;
@@ -829,23 +831,14 @@ export class BattleScene extends Phaser.Scene {
                 return;
             }
 
-            if (!newForm || this.store.isPaused || this.store.gameOver) return;
-            const pFac = this.store.factions.find((f: any) => f.type === 'player');
-            const pFleet = this.globalFleets.find((f: any) => f.factionId === pFac?.id);
-            if (!pFleet || pFleet.units.length === 0) return;
-            if (pFleet.formation === newForm) return;
-            const oldForm = pFleet.formation;
-            pFleet.formation = newForm;
-            // 阵型切换士气/提示
-            pFleet._formSwitchCooldown = this.time.now + 1000;
-            this.store.triggerToast?.(`[${pFac?.name}] 变阵 → ${this.getFormationCnName(newForm)}`);
-            // 变阵瞬间生成扩散光环特效
-            pFleet.units.forEach((u: any) => {
-                if (u.sprite?.active) {
-                    const ring = this.add.circle(u.sprite.x, u.sprite.y, 20, 0x06b6d4, 0.25).setDepth(15);
-                    this.tweens.add({ targets: ring, scale: 2.2, alpha: 0, duration: 450, onComplete: () => ring.destroy() });
-                }
-            });
+            // [W5.1] **战中不再手动变阵** —— 解开 `1-5` 双绑定（★控制手感）。
+            //   旧实现：`1-5` 在本处「换阵型」**且** 在 `App.vue:440`「换速度档」两处同时监听
+            //   ⇒ 玩家想调速却把阵型也改了（用户实报「控制手感差」）。
+            //   现约定：**部署期** `1-5` = 阵型（上方 `if (this.deployPhase)` 分支，保持现状）；
+            //          **战中**   `1-5` = 只调速（`App.vue` 单一绑定）。
+            //   战中不再提供手动变阵的理由：阵型在战中由战略层 per-frame 覆写
+            //   （见下方 `fleet.formation = resolveAdmiralDoctrine(...)`，每帧把玩家手动值冲掉）
+            //   ⇒ 手动变阵在战中**无实义**，只与调速抢键。
         });
         // 意图线Graphics层
         this.intentLines = this.add.graphics().setDepth(25);
@@ -2372,14 +2365,19 @@ export class BattleScene extends Phaser.Scene {
             destroyed: this.destroyedFleetIds.has(targetFleet.id) || !hasCombatUnits(targetFleet),
         };
         if (!validateDirectOrder(order, track)) {
-            // 被拒绝且**不替换**原指令：浮泡「目标无效」（ATTACK_END_LABELS 术语真源）
+            // 被拒绝且**不替换**原指令：浮泡「目标无效」（ATTACK_END_LABELS 术语真源）。
+            //   [W5.3] 同时**就近**回执（不等 toast 队列）：3D 为 DOM 浮标，2D 才回退 toast。
             this.showFleetDialogue(fleet, 'order', false, ATTACK_END_LABELS.invalid_target);
+            this.commandNotice(`✕ 目标无效 — 不替换原指令`, targetFleet.x, targetFleet.y, false);
             return false;
         }
         if (this.passOrderBandwidthGate(fleet, order) !== 'now') return false;
         this.commitDirectOrder(fleet, order);
         // [W3] 指针反馈：成功攻击 ⇒ 敌目标短暂 target-lock 标记
         this.showTargetLock(targetFleet.x, targetFleet.y);
+        // [W5.3] 成功回执（就地）：舰队名 + 目标名
+        this.commandNotice(`▸ 已下令：${this.fleetDisplayName(fleet)} 攻击 ${this.fleetDisplayName(targetFleet)}`,
+            targetFleet.x, targetFleet.y, true);
         return true;
     }
 
@@ -2399,7 +2397,7 @@ export class BattleScene extends Phaser.Scene {
     /** [W1] 右键空地 = 直接移动指令（精确世界目的地，不是格子近似）。 */
     private orderFleetMove(fleet: any, x: number, y: number) {
         if (!this.canDirectlyControlFleet(fleet)) {
-            this.store.triggerToast("⛔ 该舰队不隶属于你可直接指挥的己方阵营。");
+            this.commandNotice(`✕ 该编队不在你可直接指挥的范围内`, x, y, false);
             return;
         }
         const order: DirectOrder = { kind: 'move', x, y, issuedAt: this.time.now };
@@ -2407,6 +2405,8 @@ export class BattleScene extends Phaser.Scene {
         this.commitDirectOrder(fleet, order);
         // [W3] 指针反馈：成功移动 ⇒ 精确目的地短暂 chevron/ring 标记
         this.showPointerChevron(x, y);
+        // [W5.3] 成功回执（就地）：舰队名 + 目标坐标
+        this.commandNotice(`▸ 已下令：${this.fleetDisplayName(fleet)} 向 (${Math.round(x)},${Math.round(y)}) 机动`, x, y, true);
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -2427,6 +2427,32 @@ export class BattleScene extends Phaser.Scene {
     /** 战斗结算清理瞬态指针标记（design §Failure handling 末条） */
     private clearPointerMarkers() {
         pushFx3d({ kind: 'pointer_clear', color: 0 });
+    }
+
+    /**
+     * [W5.3] **点击即时回执** —— 右键下达指令「按下瞬间」就给反馈（不等下一帧 ack）。
+     *
+     *   背景：用户实报"控制手感差 / 点了没反应"。旧实现的失败分支只走 `store.triggerToast`
+     *   （2200ms/条、上限 10、**排队延迟**）⇒ 分兵后右键失败的提示会被队列推迟到几秒后才出现。
+     *
+     *   通道：3D 在场时经 `pushFx3d('pointer_notice')` → `Battle3DOverlay` 的**就近 DOM 浮动提示**
+     *   （锚在点击世界点、与 billboard 同投影），**不进 toast 队列**；
+     *   2D 降级（无 3D 层，`__b3dOverlay` 为空）才回退 toast 以免彻底静默。
+     *
+     *   @param ok 成功=蓝（指令已下达）／失败=红（就地说明原因）
+     */
+    private commandNotice(text: string, x: number, y: number, ok: boolean) {
+        if (typeof window !== 'undefined' && (window as any).__b3dOverlay) {
+            pushFx3d({ kind: 'pointer_notice', at: { x, y }, text, ok, color: ok ? 0x66ccff : 0xff5544 });
+            return;
+        }
+        this.store.triggerToast?.(text);
+    }
+
+    /** [W5.3] 舰队显示名（右键回执用）：阵营名 + 分队后缀，与 billboard 口径一致。 */
+    private fleetDisplayName(fleet: any): string {
+        const base = this.factionMap.get(fleet?.factionId)?.name || '己方编队';
+        return fleet?._detachedFrom != null ? `${base}·分队` : base;
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -4650,10 +4676,9 @@ export class BattleScene extends Phaser.Scene {
     private applyCommandEffects(dtMs: number) {
         if (!this.cpState) return;
         updateCPState(this.cpState, dtMs);
-        // CP恢复指示（接近满时更新桥接状态）
-        if (commandBridge.visible && commandBridge.cpState) {
-            commandBridge.cpState = this.cpState;
-        }
+        // [W5.2] **常驻**镜像 CP 到桥（供 GameControls 的「⚡指挥点」按钮显示当前 CP）；
+        //   原实现仅在 `commandBridge.visible` 时镜像 ⇒ 面板未开时按钮拿不到 CP 数据。
+        if (commandBridge.cpState !== this.cpState) commandBridge.cpState = this.cpState;
     }
 
     // ==================== 指挥带宽系统（指挥链延迟机制） ====================
@@ -5719,8 +5744,11 @@ export class BattleScene extends Phaser.Scene {
         if (pointer.button === 2) {
             const selFleet = this.resolveDirectOrderFleet();
             if (!selFleet) {
+                // [W5.3] 失败**就地**回执（旧实现只给一条易被 toast 队列延迟的提示；n===0 更彻底静默）：
+                //   · 分兵后多支可控 ⇒ 请先点选；· 0 支可控 ⇒ 无可用指挥编队。
                 const n = this.globalFleets.filter((f: any) => this.canDirectlyControlFleet(f)).length;
-                if (n > 1) this.store.triggerToast?.('◎ 分兵后有多支可指挥编队 — 请先点选一支，再右键下令。');
+                if (n > 1) this.commandNotice(`✕ 分兵后有 ${n} 支可指挥编队 — 请先点选一支`, tile.x, tile.y, false);
+                else this.commandNotice('✕ 当前无可用指挥编队', tile.x, tile.y, false);
                 return;
             }
             // [W1] 第一道权限守卫在 canDirectlyControlFleet（第二道纵深校验在 orderFleet* 内）
@@ -5880,7 +5908,13 @@ export class BattleScene extends Phaser.Scene {
         }
 
         // ── 指挥点：空格键检测（每帧检查，暂停时也能工作）──
-        if (this.spaceKey && Phaser.Input.Keyboard.JustDown(this.spaceKey)) {
+        //   [W5.2] 「⚡指挥点」UI 按钮走**同一条**开关实现：GameControls 点击 +1 `panelToggleRequest`，
+        //   本处比对消费 ⇒ 与 `Space` 逐位等价（唯一差异：按钮不产生 Phaser Key 状态）。
+        const panelReq = commandBridge.panelToggleRequest;
+        const panelKeyToggled = !!(this.spaceKey && Phaser.Input.Keyboard.JustDown(this.spaceKey));
+        const panelBtnToggled = panelReq !== this._lastPanelToggleReq;
+        this._lastPanelToggleReq = panelReq;
+        if (panelKeyToggled || panelBtnToggled) {
             if (commandBridge.visible) {
                 // [2a] 全局取消：关闭面板 + 退选目标态 + 恢复实时（统一走 closeCommandPanel）
                 this.closeCommandPanel();

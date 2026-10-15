@@ -44,6 +44,8 @@ import {
 } from './sceneProps';
 import { SUPPLY_SOURCE_RADIUS, SUPPLY_RELAY_RADIUS, SUPPLY_AUX_RADIUS } from '../SupplyChainSystem';
 import { fleetIntentText } from '../TacticalCommandSystem';
+// [W5.4] 舰队运动学剖面（vMax 单一真源）—— billboard「速度百分比」的分母，禁手抄常量
+import { fleetProfile } from '../../config/shipKinematics';
 import { useSettingsStore } from '../../store/settingsStore';
 import { N_MAX } from '../../config/shipScaling';
 import { TERRAIN_VISUAL, TERRAIN_EFFECT_TABLE } from '../../config/terrainEffects';
@@ -319,10 +321,14 @@ interface FleetBillboard {
   splitBtn?: HTMLButtonElement | null;
   /** 意图/任务文本行（提督扮演 C：AI 意图可见） */
   missionEl: HTMLDivElement;
+  /** [W5.4] 机动可读化行：速度百分比 + 机动相位（cruise/brake/turn/reform/disengage） */
+  maneuverEl?: HTMLDivElement;
   /** 上次渲染的姿态，用于 active 态 diff（避免每帧写 DOM） */
   lastStance: string;
   /** 上次渲染的意图文本，用于 diff */
   lastIntent: string;
+  /** [W5.4] 上次渲染的机动行文本，用于 diff */
+  lastManeuver?: string;
   lastTeam: number;
   lastHpPct: number;
   lastSupply: number;
@@ -425,6 +431,13 @@ const BB_CSS = `
 .b3d-bb-mission{font-size:9px;font-weight:700;line-height:1.2;margin-top:3px;color:#22d3ee;
   text-shadow:0 1px 2px #000;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .b3d-bb-mission.idle{color:#94a3b8}
+.b3d-bb-maneuver{font-size:8px;font-weight:700;line-height:1.2;margin-top:2px;color:#cbd5e1;
+  text-shadow:0 1px 2px #000;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.b3d-cmd-notice{position:absolute;left:0;top:0;transform:translate(-50%,-100%);pointer-events:none;
+  font-family:inherit;font-size:10px;font-weight:800;line-height:1.25;white-space:nowrap;
+  padding:3px 8px;border-radius:4px;background:rgba(6,10,20,.88);border:1px solid;text-shadow:0 1px 2px #000}
+.b3d-cmd-notice.ok{color:#7dd3fc;border-color:#66ccff}
+.b3d-cmd-notice.fail{color:#fca5a5;border-color:#ff5544}
 `;
 
 // ── 尾焰粒子系统（原型移植）──
@@ -1270,6 +1283,11 @@ export class Battle3DOverlay {
   /** 每帧复用，避免 updateBillboards 内反复 new */
   private bbProjV = new THREE.Vector3();
   private bbAccum = new Map<string, { fleet: any; n: number; sx: number; sy: number; sz: number }>();
+  /**
+   * [W5.3] 指挥点即时回执的**就近 DOM 浮动提示**（锚在点击世界点，复用 billboard 同投影）。
+   * 数据源 = `battle3dFx` 的 `pointer_notice` 事件（右键成功/失败在**按下同帧**推送）。
+   */
+  private pointerNotices: { el: HTMLDivElement; at: { x: number; y: number }; until: number }[] = [];
 
   // 特效池
   private lasers: LaserEntry[] = [];
@@ -4347,6 +4365,10 @@ export class Battle3DOverlay {
     const missionEl = document.createElement('div');
     missionEl.className = 'b3d-bb-mission idle';
     statusGroup.appendChild(missionEl);
+    // [W5.4] 机动可读化行：速度百分比 + 机动相位（战列起步 8.3s 不再"看着没反应"）
+    const maneuverEl = document.createElement('div');
+    maneuverEl.className = 'b3d-bb-maneuver';
+    statusGroup.appendChild(maneuverEl);
     root.appendChild(statusGroup);
 
     // ── 三概念之「行动」：侦察 / 电子战 / 保持等情境特令（移动与攻击由右键直接承担，不设常驻按钮）──
@@ -4407,7 +4429,7 @@ export class Battle3DOverlay {
 
     this.bbLayer!.appendChild(root);
     return {
-      root, nameEl, hpFill, supplyFill, moraleFill, controlsEl, stanceBtns, splitBtn, missionEl,
+      root, nameEl, hpFill, supplyFill, moraleFill, controlsEl, stanceBtns, splitBtn, missionEl, maneuverEl,
       lastStance: '', lastIntent: '', lastTeam: team, lastHpPct: -1, lastSupply: -1, lastMorale: -1,
     };
   }
@@ -4590,14 +4612,31 @@ export class Battle3DOverlay {
         ? String(fleet._intentLabel)
         : fleet._scoutFlight
         ? (fleet.state === 'returning' ? '回传返航' : fleet.state === 'sweeping' ? '前沿搜索' : '高速前出')
-        : fleetIntentText(fleet, (fid: any) => {
-          const tf = bsS?.globalFleets?.find((x: any) => x.id === fid);
-          return tf ? (this.getFac(tf.factionId)?.name || null) : null;
-        }, { team });
+        : (fleet.directOrder
+          // [W5.4] 玩家直接指令优先于一般意图文本（右键 ↓ 之后立刻可见"接令"）
+          ? (fleet.directOrder.kind === 'attack' ? '▸ 接令 · 攻击目标' : '▸ 接令 · 机动至指定点')
+          : fleetIntentText(fleet, (fid: any) => {
+            const tf = bsS?.globalFleets?.find((x: any) => x.id === fid);
+            return tf ? (this.getFac(tf.factionId)?.name || null) : null;
+          }, { team }));
       if (bb.lastIntent !== intent) {
         bb.lastIntent = intent;
         bb.missionEl.textContent = intent;
-        bb.missionEl.classList.toggle('idle', !fleet.mission);
+        bb.missionEl.classList.toggle('idle', !fleet.mission && !fleet.directOrder);
+      }
+
+      // [W5.4] 机动可读化：速度% = |v| / vMax（vMax 走 fleetProfile 单一真源），
+      //   相位 = `_combatControl.phase`（BattleScene:7394 写入的 advanceManeuver 输出）。
+      //   ⇒ 把"起步 8.3s 像没反应"变成可读的"机动 巡航 · 速度 35%"。
+      if (bb.maneuverEl) {
+        const vmax = fleetProfile(units).vMax || 0;
+        const spd = Math.hypot(Number(fleet.vx) || 0, Number(fleet.vy) || 0);
+        const pct = vmax > 0 ? Math.max(0, Math.min(200, Math.round(spd / vmax * 100))) : 0;
+        const phaseCn: Record<string, string> = { cruise: '巡航', brake: '制动', turn: '转向', reform: '重组', disengage: '脱离' };
+        const phaseKey = String(fleet._combatControl?.phase || '');
+        const phaseTxt = phaseCn[phaseKey] || (fleet.state === 'moving' ? '机动' : '待机');
+        const mtxt = `机动 ${phaseTxt} · 速度 ${pct}%`;
+        if (bb.lastManeuver !== mtxt) { bb.lastManeuver = mtxt; bb.maneuverEl.textContent = mtxt; }
       }
 
       // 2) 投影：质心抬到舰船上方（约 1.6 格）作为标签锚点
@@ -5145,10 +5184,61 @@ export class Battle3DOverlay {
     }
   }
 
+  // ═══ [W5.3] 指挥点即时回执：就近 DOM 浮动提示（锚在点击世界点）═══════════════
+  //   通道 = `battle3dFx` 的 `pointer_notice`（右键成功/失败在**按下同帧**推送）。
+  //   与 billboard 同投影（floatScreenPos）；不进 `store` 的 toast 队列（后者的 2200ms/条
+  //   + 上限 10 + 串行播放会把失败提示推迟数秒 —— 用户实报"点了没反应"）。
+  /** 就地弹出回执（≈1.6s 自动淡出销毁）。同点连续回执会先清掉旧的（避免叠字）。 */
+  showCommandNotice(x: number, y: number, text: string, ok: boolean) {
+    if (!text || !this.bbLayer) return;
+    // 同一点位（±1px）已有回执 ⇒ 先移除，避免快速连点叠字
+    for (let i = this.pointerNotices.length - 1; i >= 0; i--) {
+      const n = this.pointerNotices[i];
+      if (Math.abs(n.at.x - x) < 1 && Math.abs(n.at.y - y) < 1) {
+        n.el.remove();
+        this.pointerNotices.splice(i, 1);
+      }
+    }
+    const el = document.createElement('div');
+    el.className = 'b3d-cmd-notice ' + (ok ? 'ok' : 'fail');
+    el.textContent = text;
+    this.bbLayer.appendChild(el);
+    this.pointerNotices.push({ el, at: { x, y }, until: performance.now() + 1600 });
+    // 立即定位一帧（不等下帧），尽量做到"按下即出"
+    this.positionNotice(this.pointerNotices[this.pointerNotices.length - 1]);
+  }
+
+  /** 单个回执的 3D→屏幕定位（复用 floatScreenPos 的同一相机与 CSS px 口径） */
+  private positionNotice(n: { el: HTMLDivElement; at: { x: number; y: number } }) {
+    const p = this.floatScreenPos({ x: n.at.x, y: n.at.y });
+    if (!p.on) { n.el.style.display = 'none'; return; }
+    if (n.el.style.display === 'none') n.el.style.display = '';
+    n.el.style.transform = `translate(-50%,-100%) translate(${p.x.toFixed(1)}px,${p.y.toFixed(1)}px)`;
+  }
+
+  /** 回执寿命管理（每帧：重投影定位 → 到期淡出销毁） */
+  private updateCommandNotices() {
+    if (this.pointerNotices.length === 0) return;
+    const now = performance.now();
+    for (let i = this.pointerNotices.length - 1; i >= 0; i--) {
+      const n = this.pointerNotices[i];
+      const left = n.until - now;
+      this.positionNotice(n);
+      if (left <= 0) {
+        n.el.remove();
+        this.pointerNotices.splice(i, 1);
+      } else if (left < 500) {
+        n.el.style.opacity = (left / 500).toFixed(2);
+      }
+    }
+  }
+
   private handleFx(e: Fx3dEvent) {
     // [W3] 指针反馈事件（battle3dFx 总线 → 三接口）
     if (e.kind === 'pointer_chevron' && e.at) { this.showPointerChevron(e.at.x, e.at.y); return; }
     if (e.kind === 'pointer_target_lock' && e.at) { this.showTargetLock(e.at.x, e.at.y); return; }
+    // [W5.3] 指挥点即时回执（成功/失败就地文本）
+    if (e.kind === 'pointer_notice' && e.at) { this.showCommandNotice(e.at.x, e.at.y, e.text || '', e.ok !== false); return; }
     if (e.kind === 'pointer_clear') { this.clearPointerMarkers(); return; }
     if (e.kind === 'laser' && e.from && e.to) {
       const from = this.fxPointAt(e.from);
@@ -5699,6 +5789,8 @@ export class Battle3DOverlay {
       // [W3] 瞬态指针标记寿命管理（chevron / target-lock 短暂显示后淡出销毁；
       //   原 selRing 常驻透明度钳位指示已随之移除）
       this.updatePointerMarks();
+      // [W5.3] 指挥点即时回执的寿命/重投影（与 billboard 同帧）
+      this.updateCommandNotices();
     }
 
     this.controls.update();
@@ -5803,6 +5895,58 @@ export class Battle3DOverlay {
   }
 
   /**
+   * [W5.5] **视角辅助：回到指定编队**（正式对外方法，UI「回到主舰队」按钮调用）。
+   *
+   *   与调试口 `__b3dFocus` 同一取景算法（3D 质心 → 轨道相机 target），但：
+   *   · 按**舰队 id** 定位（UI 拿得到的是 id，不是数组序号）；
+   *   · 是**正式 API**（不改任何渲染状态、纯设相机），UI 不依赖调试口；
+   *   · 保留当前俯仰观感（用默认 elev/azim，与 27°/俯视 预设正交）。
+   *
+   *   @returns 是否命中该舰队（true=已取景；false=舰队不存在/已无单位）
+   */
+  focusOnFleet(fleetId: number, opts?: { dist?: number }): boolean {
+    if (this.disposed) return false;
+    const fleets: any[] = (this.battleScene as any).globalFleets || [];
+    const target = fleets.find((f: any) => f && f.id === fleetId && (f.units || []).length > 0);
+    if (!target) return false;
+    // 质心（世界坐标）：与 __b3dFocus / updateBillboards 同口径
+    let cx = 0, cy = 0, n = 0;
+    for (const u of (target.units || [])) { if (!u.sprite) continue; cx += u.sprite.x; cy += u.sprite.y; n++; }
+    if (!n) { cx = target.x; cy = target.y; }
+    else { cx /= n; cy /= n; }
+    const tierY = this.lastTierY.get(target) ?? 0;
+    const wy = this.heightAtPx(cx, cy) + this.cruiseClearance + tierY;
+    const t = new THREE.Vector3(cx, wy, -cy);
+    const dist = opts?.dist ?? this.hexR * 12;
+    const elev = 0.55;   // 俯角（弧度）
+    const azim = 0.6;
+    this.controls.target.copy(t);
+    this.camera.position.set(
+      t.x + Math.sin(elev) * Math.sin(azim) * dist,
+      t.y + Math.cos(elev) * dist,
+      t.z + Math.sin(elev) * Math.cos(azim) * dist,
+    );
+    this.camera.lookAt(t);
+    this.controls.update();
+    return true;
+  }
+
+  /**
+   * [W5.5] 回到**玩家主舰队**（「回到主舰队」按钮的默认目标）：
+   *   取玩家阵营（`type==='player'`）名下第一支有单位的舰队 —— 与 `BattleScene` 的
+   *   「玩家本队」口径一致（`globalFleets.find(f => f.factionId === pFac.id)`）。
+   * @returns 是否命中
+   */
+  focusOnPlayerMainFleet(opts?: { dist?: number }): boolean {
+    const player = ((this.store as any).factions || []).find((f: any) => f.type === 'player');
+    if (!player) return false;
+    const fleets: any[] = (this.battleScene as any).globalFleets || [];
+    const main = fleets.find((f: any) => f && f.factionId === player.id && (f.units || []).length > 0);
+    if (!main) return false;
+    return this.focusOnFleet(main.id, opts);
+  }
+
+  /**
    * 视锥裁剪面跟随地图尺度。
    * far 固定 4000 是"开局近黑、只剩零散星点"的真因：hexRadius 由 BattleScene 按总舰数
    * 在 26/32/38/44/50 五档浮动（演习模式恒 ≥38），相机到地图远侧达 4,306（26）～
@@ -5861,6 +6005,8 @@ export class Battle3DOverlay {
     this.billboards.forEach((bb) => this.destroyBillboard(bb));
     this.billboards.clear();
     this.bbAccum.clear();
+    // [W5.3] 指挥点回执 DOM 引用表清空（元素随下方 bbLayer.remove() 一并移除）
+    this.pointerNotices.length = 0;
     // 后勤可视化引用表清空（几何体/材质由下方 scene.traverse 统一释放）
     this.supCastle.clear();
     this.supPlanets.clear();

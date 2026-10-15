@@ -9,7 +9,7 @@
 /** 3D 特效事件（kind 决定可选字段的含义，消费逻辑见 Battle3DOverlay.handleFx） */
 export interface Fx3dEvent {
   kind: 'laser' | 'shield' | 'hit' | 'capture' | 'strike' | 'fortress_charge' | 'fortress_beam'
-    | 'pointer_chevron' | 'pointer_target_lock' | 'pointer_clear';
+    | 'pointer_chevron' | 'pointer_target_lock' | 'pointer_clear' | 'pointer_notice';
   /** laser / strike：发射端像素坐标 */
   from?: { x: number; y: number };
   /** laser：目标端像素坐标 */
@@ -37,6 +37,10 @@ export interface Fx3dEvent {
   width?: number;
   /** fortress_charge / fortress_beam：持续时间（ms），3D 侧换算动画寿命 */
   duration?: number;
+  /** [W5.3] pointer_notice：就地回执文本（3D 侧渲染为锚在 `at` 世界点的 DOM 浮动提示） */
+  text?: string;
+  /** [W5.3] pointer_notice：true=成功（蓝，指令已下达）／false=失败（红，就地说明原因） */
+  ok?: boolean;
 }
 
 const MAX_QUEUE = 200;

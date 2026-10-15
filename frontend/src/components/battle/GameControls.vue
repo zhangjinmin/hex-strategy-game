@@ -15,6 +15,13 @@
     <button @click="toggleBomb" class="neo-btn btn-ctrl" :class="{'active-bomb': isBombing}">
       {{ isBombing ? '锁定坐标(右键取消)' : '主炮(200)' }}
     </button>
+
+    <!-- [W5.2] 指挥点面板入口：11 条指挥技能此前**只有空格键**能打开，玩家不知道有该系统。
+         本按钮与空格键走**同一条**实现（commandBridge.panelToggleRequest → BattleScene
+         openCommandPanel/closeCommandPanel），并显示当前 CP。 -->
+    <button @click="toggleCommandPanel" class="neo-btn btn-ctrl" :class="{ 'active-cp': commandBridge.visible }" :title="'指挥点面板（快捷键：空格）'">
+      ⚡ 指挥点{{ cpText }} <span class="cp-key">(空格)</span>
+    </button>
     
     <button @click="togglePause" class="neo-btn btn-ctrl text-gold">
       {{ isPaused ? '▶ 继续' : '⏸ 暂停' }}
@@ -38,6 +45,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { useGameStore } from '../../store/gameStore';
+import { commandBridge } from '../../services/CommandBridge';
 
 const store = useGameStore();
 
@@ -81,6 +89,19 @@ const toggleBomb = () => {
   const raw = (store as any).isCastingBomb;
   const currentVal = raw?.value !== undefined ? raw.value : raw;
   (store as any).isCastingBomb = !currentVal;
+};
+
+// [W5.2] 当前 CP（commandBridge.cpState 由 BattleScene 每帧常驻镜像；未就绪时不显示数字）
+const cpText = computed<string>(() => {
+  const cp: any = commandBridge.cpState;
+  if (!cp || typeof cp.currentCP !== 'number') return '';
+  return ` ${Math.floor(cp.currentCP)}/${Math.floor(cp.maxCP)}`;
+});
+
+// [W5.2] 指挥点面板入口：与空格键走同一条实现 —— 仅递增请求计数，
+//   BattleScene 每帧消费后走 openCommandPanel()/closeCommandPanel()（键盘与按钮零分叉）。
+const toggleCommandPanel = () => {
+  commandBridge.panelToggleRequest++;
 };
 
 const togglePause = () => {
@@ -132,5 +153,8 @@ const confirmRetreat = () => {
 .btn-speed.active { background: var(--color-cyan); color: var(--neo-surface); }
 .btn-ctrl { padding: 6px 12px; font-size: 12px; font-weight: 800; }
 .active-bomb { border-color: var(--color-empire); color: var(--color-empire); animation: pulse-red 1s infinite; }
+/* [W5.2] 指挥点按钮：面板开启时高亮（与 active-bomb 同风格的常亮态） */
+.active-cp { border-color: var(--color-cyan); color: var(--color-cyan); box-shadow: 0 0 10px rgba(34, 211, 238, 0.55); }
+.cp-key { opacity: 0.6; font-size: 10px; }
 @keyframes pulse-red { 50% { box-shadow: 0 0 10px var(--color-empire); } }
 </style>

@@ -15,6 +15,12 @@ interface CommandBridgeState {
   pendingCallback: ((targetFleetId: number | null) => void) | null; // 完成选目标后的回调
   staffBriefing: string;          // 参谋敌情摘要（面板顶部一行；空串=无情报）
   hasVisibleTargets: boolean;     // [2a] 面板打开时"是否有可见敌方舰队" —— 4 个目标命令卡片置灰依据（07 §6）
+  /**
+   * [W5.2] UI → BattleScene 的「开关指挥点面板」请求计数（GameControls 的「⚡指挥点」按钮每次点击 +1）。
+   * BattleScene 每帧消费（`_lastPanelToggleReq` 比对）后走**与空格键同一条**
+   * `openCommandPanel()/closeCommandPanel()` 实现 ⇒ 键盘与按钮行为完全一致，无第二套逻辑。
+   */
+  panelToggleRequest: number;
 }
 
 export const commandBridge = reactive<CommandBridgeState>({
@@ -27,4 +33,5 @@ export const commandBridge = reactive<CommandBridgeState>({
   pendingCallback: null,
   staffBriefing: '',
   hasVisibleTargets: true,
+  panelToggleRequest: 0,
 });
