@@ -7409,16 +7409,36 @@ export class BattleScene extends Phaser.Scene {
             //   ⚠ 取 min(kinProfile.accel, FLEET_ACCEL)：应急（溃散 3× 加速）不得慢于旧值，
             //     否则撤退/溃散会被新参数拖成龟速（v33 溃散档依赖速度倍率生效）。
             const kinAccel = Math.min(kinProfile.accel, FLEET_ACCEL);
+            // ── [v85] **到达制动律（Arrive）** ────────────────────────────────
+            //   用户实报「移动时出现诡异的振荡、摆动，没有接敌时倒着飞、各种乱晃」。
+            //   根因（仿真复现）：v73 改成**推力硬上限**后**没有配套制动律** ——
+            //     舰队以满速(0.22)冲向目标，停船距离 = v²/(2a) = 0.22²/(2×0.00042)
+            //     ≈ **57.6px** ⇒ 冲过目标 57px 才开始反向 ⇒ 目标跑到身后 ⇒
+            //     掉头 ⇒ 又冲过 ⇒ **极限环振荡**（"倒着飞 + 乱晃"）。
+            //   ⚠ 这是 v73 的**遗漏**：推力有限性做了，但"该在何时减速"没做。
+            //   修复：剩余距离内**必须能停住** ⇒ 限制期望速率为 √(2·a·d)。
+            //     远距离 ⇒ 上限大（不干预）；临近 ⇒ 平滑降速 ⇒ 不冲过。
+            let _tgtVX = rawVX, _tgtVY = rawVY;
+            {
+                const _vAllow = Math.sqrt(2 * kinAccel * Math.max(0, distToTarget));
+                const _tm = Math.hypot(_tgtVX, _tgtVY);
+                if (_tm > _vAllow && _tm > 1e-9) {
+                    const _k = _vAllow / _tm;
+                    _tgtVX *= _k; _tgtVY *= _k;
+                }
+            }
             // [v73] **加速度随推力档缩放**：level = 期望速率 / 巡航速率。
             //   ⚠ 必须缩放，否则溃散档（期望速率 3× vMax）会用同一 accel
             //     ⇒ 达到溃散速度要 3× 时间（战列 25s）⇒ 撤退变龟速。
             //   缩放后"相对加速时间"恒定：任何倍率下都是 8.3s 达到该档的 95%。
             //   ⚠ level 无上限钳制：溃散/撤退倍率本就 >1，钳住会让高倍率失效。
-            const _desiredMag = Math.hypot(desiredVX, desiredVY);
+            const _desiredMag = Math.hypot(_tgtVX, _tgtVY);
             const _level = kinProfile.vMax > 0 ? _desiredMag / kinProfile.vMax : 1;
-            const dvCap = kinAccel * Math.max(0, _level) * dt;  // 本帧允许的速度变化量
-            let dvx = desiredVX - fleet.vx;
-            let dvy = desiredVY - fleet.vy;
+            // [v85] `max(1, level)`：**刹车能力不得随档位缩水**。
+            //   旧式 `level`（<1 时）会让减速变得极慢 —— 与上面的制动律双重保障。
+            const dvCap = kinAccel * Math.max(1, _level) * dt;  // 本帧允许的速度变化量
+            let dvx = _tgtVX - fleet.vx;
+            let dvy = _tgtVY - fleet.vy;
             const dvMag = Math.hypot(dvx, dvy);
             if (dvMag > dvCap && dvMag > 1e-9) {
                 dvx = (dvx / dvMag) * dvCap;                   // 只走允许的量，余量下帧继续

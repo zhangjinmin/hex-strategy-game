@@ -1823,8 +1823,15 @@ export class Battle3DOverlay {
     const { flamePos: pos, flameAlpha: aAlpha, flameSize: aSize, flameHeat: aHeat } = this;
 
     let i = 0;
-    for (const entry of this.ships.values()) {
+    // [v85] **尾焰粒子随 LOD `grow` 淡出**（用户实报图3：「放大之后只有尾焰还在」）。
+    //   v83 已修 `glow`/`flame` 锥，但**遗漏了 `flamePoints` 粒子系统** ——
+    //   它是**独立的全局 Points**（不挂在实体 group 下）⇒ 实体被 LOD 隐去后，
+    //   粒子仍照常发射 ⇒ 「只有尾焰没有舰船」「粒子与模型同框」。
+    //   修复：粒子 alpha 乘以该舰的 `grow`（从 unitVis 按 key 反查）。
+    for (const [flameKey, entry] of this.ships) {
       if (i >= FLAME_CAP) break;
+      const _uv = this.unitVis.get(flameKey);
+      const _grow = _uv ? _uv.grow : 1;
       const d = entry.group.userData.dims as { L: number; W: number; H: number } | undefined;
       if (!d) continue;
       const g = entry.group;
@@ -1856,7 +1863,7 @@ export class Battle3DOverlay {
         pos[i * 3 + 1] = g.position.y + py * gs;
         pos[i * 3 + 2] = g.position.z + (Math.cos(ang) * (pz + back) - Math.sin(ang) * px) * gs - Math.sin(ang) * wob;
         aHeat[i] = Math.max(0, 1 - k * 1.6);                // 越靠喷口越"热"（白）
-        aAlpha[i] = (1 - k) * (1 - k) * 0.55;                // 微光（原 0.70 ⇒ 收敛为"一点点"）
+        aAlpha[i] = (1 - k) * (1 - k) * 0.55 * _grow;        // [v85] ×grow 随 LOD 淡出
         aSize[i] = d.L * (0.045 + (1 - k) * 0.075) * gs;     // 尺寸约原 1/2
         i++;
       }
