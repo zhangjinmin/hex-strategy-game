@@ -7469,8 +7469,16 @@ export class BattleScene extends Phaser.Scene {
             //   ⚠ 这是 v73 的**遗漏**：推力有限性做了，但"该在何时减速"没做。
             //   修复：剩余距离内**必须能停住** ⇒ 限制期望速率为 √(2·a·d)。
             //     远距离 ⇒ 上限大（不干预）；临近 ⇒ 平滑降速 ⇒ 不冲过。
+            // ⚠ [v91] **仅在"确实在接近目标"时施加制动**（`distToTarget > 2`）。
+            //   用户实报「我方舰队都不动，下达军议命令也无动作」+ 仿真复现：
+            //     本工程多处把 `fleetTargetX/Y` 设为 `fleet.x/y`（"目标即自身"，
+            //     如驻守/停留/待命分支）⇒ `distToTarget = 0` ⇒ `_vAllow = √(2a·0) = 0`
+            //     ⇒ 期望速度被**无条件缩放为 0** ⇒ 舰队完全冻结（命令也无法推动它，
+            //     因为命令改变的是"目标"，而速度在同帧就被压没了）。
+            //   正解：制动律的职责是"防超速"，不是"决定要不要动" ——
+            //     已到点（d≈0）时应当**不干预**，由外部逻辑（期望速度本身）决定停或走。
             let _tgtVX = rawVX, _tgtVY = rawVY;
-            {
+            if (distToTarget > 2) {
                 const _vAllow = Math.sqrt(2 * kinAccel * Math.max(0, distToTarget));
                 const _tm = Math.hypot(_tgtVX, _tgtVY);
                 if (_tm > _vAllow && _tm > 1e-9) {
