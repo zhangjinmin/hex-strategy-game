@@ -40,6 +40,26 @@ export interface ManeuverOrder {
 }
 
 export const TURN_THRESHOLD = Math.PI / 6;
+
+/**
+ * [v94] **机动相位超时兜底（秒）** —— 防「卡在 hold ⇒ 舰队永久冻结」。
+ *
+ *   背景（用户实报「我方舰队都不动，下达军议命令也无任何动作」）：
+ *   brake / turn / reform 三个相位的退出条件都依赖**物理量收敛**
+ *     · brake  → input.stopped（速度 < 0.02）
+ *     · turn   → input.headingError ≤ π/24
+ *     · reform → input.reformed（阵面收敛 + maxSlotGap ≤ 6）
+ *   而 phaseSeconds 只累加、**从未用于超时判定** ⇒ 若因**友/敌 200px 排斥力、
+ *   地形阻挡、阵位冲突**导致永不收敛，就会**永久停在 motion==='hold'**
+ *   ⇒ BattleScene 把 rawVX/rawVY 清零 ⇒ **舰队完全不动**（命令改变目标也无效，
+ *     因为 hold 清零点在目标解算之后）。
+ *   ⇒ 本超时是**安全阀**：到点后强制推进到下一相位，保证链路一定可恢复。
+ *   ⚠ 取值须大于「该相位的正常最长耗时」（否则会打断正常机动）：
+ *     · brake 5s（停船）
+ *     · turn 35s（大编队 180° 掉头最慢约 28.8s — 见 shipKinematics.turn180Seconds）
+ *     · reform 10s（阵面重排只需数秒；卡住必是收敛失败）
+ */
+export const MANEUVER_PHASE_TIMEOUT = { brake: 5, turn: 35, reform: 10 } as const;
 export const DEFAULT_CONTACT_RELEASE_SECONDS = 2;
 
 export function updateContact(previous: ContactState, inRange: boolean, dtSeconds: number): ContactState {
@@ -83,6 +103,17 @@ export function advanceManeuver(state: ManeuverState, input: ManeuverInput, dtSe
     return { phase: 'reform', phaseSeconds: 0 };
   }
   if (state.phase === 'reform' && input.reformed) {
+    return { phase: 'cruise', phaseSeconds: 0 };
+  }
+  // [v94] **超时兜底**：正常退出依赖物理量收敛（见上方）；超时仍未收敛 ⇒ 强制推进。
+  //   防「永不收敛 ⇒ 永久 hold ⇒ 舰队冻结」（用户实报「舰队都不动」）。
+  if (state.phase === 'brake' && elapsed > MANEUVER_PHASE_TIMEOUT.brake) {
+    return { phase: 'turn', phaseSeconds: 0 };
+  }
+  if (state.phase === 'turn' && elapsed > MANEUVER_PHASE_TIMEOUT.turn) {
+    return { phase: 'reform', phaseSeconds: 0 };
+  }
+  if (state.phase === 'reform' && elapsed > MANEUVER_PHASE_TIMEOUT.reform) {
     return { phase: 'cruise', phaseSeconds: 0 };
   }
   return { ...state, phaseSeconds: elapsed, motion: maneuverOrder(state.phase).motion };
