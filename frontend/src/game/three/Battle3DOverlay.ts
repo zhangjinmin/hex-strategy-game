@@ -462,14 +462,16 @@ const DOT_IN_HI = 5.0;
    ⇒ 阈值是**感知校准**过的，不应为"更早出现模型"而单方面下调。
    回归 14/26/17/15，配下方"舰队级统一判定"解决同队混合。
    单调关系：MESH_IN_LO(14) < MESH_DROP(15) < MESH_KEEP(17) < MESH_IN_HI(26)。 */
-/* [v81b] **整体下移 2px**：14/26/17/15 → **12/24/15/13**。
-   依据：用户诊断面板实测有一支舰队 `px=16.7`（< 旧 keep 17）
-   ⇒ 不进候选 ⇒ **整队保持光点**，用户读作"部分舰队是圆点"。
-   而用户的战场规模已到 480 单位（多支 px 落 14~17 区间的舰队），
-   该区间被留成点在观感上不可接受。
-   单调关系保持：LO(12) < DROP(13) < KEEP(15) < HI(24)。
-   ⚠ 这是对原校准（14/26/17/15）的**有依据下移**，不是随手调参 ——
-     依据是"实测 px 分布 + 用户明确的'不要点'诉求 + 预算已提到 900 有余量"。 */
+/* [v82] **修正阈值序**（用户诊断面板二次实测，2026-10-15）：
+     实测 `n=120 px=13.8 mesh=0 FADE` —— **grow 已开始增长却拿不到实体**。
+     根因：旧序 `LO(12) < DROP(13) < KEEP(15) < HI(24)` 中 `KEEP > LO`
+     ⇒ px 落在 `[LO, KEEP)` = [12,15) 的舰队「有淡入意图但无实体」⇒ 只能是点。
+   ⇒ 正确序：**`DROP < KEEP < LO < HI`**
+     · `DROP < KEEP`：实体池滞回（回收线低于建线）
+     · `KEEP < LO`：**实体先建好，`grow` 才开始增长** ⇒ px ≥ KEEP 必有实体
+     · `LO < HI`：grow 淡入区间
+   新值：`DROP(8) < KEEP(10) < LO(12) < HI(24)`。
+   ⇒ px ≥ 10 一律有实体 ⇒ 配合"有实体即无点"规则 ⇒ **px ≥ 10 无点**。 */
 const MESH_IN_LO = 12;
 const MESH_IN_HI = 24;
 /** 队内垂直层数：单一真源 = config/fleetTierLayout.ts 的 TEAM_LAYERS（5，demo 滑杆 1~5，用户定 5）。 */
@@ -478,9 +480,10 @@ const MESH_IN_HI = 24;
 const CAM_ELEV = 0.6109;
 /** px：实体池滞回（创建阈 > 销毁阈）。缺滞回会在相机推拉时每帧 buildShip/dispose → 卡顿
  *  （随 SHIP_VISUAL_SCALE 等比下调，与 MESH_IN 同源换算） */
-/* [v81b] 随 LO/HI 同幅下移（详见 MESH_IN_LO 处的依据）。 */
-const MESH_KEEP = 15;
-const MESH_DROP = 13;
+/* [v82] 修正序：`DROP(8) < KEEP(10) < LO(12)`（详见 MESH_IN_LO 处依据）。
+   旧值 15/13 使 `KEEP > LO` ⇒ [12,15) 区间"有淡入无实体"。 */
+const MESH_KEEP = 10;
+const MESH_DROP = 8;
 /** ⚠【已过时·仅存备查】实体硬上限的历史注释。当前语义见下方 `MAX_MESHES` 的正式注释；
  *  且光点层缓冲**已改用 `DOT_SLOTS` 分配**（不再是这里的 "光点层按 MAX_MESHES 分配"）。
  *  实体硬上限。= N_MAX（兵力折算层的全场实体预算），故正常情况下不触发；留作极端机位兜底。
@@ -3618,7 +3621,9 @@ export class Battle3DOverlay {
     //     dist=400 ⇒ 0.50 近景 / 600 ⇒ 0.74 近景 / 806（初始）⇒ 1.00 远景。
     //   初版用 0.55/0.70 过严 —— 只拉近 25%（dist 600）就退回远景档，
     //   而用户的"近景"未必拉到极限。
-    const enter = this.lodNear ? 0.92 : 0.78;
+    // [v82] 滞回带加宽（0.78/0.92 → 0.75/0.95）：本开关现**仅控粒子/星空退场**，
+    //   但同样会在边界抖动 ⇒ 粒子忽隐忽现。加宽到 20% 减少切换频次。
+    const enter = this.lodNear ? 0.95 : 0.75;
     const next = ratio < enter;
     if (next !== this.lodNear) this.lodNear = next;
   }
@@ -3751,11 +3756,20 @@ export class Battle3DOverlay {
     }
   }
 
-  /** [v76] 当前档位的四个阈值（近景档极低 ⇒ 近景全模型；远景档原值 ⇒ 保留点阵） */
-  private get lodLo(): number { return this.lodNear ? 5 : MESH_IN_LO; }
-  private get lodHi(): number { return this.lodNear ? 9 : MESH_IN_HI; }
-  private get lodKeep(): number { return this.lodNear ? 6 : MESH_KEEP; }
-  private get lodDrop(): number { return this.lodNear ? 5 : MESH_DROP; }
+  /**
+   * [v82] **取消"近景/远景两档"**（用户实报「拉近的某个瞬间前排舰队出现模型，
+   *   又一瞬间切回圆点」= 档位在 `ratio 0.78` 边界反复切换 ⇒ 阈值在
+   *   `keep 6` 与 `keep 15` 之间跳 ⇒ 实体批量建/销 ⇒ 闪烁）。
+   *
+   * 取消后统一用单套阈值：`DROP(8) < KEEP(10) < LO(12) < HI(24)`。
+   *   · 近景（相机近 ⇒ px 大）⇒ px ≥ 24 ⇒ 全实心模型（**用户的诉求自然满足**）
+   *   · 远景（相机远 ⇒ px 小）⇒ 小舰队为点（保留雷达观感）
+   * ⇒ 无需两档即可同时满足"近景全模型"与"远景雷达点阵"，且**无切换抖动**。
+   */
+  private get lodLo(): number { return MESH_IN_LO; }
+  private get lodHi(): number { return MESH_IN_HI; }
+  private get lodKeep(): number { return MESH_KEEP; }
+  private get lodDrop(): number { return MESH_DROP; }
 
   private syncShips(dt: number) {
     this.updateLodTier();   // [v76] 先定档，同帧内所有消费点读一致值
