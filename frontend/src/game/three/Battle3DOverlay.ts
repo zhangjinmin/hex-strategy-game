@@ -544,6 +544,11 @@ const LOD_RECOVER_COUNT = 170;
 /* [v81] **32 → 96**。480 单位 / 32 每帧 = 15 帧才补齐（≈0.25s 的"半边空"窗口）。
    96 ⇒ 5 帧补齐，肉眼几乎不可察。仍保留分帧（防单帧 build 尖峰）。 */
 const MESH_ADD_PER_FRAME = 96;
+/** [v83] 引擎暖晕（glow）基准不透明度 —— 与 battleFx.buildEngineFx 的 0.55 同源。
+ *  运行时按其 × `v.grow` 缩放 ⇒ 远景（grow=0）全隐，避免"无舰之焰"。 */
+const GLOW_BASE_OPACITY = 0.55;
+/** [v83] 引擎白核（flame）基准不透明度 —— 与 buildEngineFx 的 0.9 同源。 */
+const FLAME_BASE_OPACITY = 0.9;
 /** 每帧回收实体上限（同理：相机拉远时避免一帧内 dispose 数百个） */
 const MESH_DROP_PER_FRAME = 64;
 /** 换档分帧迁移：每帧淘汰的**旧档**实体上限（≤24；下一帧由第二遍按新档经 addMesh 自然补回） */
@@ -4112,6 +4117,18 @@ export class Battle3DOverlay {
       v.yaw = g.rotation.y;
       // [v75] 用 fleetPx（舰队代表）⇒ 整队同步长出/淡出，同队不会一半模型一半点
       v.grow = sstep(this.lodLo, this.lodHi, v.fleetPx);
+      // [v83] **引擎特效随 LOD `grow` 同步淡入**（用户实报「金色尾焰，只有尾焰没有舰船」）。
+      //   根因：舰体是**线条化渲染**（Line），缩小时线宽变细直至不可见；
+      //     而 `glow`（引擎暖晕，`color=0xffcc66` 琥珀金）是**面片 + AdditiveBlending**
+      //     ⇒ 不随实体缩小而消失 ⇒ 中等距离下"线框已看不见、glow 还亮着"
+      //     ⇒ 用户看到的就是那些**孤立金色竖条**。
+      //   修复：glow / flame 的 opacity 随 `v.grow` 线性缩放
+      //     ⇒ grow=0（远景极小）时特效全隐；grow=1（近景）时恢复原值
+      //     ⇒ 特效与舰体的可见性**严格同步**，不再出现"无舰之焰"。
+      const _gm = entry.glow?.material as THREE.MeshBasicMaterial | undefined;
+      if (_gm) _gm.opacity = GLOW_BASE_OPACITY * v.grow;
+      const _fm = entry.flame?.material as THREE.MeshBasicMaterial | undefined;
+      if (_fm) _fm.opacity = FLAME_BASE_OPACITY * v.grow;
     }
 
     // 销毁已死 unit 的实体（生命结束才销毁；低于滞回下阈的已在第二遍归还）
