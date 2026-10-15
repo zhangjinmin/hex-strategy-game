@@ -231,3 +231,58 @@ P4 补棋盘格 ⇒ P5 收口结算 ⇒ P6 补友军行为。
 - v95 发现"提督属性不生效"⇒ 本方案 L1/L2 让提督**有配置且属性进入单舰**
 - v95 发现"`classType` 语言分叉 ⇒ 机制空转"⇒ 本方案 L2 **固定中文键**
 - v95 发现"战术模拟失去检验意义"⇒ 本方案让两轨**同源**，恢复其存在价值
+
+---
+
+## 11. P1 实测回灌（2026-10-15，三方评审后）
+
+P1 已完成并通过三方评审（见 `docs/qa/2026-10-15-p1-tripartite-review.md`）。
+以下为实施中暴露的**真实情况**，直接修订本方案：
+
+### 11.1 ★ 重要修正：引擎已共享，问题只在「参数构造」
+
+`config/shipScaling.ts` 的 `buildTacticalUnits` **本来就是两轨共用的唯一折算入口**
+（源码注释自述「★ 唯一折算入口」），且 `TacticalUnitSeed` **已产出中文 `classType` 与 `def/range/interval`**。
+
+⇒ **「两套平行」的实质是「5 个输入参数的计算」分叉**，不是引擎分叉：
+
+| 输入 | 演习轨 | 战役轨 |
+|---|---|---|
+| `totals` 编制 | `fac.composition` | 大地图 `fleet.composition` |
+| `visualCount` | `fac.entityBudget` | 军衔 → 编制位 |
+| `mods` | **≡1** | 提督属性 × 补给 × 士气 × 科技 |
+| `classType` | 用 `seed.classType`（中文）✓ | 用 `slot.type`（英文）✗ **丢弃了引擎给的正确值** |
+| `def` / `interval` | 用 `seed.def` / `seed.interval` ✓ | **硬编码 10 / 2000** ✗ **同样丢弃了引擎给的值** |
+
+⇒ **P2/P3 的工作量因此大幅下降**：
+
+- **P3 的 `classType` 统一 = 战役轨改回读 `seed.classType`**（不是新建映射表）
+- **P3 的 `def`/`interval` 统一 = 战役轨改回读 `seed.def` / `seed.interval`**
+
+### 11.2 P1 交付形态（与本文 §5 的差异，均为必要）
+
+- `FleetGenInput` 新增 **`troopOf`（必填）/ `coordSource`（可选）** 两个透传字段
+  —— 两轨 troop 真源与坐标源本就不同，纯函数无法内聚；**P3 收敛 troop 真源时移除**
+- `ShipType` 从 `types/game` 导入（`shipScaling` 只 `import type` 未 re-export；本文 §5 示例是笔误）
+- `FleetGenResult` 增加 `diag`（可观测诊断，生产代码不消费）
+
+### 11.3 记入 P3 待办的「未统一分支」（P1 已确认它们不在统一入口内）
+
+| 位置 | 说明 |
+|---|---|
+| `gameStore.ts` raw-slot 分支（约 `:3628-3631`） | 吃 `normalizeRawSlots(persistedSlots)`（用户手点槽位），**不属** composition+visualCount 输入模型 ⇒ 需 P3 单独设计（或废弃该路径） |
+| `gameStore.ts:3699` 崩溃兜底 | `buildScaledSlots` + `applyStatsToSlots` + `neutralMods`；P1 未动（本不在 diff 内）⇒ P3 一并收口 |
+
+### 11.4 关于「零行为变化」的验证方法（可复用的方法论）
+
+P1 的红队抓到：**「新旧对比」若两边最终调用同一个底层函数，则是 `f(x)===f(x)` 的自证**，
+**测不到「调用方公式」的回归** —— 而调用方公式往往正是改动的实际位置。
+
+⇒ **后续 P2~P6 的台架必须遵守**：对比的参照系应是**手工逐字重建的旧调用方表达式**，
+不能是「新代码内部调用的那个函数」。
+
+### 11.5 仍未覆盖（需真机）
+
+三方一致承认：**真机端到端未跑**（node 台架无法实例化完整 Pinia store，
+故 `store.troopsData` / `getEffectiveStats` / `adminStore.technology` 等**运行期真实数据**未覆盖）。
+⇒ **P2 起每期都应安排一次「战术模拟实跑」作为验收环节。**
