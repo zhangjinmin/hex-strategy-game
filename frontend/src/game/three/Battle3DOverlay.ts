@@ -28,8 +28,7 @@ import {
   makeShieldEntry, shieldFire, shieldStep,
   buildLaserEntry, laserStep, disposeLaserEntry,
   buildHitEntry, hitStep, disposeHitEntry,
-  getEnginePortsFor, buildEngineFx,
-  type EnginePort, type LaserEntry, type HitEntry, type ShieldEntry,
+  type LaserEntry, type HitEntry, type ShieldEntry,
 } from './battleFx';
 import { drainFx3d, type Fx3dEvent } from '../battle3dFx';
 import { projectFleetRepresentation, projectFleetRepresentationBySlot } from '../combatRepresentation';
@@ -208,8 +207,6 @@ interface CaptureState {
 /** buildShip 产物：pendingModel 存在表示"模型加载中，就绪后请原地换装"；modelVer=构建时的模型版本 */
 interface BuiltShip {
   group: THREE.Group;
-  flame: THREE.Mesh;
-  glow: THREE.Mesh;
   pendingModel?: ShipModelReg;
   modelVer?: number;
 }
@@ -217,8 +214,6 @@ interface BuiltShip {
 interface ShipEntry {
   key: string;
   group: THREE.Group;
-  flame: THREE.Mesh;
-  glow: THREE.Mesh;
   u: any;
   fleet: any;
   lastX: number;
@@ -228,8 +223,6 @@ interface ShipEntry {
    *  [R10-B1] 改由 2D 层 `fleet.facingSmooth`（按「帧 × dt」限速平滑）**直接给出** ⇒ 此处仅持有值，
    *  不再二次限速（避免速度倍率 ≠1 时 2D/3D 错位）。SHIP_TURN_RATE 仅用于不可达的"无朝向"兜底分支。 */
   yaw: number;
-  /** 尾焰粒子状态（每舰 FLAME_PER_SHIP 个，错峰起步避免整齐划一） */
-  flameP: { t: number; jitter: number; pIdx: number }[];
   /** 待换装模型（GLB 晚于舰船生成才就绪时，据此原地换装） */
   pendingModel?: ShipModelReg;
   /** 构建时的模型版本（0 = 程序化兜底） */
@@ -436,12 +429,8 @@ const BB_CSS = `
 
 // ── 尾焰粒子系统（原型移植）──
 // [v13 ③] 用户实报"尾焰显得有点大…从喷气口射出一点就好，最好是金红色" ⇒ 粒子数减半、寿命缩短。
-const FLAME_PER_SHIP = 7;       // 每舰粒子数（v13：14→7）
-const FLAME_LIFE = 0.30;        // 单粒子寿命（秒）（v13：0.55→0.30）
 // [兵力折算] 尾焰粒子预算按全场实体上限 N_MAX 上调（14×400=5600 粒子，开销可忽略），
 // 否则实体数超过 N_MAX 时后段舰无尾焰。
-const FLAME_CAP_SHIPS = N_MAX; // 支持的最大舰数，超出部分不发射尾焰
-const FLAME_CAP = FLAME_PER_SHIP * FLAME_CAP_SHIPS;
 
 // ── 三级表示分级阈值（移植 battle-dot-demo 的 THRESH）──
 // px = 该舰的屏幕投影长度（像素），见 pxOf()。所有分级都由 px 驱动，与距离无直接关系。
@@ -543,11 +532,6 @@ const LOD_RECOVER_COUNT = 170;
 /* [v81] **32 → 96**。480 单位 / 32 每帧 = 15 帧才补齐（≈0.25s 的"半边空"窗口）。
    96 ⇒ 5 帧补齐，肉眼几乎不可察。仍保留分帧（防单帧 build 尖峰）。 */
 const MESH_ADD_PER_FRAME = 96;
-/** [v83] 引擎暖晕（glow）基准不透明度 —— 与 battleFx.buildEngineFx 的 0.55 同源。
- *  运行时按其 × `v.grow` 缩放 ⇒ 远景（grow=0）全隐，避免"无舰之焰"。 */
-const GLOW_BASE_OPACITY = 0.55;
-/** [v83] 引擎白核（flame）基准不透明度 —— 与 buildEngineFx 的 0.9 同源。 */
-const FLAME_BASE_OPACITY = 0.9;
 /** 每帧回收实体上限（同理：相机拉远时避免一帧内 dispose 数百个） */
 const MESH_DROP_PER_FRAME = 64;
 /** 换档分帧迁移：每帧淘汰的**旧档**实体上限（≤24；下一帧由第二遍按新档经 addMesh 自然补回） */
@@ -1026,13 +1010,6 @@ export class Battle3DOverlay {
   private disposed = false;
   private clock = new THREE.Clock();
 
-  // 尾焰粒子系统
-  private flamePoints: THREE.Points | null = null;
-  private flameGeo: THREE.BufferGeometry | null = null;
-  private flamePos = new Float32Array(FLAME_CAP * 3);
-  private flameAlpha = new Float32Array(FLAME_CAP);
-  private flameSize = new Float32Array(FLAME_CAP);
-  private flameHeat = new Float32Array(FLAME_CAP);
 
   // CRT 后处理管线（原型移植：色差 + 扫描线 + 滚动亮带 + 暗扫掠 + 暗角 + 噪点）
   private rt: THREE.WebGLRenderTarget;
@@ -1469,7 +1446,6 @@ export class Battle3DOverlay {
 
     this.scene.add(this.shipGroup);
     // 尾焰粒子（全局 Points，需在舰船组之后加入以保证加法混合叠加正确）
-    this.buildFlames();
     // 三级表示的中景光点层 + 光晕层（各 1 个 Points；renderOrder 1 / 6）
     this.buildShipDots();
     // 三级表示的标记层（远景唯一表示；中景降为 MARKER_FLOOR 的"队形底"与光点叠两层）
@@ -1764,119 +1740,7 @@ export class Battle3DOverlay {
     };
   }
 
-  /**
-   * 尾焰粒子系统（原型 flameSystem 移植）。
-   * 单个全局 Points：所有舰船共用一份 buffer，1 draw call。
-   * [v13 ③] 粒子色沿寿命渐变改为**金红三档**——喷口白热 → 中段金橙 → 尾端深红（用户要求金红色调）。
-   */
-  private buildFlames() {
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(this.flamePos, 3));
-    geo.setAttribute('aAlpha', new THREE.BufferAttribute(this.flameAlpha, 1));
-    geo.setAttribute('aSize', new THREE.BufferAttribute(this.flameSize, 1));
-    geo.setAttribute('aHeat', new THREE.BufferAttribute(this.flameHeat, 1));
 
-    const mat = new THREE.ShaderMaterial({
-      uniforms: { uPix: { value: Math.min(window.devicePixelRatio, 2) } },
-      vertexShader: [
-        'attribute float aAlpha; attribute float aSize; attribute float aHeat;',
-        'varying float vAlpha; varying float vHeat;',
-        'uniform float uPix;',
-        'void main(){',
-        '  vAlpha = aAlpha; vHeat = aHeat;',
-        '  vec4 mv = modelViewMatrix * vec4(position, 1.0);',
-        '  gl_PointSize = aSize * uPix * (260.0 / max(1.0, -mv.z));',
-        '  gl_Position = projectionMatrix * mv;',
-        '}'
-      ].join('\n'),
-      fragmentShader: [
-        'varying float vAlpha; varying float vHeat;',
-        'void main(){',
-        '  vec2 c = gl_PointCoord - 0.5;',
-        '  float d = length(c);',
-        '  if (d > 0.5) discard;',
-        '  float fall = pow(1.0 - d * 2.0, 1.6);',
-        '  vec3 hot  = vec3(1.00, 0.92, 0.72);',
-        '  vec3 mid  = vec3(1.00, 0.45, 0.10);',
-        '  vec3 cool = vec3(0.72, 0.10, 0.03);',
-        '  vec3 col = (vHeat > 0.6) ? mix(mid, hot, (vHeat - 0.6) / 0.4) : mix(cool, mid, vHeat / 0.6);',
-        '  gl_FragColor = vec4(col, fall * vAlpha);',
-        '}'
-      ].join('\n'),
-      transparent: true,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-
-    const points = new THREE.Points(geo, mat);
-    points.frustumCulled = false;
-    points.name = 'shipFlames';
-    this.scene.add(points);
-    this.flameGeo = geo;
-    this.flamePoints = points;
-  }
-
-  /** 每帧推进尾焰粒子：从舰尾喷口向后**短促**拖出并衰减（v13 ③：长度/尺寸显著收小，金红色） */
-  private updateFlames(dt: number) {
-    const geo = this.flameGeo;
-    if (!geo) return;
-    const { flamePos: pos, flameAlpha: aAlpha, flameSize: aSize, flameHeat: aHeat } = this;
-
-    let i = 0;
-    // [v85] **尾焰粒子随 LOD `grow` 淡出**（用户实报图3：「放大之后只有尾焰还在」）。
-    //   v83 已修 `glow`/`flame` 锥，但**遗漏了 `flamePoints` 粒子系统** ——
-    //   它是**独立的全局 Points**（不挂在实体 group 下）⇒ 实体被 LOD 隐去后，
-    //   粒子仍照常发射 ⇒ 「只有尾焰没有舰船」「粒子与模型同框」。
-    //   修复：粒子 alpha 乘以该舰的 `grow`（从 unitVis 按 key 反查）。
-    for (const [flameKey, entry] of this.ships) {
-      if (i >= FLAME_CAP) break;
-      const _uv = this.unitVis.get(flameKey);
-      const _grow = _uv ? _uv.grow : 1;
-      const d = entry.group.userData.dims as { L: number; W: number; H: number } | undefined;
-      if (!d) continue;
-      const g = entry.group;
-      const ang = g.rotation.y;
-      // 实体长出动画缩放的是 group 本身，粒子的所有世界偏移与粒子尺寸都在 group 局部空间里
-      // 定义，必须同乘缩放，否则长出那 0.25s 里尾焰会脱离舰尾飘在后方（舰 25% 大、焰在 100% 处）。
-      const gs = g.scale.x || 1;
-      // [v22 尾焰] 发射点从"舰尾中心单点"改为**各喷口**（与火焰光斑同一套探测结果）⇒ 粒子也从尾部几处冒出
-      const ports = g.userData.enginePorts as EnginePort[] | undefined;
-      const pScale = (g.userData.enginePortScale as number | undefined) ?? (g.userData.engineScale as number | undefined) ?? 1;
-      const nPorts = ports && ports.length ? ports.length : 1;
-
-      for (const p of entry.flameP) {
-        if (i >= FLAME_CAP) break;
-        p.t += dt * (0.85 + p.jitter * 0.3);
-        if (p.t > FLAME_LIFE) p.t -= FLAME_LIFE;
-        const k = p.t / FLAME_LIFE;                          // 0=刚喷出 1=即将消散
-        // 局部喷口坐标（x 横向 / y 垂向 / z 朝后；未配喷口时退回舰尾中心）
-        const port = ports && ports.length ? ports[p.pIdx % nPorts] : null;
-        const px = port ? port.x * pScale : 0;
-        const py = port ? port.y * pScale : 0;
-        const pz = port ? port.z * pScale : d.L * 0.5;
-        // [v22 尾焰] 拖尾大幅收短 —— 用户实报"动画里尾焰几乎是没的，只是尾巴几处微白光"：
-        //   v13 曾是 0.22~0.37L（明显拖尾），现 0.05~0.10L ⇒ 读作"喷口透出的一抹光"，不是尾流。
-        const back = k * d.L * (0.05 + p.jitter * 0.05) * gs;
-        const wob = Math.sin(p.t * 26 + p.jitter * 17) * d.W * 0.035 * k * gs;
-        // 局部 (px,py,pz) → 世界：绕 Y 旋转 ang（局部 +z → (sin,cos)、局部 +x → (cos,-sin)）
-        pos[i * 3] = g.position.x + (Math.sin(ang) * (pz + back) + Math.cos(ang) * px) * gs + Math.cos(ang) * wob;
-        pos[i * 3 + 1] = g.position.y + py * gs;
-        pos[i * 3 + 2] = g.position.z + (Math.cos(ang) * (pz + back) - Math.sin(ang) * px) * gs - Math.sin(ang) * wob;
-        aHeat[i] = Math.max(0, 1 - k * 1.6);                // 越靠喷口越"热"（白）
-        aAlpha[i] = (1 - k) * (1 - k) * 0.55 * _grow;        // [v85] ×grow 随 LOD 淡出
-        aSize[i] = d.L * (0.045 + (1 - k) * 0.075) * gs;     // 尺寸约原 1/2
-        i++;
-      }
-    }
-    // 未占用的槽位透明度归零（舰船数减少时残留粒子立刻消失）
-    for (let j = i; j < FLAME_CAP; j++) aAlpha[j] = 0;
-
-    geo.setDrawRange(0, i);
-    geo.attributes.position.needsUpdate = true;
-    geo.attributes.aAlpha.needsUpdate = true;
-    geo.attributes.aSize.needsUpdate = true;
-    geo.attributes.aHeat.needsUpdate = true;
-  }
 
   // ---------- 星空 ----------
   private buildStars() {
@@ -3241,7 +3105,7 @@ export class Battle3DOverlay {
   /** [v22 尾焰] 旧的「舷侧小喷口锥」已删除 —— 全部舰型统一走 buildEngineFx（喷口光斑 + 柔晕）。
    *  保留此注释是为了让后续排查"为什么找不到 buildGlowJet"时能直接看到去向。 */
 
-  private buildGenericShip(d: { L: number; W: number; H: number }, facColor: number, classType: string): { group: THREE.Group; flame: THREE.Mesh; glow: THREE.Mesh } {
+  private buildGenericShip(d: { L: number; W: number; H: number }, facColor: number, classType: string): { group: THREE.Group } {
     const group = new THREE.Group();
     const shipCol = new THREE.Color(facColor).multiplyScalar(0.55).getHex();
     const bodyMat = new THREE.MeshPhongMaterial({ color: shipCol, transparent: true, opacity: 0.62, shininess: 45, specular: 0x88aacc, flatShading: true });
@@ -3272,27 +3136,15 @@ export class Battle3DOverlay {
     }
     // [v22 尾焰] 双舷引擎 + 中央副喷口 ⇒ **三处微白光斑**
     //   （旧实现：两舷各一颗静态小球 + 舰尾中央一柱尖锥，读作"中间冒尖"）
-    const ports: EnginePort[] = [
-      { x: -d.W * 0.32, y: 0, z: d.L * 0.50, hx: d.W * 0.16, hy: d.W * 0.10, round: false },
-      { x: d.W * 0.32, y: 0, z: d.L * 0.50, hx: d.W * 0.16, hy: d.W * 0.10, round: false },
-      { x: 0, y: -d.H * 0.18, z: d.L * 0.54, hx: d.W * 0.11, hy: d.W * 0.08, round: false },
-    ];
-    const fx = buildEngineFx(d.L, ports, 1);
-    group.add(fx.flame);
-    group.add(fx.glow);
     group.userData.dims = d;
-    group.userData.enginePorts = ports;
-    group.userData.engineScale = 1;
-    group.userData.enginePortScale = 1;
-    group.userData.enginePortCount = ports.length;
-    return { group, flame: fx.flame, glow: fx.glow };
+    return { group };
   }
 
   /**
    * 补给运输舰（AUX）程序化兜底：细长箱形货舱 + 龙骨桁架轮廓，橙环标识后勤属性。
    * 与战舰造型明确区分（货舱方箱 vs 舰首锥），玩家一眼可辨"这是可击沉的运输舰"。
    */
-  private buildSupplyShip(d: { L: number; W: number; H: number }, facColor: number): { group: THREE.Group; flame: THREE.Mesh; glow: THREE.Mesh } {
+  private buildSupplyShip(d: { L: number; W: number; H: number }, facColor: number): { group: THREE.Group } {
     const group = new THREE.Group();
     const shipCol = new THREE.Color(facColor).multiplyScalar(0.55).getHex();
     const bodyMat = new THREE.MeshPhongMaterial({ color: shipCol, transparent: true, opacity: 0.62, shininess: 30, specular: 0x88aacc, flatShading: true });
@@ -3324,19 +3176,8 @@ export class Battle3DOverlay {
     }
 
     // [v22 尾焰] 补给舰：两舷货舱尾喷口 ⇒ 两处微白光斑（旧：中央一柱尖锥）
-    const ports: EnginePort[] = [
-      { x: -d.W * 0.30, y: 0, z: d.L * 0.32, hx: d.W * 0.15, hy: d.W * 0.10, round: false },
-      { x: d.W * 0.30, y: 0, z: d.L * 0.32, hx: d.W * 0.15, hy: d.W * 0.10, round: false },
-    ];
-    const fx = buildEngineFx(d.L, ports, 1);
-    group.add(fx.flame);
-    group.add(fx.glow);
     group.userData.dims = d;
-    group.userData.enginePorts = ports;
-    group.userData.engineScale = 1;
-    group.userData.enginePortScale = 1;
-    group.userData.enginePortCount = ports.length;
-    return { group, flame: fx.flame, glow: fx.glow };
+    return { group };
   }
 
   /**
@@ -3372,22 +3213,14 @@ export class Battle3DOverlay {
 
     // [v22 尾焰] 喷口从**模型几何**自动探测（同型舰缓存）⇒ 位置不再钉在舰尾中心单点；
     //   造型由"锥形喷流"改为"几处微白光斑"（见 buildEnginePortGeo / buildEngineFx）。
-    const ports = getEnginePortsFor(reg, geo, modelLen, reg.baseName, reg.fxAnchors);
     // ⚠ 第 4 参 pScale = **显示长度**（不是 s）：喷口坐标按模型原始长度归一化，
     //   舰体被缩放到显示尺寸，换算必须用显示长度（详见 battleFx.buildEnginePortGeo 注释）。
-    const fx = buildEngineFx(L, ports, s, L);
-    group.add(fx.flame);
-    group.add(fx.glow);
     // 尾焰粒子对齐 + 调试断言用：喷口（归一化坐标）与模型缩放
-    group.userData.enginePorts = ports;
-    group.userData.engineScale = s;
     // [v26b] 粒子发射点用的**换算系数**：喷口坐标是按模型原始长度归一化 ⇒ 必须乘**显示长度**
     //   （不是 s）。旧代码粒子也用 s ⇒ 与光斑同样差 modelLen 倍（粒子会飞出舰体）。
-    group.userData.enginePortScale = L;
-    group.userData.enginePortCount = ports.length;
 
     group.userData.dims = d;
-    return { group, flame: fx.flame, glow: fx.glow };
+    return { group };
   }
 
   /**
@@ -3396,7 +3229,7 @@ export class Battle3DOverlay {
    * 所有静态件 merge 成单 Mesh（1 draw call）+ 单条 EdgesGeometry 轮廓线框，
    * 几十艘同屏不增加对象数；引擎光核/尾焰挂点兼容原管线。
    */
-  private buildEmpireBattleship(d: { L: number; W: number; H: number }, facColor: number): { group: THREE.Group; flame: THREE.Mesh; glow: THREE.Mesh } {
+  private buildEmpireBattleship(d: { L: number; W: number; H: number }, facColor: number): { group: THREE.Group } {
     // ── 程序化描形兜底 ──
     const L = d.L;
     const group = new THREE.Group();
@@ -3507,25 +3340,11 @@ export class Battle3DOverlay {
     }
 
     // ── [v22 尾焰] 三喷口光斑（原为 3 颗独立小球 + 尾部中央一柱尖锥 ⇒ 现合并为两层各 1 Mesh）──
-    const ports: EnginePort[] = [
-      { x: -0.05 * L, y: 0.06 * L, z: 0.48 * L, hx: 0.020 * L, hy: 0.020 * L, round: true },
-      { x: 0.05 * L, y: 0.06 * L, z: 0.48 * L, hx: 0.020 * L, hy: 0.020 * L, round: true },
-      { x: 0, y: -0.032 * L, z: 0.545 * L, hx: 0.026 * L, hy: 0.026 * L, round: true },
-    ];
-    const fx = buildEngineFx(L, ports, 1);
-    group.add(fx.flame);
-    group.add(fx.glow);
-    const flame = fx.flame;
-    const glow = fx.glow;
-    group.userData.enginePorts = ports;
-    group.userData.engineScale = 1;
-    group.userData.enginePortScale = 1;
-    group.userData.enginePortCount = ports.length;
 
     // 全长 -0.50 ~ +0.535 ≈ 1.035L → 基本贴合占位
     group.scale.setScalar(0.96);
     group.userData.dims = d;
-    return { group, flame, glow: glow! };
+    return { group };
   }
 
   /**
@@ -3654,10 +3473,7 @@ export class Battle3DOverlay {
    * ⚠ 两者都只在 `lodNear` 生效；远景档完全恢复原行为（雷达点阵观感不变）。
    */
   private applyNearTierLayerPolicy(): void {
-    // 尾焰粒子：近景隐藏（debugHide 显式指定 hide=flame 时同样隐藏）
-    if (this.flamePoints && !this.debugHide.has('flame')) {
-      this.flamePoints.visible = !this.lodNear;
-    }
+
     // 星空：近景降透明度（缓存引用 —— 星空创建时未持字段）
     if (!this._starsRef) {
       this._starsRef = (this.scene.getObjectByName('sceneStars') as THREE.Points | null) ?? null;
@@ -3755,7 +3571,6 @@ export class Battle3DOverlay {
       } catch { /* 非浏览器环境：保持空集 */ }
     }
     if (this.debugHide.size === 0) return;
-    if (this.flamePoints) this.flamePoints.visible = !this.debugHide.has('flame');
     if (this.dotPoints) this.dotPoints.visible = this.dotPoints.visible && !this.debugHide.has('dots');
     if (this.haloPoints) this.haloPoints.visible = this.haloPoints.visible && !this.debugHide.has('halo');
     if (this.debugHide.has('stars')) {
@@ -4015,8 +3830,6 @@ export class Battle3DOverlay {
         const built = this.buildShip(String(u.classType || 'destroyer'),
           factionColor(this.getFac(u.factionId) || {}), this.isEmpireSideOf(u), entry.flagshipKey);
         entry.group = built.group;
-        entry.flame = built.flame;
-        entry.glow = built.glow;
         entry.pendingModel = built.pendingModel;
         entry.modelVer = built.modelVer ?? 0;
         entry.baseScale = built.group.scale.x || 1;
@@ -4103,10 +3916,6 @@ export class Battle3DOverlay {
       const damaged = hpPct < 0.5;
       // [v14 ①] 尾焰改为**顶点色渐变锥**（底白黄→尖深红）⇒ 未受创时 color 必须为 0xffffff
       //（vertexColors 与 material.color 相乘，白=不改色相，保留金红渐变）；受创时染红。
-      const flameMat = entry.flame.material as THREE.MeshBasicMaterial;
-      flameMat.color.setHex(damaged ? 0xff5533 : 0xffffff);
-      entry.flame.scale.setScalar(damaged ? 1.35 : 1.0);
-      (entry.glow.material as THREE.MeshBasicMaterial).color.setHex(damaged ? 0xff6644 : 0xffcc66);
 
       // 实体长出：MESH_GROW_DUR 秒内从 0.25 长到基准缩放（与光点/光晕淡出同步）。
       // 销毁保持瞬时、不加淡出——交班给光点/光晕两层接力，两级反向淡出即可无缝。
@@ -4128,13 +3937,7 @@ export class Battle3DOverlay {
       //     而 `glow`（引擎暖晕，`color=0xffcc66` 琥珀金）是**面片 + AdditiveBlending**
       //     ⇒ 不随实体缩小而消失 ⇒ 中等距离下"线框已看不见、glow 还亮着"
       //     ⇒ 用户看到的就是那些**孤立金色竖条**。
-      //   修复：glow / flame 的 opacity 随 `v.grow` 线性缩放
-      //     ⇒ grow=0（远景极小）时特效全隐；grow=1（近景）时恢复原值
-      //     ⇒ 特效与舰体的可见性**严格同步**，不再出现"无舰之焰"。
-      const _gm = entry.glow?.material as THREE.MeshBasicMaterial | undefined;
-      if (_gm) _gm.opacity = GLOW_BASE_OPACITY * v.grow;
-      const _fm = entry.flame?.material as THREE.MeshBasicMaterial | undefined;
-      if (_fm) _fm.opacity = FLAME_BASE_OPACITY * v.grow;
+
     }
 
     // 销毁已死 unit 的实体（生命结束才销毁；低于滞回下阈的已在第二遍归还）
@@ -4194,21 +3997,15 @@ export class Battle3DOverlay {
     // 【旗舰方案】指挥光环（挂 group 下 ⇒ 位置/朝向/缩放自动跟随）
     const cmdRing = isFlagshipUnit ? this.attachFlagshipFx(built.group, color, v.shipLen) : undefined;
     this.shipGroup.add(built.group);
-    const flameP: { t: number; jitter: number; pIdx: number }[] = [];
-    // [v22 尾焰] 喷口数：粒子在其间**轮转分配** ⇒ 每个喷口都有粒子（不再全堆在舰尾中心）
-    const portCount = (built.group.userData.enginePortCount as number) || 1;
-    for (let fi = 0; fi < FLAME_PER_SHIP; fi++) {
-      // 错峰起步：均匀分布相位 + 轻微随机，避免所有舰的尾焰整齐闪烁
-      flameP.push({ t: (fi / FLAME_PER_SHIP) * FLAME_LIFE + Math.random() * 0.05, jitter: Math.random(), pIdx: fi % portCount });
-    }
+
     // [v14 ③2] 初始朝向 = 舰队朝向（避免首帧从 0 猛转）；无则 0
     // [R10-B1] 优先 2D 限速平滑值 facingSmooth（缺省回退权威 facingAngle）
     const fa0 = fleet.facingSmooth ?? fleet.facingAngle;
     const yaw0 = (typeof fa0 === 'number' && Number.isFinite(fa0))
       ? Math.atan2(-Math.cos(fa0), Math.sin(fa0)) : 0;
     this.ships.set(v.key, {
-      key: v.key, group: built.group, flame: built.flame, glow: built.glow, u, fleet,
-      lastX: u.sprite.x, lastY: u.sprite.y, cruiseY: 0, flameP, yaw: yaw0,
+      key: v.key, group: built.group, u, fleet,
+      lastX: u.sprite.x, lastY: u.sprite.y, cruiseY: 0, yaw: yaw0,
       pendingModel: built.pendingModel, modelVer: built.modelVer ?? 0,
       isFlagship: isFlagshipUnit, flagshipKey: flagshipKey ?? undefined,
       cmdRing,
@@ -5527,12 +5324,6 @@ export class Battle3DOverlay {
       wire.scale.setScalar(s);
       group.add(wire);
     }
-    // 尾部引擎光点（舰首 -z 约定 → 机尾 +z）
-    const glow = new THREE.Mesh(
-      new THREE.SphereGeometry(d.W * 0.22, 6, 5),
-      new THREE.MeshBasicMaterial({ color: 0xaaddff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }));
-    glow.position.z = size.z * 0.5 * s * 0.9;
-    group.add(glow);
     return group;
   }
 
@@ -5565,12 +5356,6 @@ export class Battle3DOverlay {
     cockpit.position.set(0, d.H * 0.18, -d.L * 0.18);
     cockpit.scale.set(1, 0.7, 1.8);
     group.add(cockpit);
-    // 引擎光点（尾部）
-    const glow = new THREE.Mesh(
-      new THREE.SphereGeometry(d.W * 0.2, 6, 5),
-      new THREE.MeshBasicMaterial({ color: 0xaaddff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }));
-    glow.position.z = d.L * 0.48;
-    group.add(glow);
     return group;
   }
 
@@ -5882,7 +5667,6 @@ export class Battle3DOverlay {
       // updateBoats / updateCaptures 曾被连续跑两遍（pre_refactor_backup 为单份）——
       // 既白烧一倍每帧 CPU，又让激光/导弹/护盾/尾焰按 2 倍速播放（寿命减半）。
       // 删除重复块后特效步进回到 battleFx 设计时长（激光 0.3s / 护盾 0.85s / 命中 0.25s）。
-      this.updateFlames(dt);
       drainFx3d().forEach(e => this.handleFx(e));
       this.updateFx(dt);
       this.updateBoats(dt);

@@ -570,9 +570,7 @@ function placeShip(reg: ShipModelReg) {
   const engPorts = getEnginePortsFor(reg, geo, modelLen, reg.baseName, reg.fxAnchors);
   // ⚠ 第 4 参 pScale = **显示长度**（不是 s）：喷口坐标按模型原始长度归一化，而舰体缩放到显示尺寸，
   //   换算必须用显示长度；旧代码用 s ⇒ 差 modelLen 倍（柏林那类小原始尺寸舰会被放大几十倍甩到远处）。
-  const engFx = buildEngineFx(SHIP_LEN * ratio, engPorts, s, SHIP_LEN * ratio);
-  group.add(engFx.flame);
-  group.add(engFx.glow);
+
   // [v24] 存下逐舰实测的开口（形状/尺寸）与缩放，便于探针核对与后续标定
   group.userData.enginePorts = engPorts;
   group.userData.engineScale = s;
@@ -582,8 +580,6 @@ function placeShip(reg: ShipModelReg) {
   group.userData.engineL = SHIP_LEN * ratio;
   // [v27 锚点] 该模型自带的喷口锚点名（供面板提示"程序识别到了几个"，也是排查依据）
   group.userData.fxAnchorNames = (reg.fxAnchors || []).map((a) => a.name);
-  engFx.flame.userData.__engFx = true;
-  engFx.glow.userData.__engFx = true;
 
   group.position.set(info.x, 3, info.z);
   scene.add(group);
@@ -731,11 +727,7 @@ function rebuildShipFx(file: string) {
       + ` · 切割深度 ${sv.map((x) => x.depth.toFixed(3)).join(' / ')}`
       + dimTxt + cl
     : (ports.length ? `📏${dimTxt}${cl}` : '');
-  const fx = buildEngineFx(Lw, ports, s, Lw);
-  fx.flame.userData.__engFx = true;
-  fx.glow.userData.__engFx = true;
-  g.add(fx.flame);
-  g.add(fx.glow);
+
   g.userData.enginePorts = ports;
 }
 
