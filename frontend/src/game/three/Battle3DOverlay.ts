@@ -480,6 +480,13 @@ const MESH_DROP = 18;
  *   本值是'远景档直接全点'的开关（两者都经 `lodKeep`/`lodDrop` 暴露）。
  */
 const FAR_TIER_KEEP = 999;
+
+/**
+ * [v92] **模型最小屏幕投影长度（px）** —— 低于此值时按比例放大模型。
+ *   目的：远处舰队（px 仅 6~7）也能看见，不再是"空荡"的一片。
+ *   ⚠ 调大 ⇒ 远处更醒目、透视层次更弱；调小 ⇒ 透视更真实。14 是"刚好看得清舰体"的下限。
+ */
+const MIN_MESH_PX = 14;
 /** ⚠【已过时·仅存备查】实体硬上限的历史注释。当前语义见下方 `MAX_MESHES` 的正式注释；
  *  且光点层缓冲**已改用 `DOT_SLOTS` 分配**（不再是这里的 "光点层按 MAX_MESHES 分配"）。
  *  实体硬上限。= N_MAX（兵力折算层的全场实体预算），故正常情况下不触发；留作极端机位兜底。
@@ -3930,7 +3937,17 @@ export class Battle3DOverlay {
       entry.meshT = Math.min(MESH_GROW_DUR, entry.meshT + dt);
       const gt = entry.meshT / MESH_GROW_DUR;
       const ge = gt * gt * (3 - 2 * gt);
-      g.scale.setScalar(entry.baseScale * (0.25 + 0.75 * ge));
+      // ── [v92] **模型最小屏幕尺寸下限** ────────────────────────────────────
+      //   用户实报：「莱茵哈特的模型齐整，席特尼就是空空荡荡，但舰队数都是 20000」
+      //   诊断面板显示**所有舰队 mesh≈n（模型都建了）**，但 px 差异巨大：
+      //     席特尼 px=6.5 / 7.5 ⇒ 模型投影仅 6~7px ⇒ **肉眼几乎不可见** ⇒ 读作"空荡"
+      //     莱茵哈特 px=21.9 / 27.5 ⇒ 模型明显
+      //   ⇒ 根因是**透视**（`px ∝ 1/距离`），不是漏渲染。
+      //   修复：px 低于 `MIN_MESH_PX` 时按比例放大模型，使远处舰队"看得见"。
+      //   ⚠ 这会部分削弱"远小近大"的透视层次（用户明确要"看得见"优先）；
+      //     下限值可调：调大 ⇒ 远处更醒目但透视更弱。
+      const _minK = (v.px > 0.1 && v.px < MIN_MESH_PX) ? (MIN_MESH_PX / v.px) : 1;
+      g.scale.setScalar(entry.baseScale * (0.25 + 0.75 * ge) * _minK);
 
       // 【旗舰方案】指挥光环慢转（只在实体档可见；不额外建对象，纯改 rotation）
       if (entry.cmdRing) entry.cmdRing.rotation.z += dt * FLAGSHIP_RING_SPIN;
