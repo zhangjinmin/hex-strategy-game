@@ -275,3 +275,47 @@ shipModelResolutionSim: 61 assertions passed
 且 `:3600-3605` 的四条 mods 公式**根本不在 diff 内**。
 
 ⇒ 这是本轮"独立审核"给出的**最有说服力的一条**（比"hash 相等"更直接地回答了"有没有偷偷改口径"）。
+
+---
+
+## 12. 红队 #5 addendum：把"盲区 e"升级为可执行断言（lead 已独立复核）
+
+红队把 §10.3 的"盲区 e"（**因 `totalsOfComposition` 是共享段 ⇒ §4 测不到"调用方忘记归一"的回归**）
+从"口头局限"升级为**实测过的可执行断言**，并给出建议写法。
+
+### 12.1 建议的 §5 加固断言（红队给出）
+
+| 断言 | 期望命中 |
+|---|---|
+| `store: /composition://s*totalsOfComposition//(fleet//.composition//)/` | **2** |
+| `scene: /composition://s*totals,/` | **1** |
+| `store: /coordSource://s*persistedSlots/` | **1** |
+
+### 12.2 lead 独立复核（`_tmp_verify_anchor.cjs`，跑完即删）
+
+```
+OK  store: composition: totalsOfComposition(fleet.composition) => 2 处 (期望 2) 行: 3620,3636
+OK  scene: composition: totals,                             => 1 处 (期望 1) 行: 1511
+OK  store: coordSource: persistedSlots                      => 1 处 (期望 1) 行: 3624
+
+反例测试 1：store 两处改直传 fleet.composition  => 变异后命中 0 => 断言会 FAIL => 能捕获回归 [OK]
+反例测试 2：scene 把 totals 内联掉              => 变异后命中 0 => 断言会 FAIL => 能捕获回归 [OK]
+结论：红队的 3 个命中数与 lead 独立复核一致
+```
+
+⇒ **红队的加固建议有效**（命中数一致 + 反例测试确认可捕获回归）。
+
+### 12.3 关于"消除盲区 e"的准确表述（供后续引用，避免夸大）
+
+需明确：该断言是**源码文本断言**，它能保证：
+
+- ✅ **生产调用点当下确实传了 `totalsOfComposition(...)`**（而非裸 `fleet.composition`）
+- ✅ **将来有人把它改回直传时会 FAIL**（反例已实测）
+
+它**不能**保证：
+
+- ❌ `totalsOfComposition` **本身的实现**正确（那属 `shipScaling` 的既有保证，P1 未动它）
+- ❌ 运行期真实数据（Pinia store 实例）下的端到端行为（仍需真机）
+
+⇒ 因此 §10.3 的"盲区 e"应表述为：**"§4 的函数级对比测不到该回归，改由 §5 源码断言兜底"**，
+  而**不是**"盲区已完全消除"。
