@@ -472,6 +472,14 @@ const CAM_ELEV = 0.6109;
 /* [v84] 随门槛抬高（详见 MESH_IN_LO 处依据）。序保持 `DROP < KEEP < LO`。 */
 const MESH_KEEP = 22;
 const MESH_DROP = 18;
+
+/**
+ * [v90] **远景档的实体门槛 = 999**（无舰队可达）⇒ 远景**全点阵**（雷达看全局）。
+ *   用户实报「远景是粒子和模型同时存在」—— 旧值 22 使近处舰队仍是模型 ⇒ 同屏混合。
+ *   与 `MESH_KEEP` 的分工：`MESH_KEEP` 是近景档内'实心/淡入'的参考，
+ *   本值是'远景档直接全点'的开关（两者都经 `lodKeep`/`lodDrop` 暴露）。
+ */
+const FAR_TIER_KEEP = 999;
 /** ⚠【已过时·仅存备查】实体硬上限的历史注释。当前语义见下方 `MAX_MESHES` 的正式注释；
  *  且光点层缓冲**已改用 `DOT_SLOTS` 分配**（不再是这里的 "光点层按 MAX_MESHES 分配"）。
  *  实体硬上限。= N_MAX（兵力折算层的全场实体预算），故正常情况下不触发；留作极端机位兜底。
@@ -3592,10 +3600,10 @@ export class Battle3DOverlay {
    *   · 远景（相机远 ⇒ px 小）⇒ 小舰队为点（保留雷达观感）
    * ⇒ 无需两档即可同时满足"近景全模型"与"远景雷达点阵"，且**无切换抖动**。
    */
-  private get lodLo(): number { return MESH_IN_LO; }
-  private get lodHi(): number { return MESH_IN_HI; }
-  private get lodKeep(): number { return MESH_KEEP; }
-  private get lodDrop(): number { return MESH_DROP; }
+  private get lodLo(): number { return this.lodNear ? 0 : MESH_IN_LO; }
+  private get lodHi(): number { return this.lodNear ? 8 : MESH_IN_HI; }
+  private get lodKeep(): number { return this.lodNear ? 0 : FAR_TIER_KEEP; }
+  private get lodDrop(): number { return this.lodNear ? 0 : FAR_TIER_KEEP; }
 
   private syncShips(dt: number) {
     this.updateLodTier();   // [v76] 先定档，同帧内所有消费点读一致值
