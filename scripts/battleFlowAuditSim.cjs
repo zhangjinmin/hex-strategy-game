@@ -195,5 +195,41 @@ check('new detachments do not instantly rejoin merely because they use a tactica
   scene.includes('_detachObjectiveDone: false')
   && scene.includes('objectiveDone: (kid as any)._detachObjectiveDone === true'));
 
+
+// ── [v86] 受击方引用守卫（防 update 抛异常 ⇒ **全场停摆**）─────────────────
+//   用户实报「舰队突然卡住不动」+ 控制台
+//   `Cannot read properties of null (reading '_formationCollapsed')`
+//   ⇒ 在 `if (targetShip)` 块内访问了 closestEnemyFleet，
+//     而它在 return_fire 模式下可为 null（受击方是 attackerFleet）
+//   ⇒ 抛异常 ⇒ BattleScene.update 中断 ⇒ 所有舰队停止移动（UI 仍有反应）。
+//   守卫：该块内**只允许** fireTargetFleet（受击方），不得出现 closestEnemyFleet 属性访问。
+{
+  const src = fs.readFileSync('./frontend/src/game/scenes/BattleScene.ts', 'utf8');
+  const lines = src.split(/\r?\n/);
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].includes('if (targetShip) {')) { start = i; break; }
+  }
+  check('受击方块存在（口径基准）', () => start >= 0, String(start));
+  if (start >= 0) {
+    const base = (lines[start].match(/^\s*/) || [''])[0].length;
+    let end = -1;
+    for (let i = start + 1; i < lines.length; i++) {
+      const m = lines[i].match(/^(\s*)\}/);
+      if (m && m[1].length === base) { end = i; break; }
+    }
+    check('受击方块能定位到结束（口径基准）', () => end > start, String(end));
+    const hits = [];
+    for (let i = start; i <= end; i++) {
+      if (lines[i].trim().startsWith('//')) continue;
+      if (lines[i].includes('closestEnemyFleet.')) hits.push(i + 1);
+    }
+    check('受击方块内不得访问 closestEnemyFleet（防 null 崩溃 + 语义错）',
+      () => hits.length === 0, hits.join(','));
+    let usesFireTarget = 0;
+    for (let i = start; i <= end; i++) if (lines[i].includes('fireTargetFleet')) usesFireTarget++;
+    check('受击方块确实消费 fireTargetFleet（受击方语义）', () => usesFireTarget >= 3, String(usesFireTarget));
+  }
+}
 process.stdout.write(`\nbattleFlowAuditSim: ${passed} passed, ${failed} failed\n`);
 if (failed) process.exitCode = 1;

@@ -7938,10 +7938,16 @@ export class BattleScene extends Phaser.Scene {
                         //   攻 0.2→0.5、防 0.1→0.2（仍 ÷typeShare 保 N 不变性，量纲同 economy v4）。
                         const supplyDefFactor = 0.3 + 0.7 * Math.max(0, Math.min(1, targetShip.supply / 50));
                         // [v33 P1-4.3] 阵型崩溃 → **受击方**防御乘区（旧案「防御 −50%」）。
-                        const tgtCollapseDefMul = collapseMuls((closestEnemyFleet as any)._formationCollapsed === true).def;
+                        // [v86] 受击方 = fireTargetFleet（**不是** closestEnemyFleet）。
+                        //   用户实报「舰队突然卡住不动」+ 控制台 `Cannot read properties of null (reading
+                        //   '_formationCollapsed')` ⇒ return_fire 模式下受击方是 attackerFleet，
+                        //   而 closestEnemyFleet 可为 null ⇒ 抛异常 ⇒ **update 中断 ⇒ 全场舰队停摆**。
+                        //   且语义本就用错：本行是"**受击方**防御乘区"，必须用受击方。
+                        const tgtCollapseDefMul = collapseMuls((fireTargetFleet as any)._formationCollapsed === true).def;
                         const effectiveDef = ((targetShip.def + Math.floor(tgtDef * 0.2)) / typeShare) * supplyDefFactor * tgtCollapseDefMul;
                         // P1 地形闪避减伤（星云 +20%；表见 config/terrainEffects.ts）
-                        const terrainDodge = this.getTerrainDodgeMul(closestEnemyFleet.x, closestEnemyFleet.y);
+                        // [v86] 同上：地形闪避须取**受击方**坐标（受击方 = fireTargetFleet）。
+                        const terrainDodge = this.getTerrainDodgeMul(fireTargetFleet.x, fireTargetFleet.y);
                         let baseDmg = (((u.atk + Math.floor(admAtk * 0.5) / typeShare) * unitSupplyFactor) - effectiveDef) / terrainDodge;
                         if (u.classType === '电子' || u.classType === '无') baseDmg = (u.atk + Math.floor(admAtk * 0.1) / typeShare) * unitSupplyFactor / terrainDodge;
 
@@ -7953,12 +7959,16 @@ export class BattleScene extends Phaser.Scene {
                         //   ⚠ 参考系优先取**实际运动方向**：`formFacing` 是低通平滑值，急转/撤退时会与
                         //     新航向背离 ⇒ 用它会出"背向敌人却在挨正面的伤"的观感矛盾。
                         //     速度过低（换向瞬间/停船）才回退，阈值 DIRECTION_ARMOR.MIN_SPD2_FOR_MOTION。
-                        const tgtSpd2 = (closestEnemyFleet.vx || 0) * (closestEnemyFleet.vx || 0)
-                                      + (closestEnemyFleet.vy || 0) * (closestEnemyFleet.vy || 0);
+                        // [v86] 以下三处同为**受击方**语义（`tgt` = target）：受击方自身运动方向
+                        //   用于判定"我从哪一侧挨打"，必须取 `fireTargetFleet`。
+                        //   ⚠ 用 `closestEnemyFleet` 不仅语义错，且它在 return_fire 模式下可为 null
+                        //     ⇒ 抛异常 ⇒ update 中断 ⇒ **全场停摆**（用户实报"舰队卡住不动"）。
+                        const tgtSpd2 = (fireTargetFleet.vx || 0) * (fireTargetFleet.vx || 0)
+                                      + (fireTargetFleet.vy || 0) * (fireTargetFleet.vy || 0);
                         const tgtFacing = tgtSpd2 > 0.25
-                            ? Math.atan2(closestEnemyFleet.vy, closestEnemyFleet.vx)
-                            : ((closestEnemyFleet as any).formFacing ?? closestEnemyFleet.facingAngle);
-                        const angleToAttacker = Math.atan2(u.sprite.y - closestEnemyFleet.y, u.sprite.x - closestEnemyFleet.x);
+                            ? Math.atan2(fireTargetFleet.vy, fireTargetFleet.vx)
+                            : ((fireTargetFleet as any).formFacing ?? fireTargetFleet.facingAngle);
+                        const angleToAttacker = Math.atan2(u.sprite.y - fireTargetFleet.y, u.sprite.x - fireTargetFleet.x);
                         let angleDiff = Math.abs(angleToAttacker - tgtFacing);
                         if (angleDiff > Math.PI) angleDiff = 2 * Math.PI - angleDiff;
 
