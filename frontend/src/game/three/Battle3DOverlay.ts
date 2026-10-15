@@ -462,17 +462,25 @@ const DOT_IN_HI = 5.0;
    ⇒ 阈值是**感知校准**过的，不应为"更早出现模型"而单方面下调。
    回归 14/26/17/15，配下方"舰队级统一判定"解决同队混合。
    单调关系：MESH_IN_LO(14) < MESH_DROP(15) < MESH_KEEP(17) < MESH_IN_HI(26)。 */
-const MESH_IN_LO = 14;
-const MESH_IN_HI = 26;
+/* [v81b] **整体下移 2px**：14/26/17/15 → **12/24/15/13**。
+   依据：用户诊断面板实测有一支舰队 `px=16.7`（< 旧 keep 17）
+   ⇒ 不进候选 ⇒ **整队保持光点**，用户读作"部分舰队是圆点"。
+   而用户的战场规模已到 480 单位（多支 px 落 14~17 区间的舰队），
+   该区间被留成点在观感上不可接受。
+   单调关系保持：LO(12) < DROP(13) < KEEP(15) < HI(24)。
+   ⚠ 这是对原校准（14/26/17/15）的**有依据下移**，不是随手调参 ——
+     依据是"实测 px 分布 + 用户明确的'不要点'诉求 + 预算已提到 900 有余量"。 */
+const MESH_IN_LO = 12;
+const MESH_IN_HI = 24;
 /** 队内垂直层数：单一真源 = config/fleetTierLayout.ts 的 TEAM_LAYERS（5，demo 滑杆 1~5，用户定 5）。 */
 // const TEAM_LAYERS 已迁至 config/fleetTierLayout.ts（与队间档距同文件，避免两处各写一份）
 /** 默认相机俯角（弧度，35°）：0.96 rad（55°）是近俯视，垂直分层会被压成一摞读不出来。 */
 const CAM_ELEV = 0.6109;
 /** px：实体池滞回（创建阈 > 销毁阈）。缺滞回会在相机推拉时每帧 buildShip/dispose → 卡顿
  *  （随 SHIP_VISUAL_SCALE 等比下调，与 MESH_IN 同源换算） */
-/* 【v75】恢复原值（v73 曾收到 12/10，见上方说明）。 */
-const MESH_KEEP = 17;
-const MESH_DROP = 15;
+/* [v81b] 随 LO/HI 同幅下移（详见 MESH_IN_LO 处的依据）。 */
+const MESH_KEEP = 15;
+const MESH_DROP = 13;
 /** ⚠【已过时·仅存备查】实体硬上限的历史注释。当前语义见下方 `MAX_MESHES` 的正式注释；
  *  且光点层缓冲**已改用 `DOT_SLOTS` 分配**（不再是这里的 "光点层按 MAX_MESHES 分配"）。
  *  实体硬上限。= N_MAX（兵力折算层的全场实体预算），故正常情况下不触发；留作极端机位兜底。
