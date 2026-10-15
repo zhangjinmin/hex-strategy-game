@@ -4548,6 +4548,12 @@ export class BattleScene extends Phaser.Scene {
 
         // 2. 链路维护 + 指示标记
         this.globalFleets.forEach(fleet => {
+            // ── [v87] **单舰队异常隔离** ─────────────────────────────────────────
+            //   背景（v86 实报）：update 内单点 null 访问抛异常 ⇒ update 中断 ⇒ **全场停摆**，
+            //   而 UI 面板/通知走独立事件路径 ⇒ 玩家看到"命令有反应但舰队不动"。
+            //   隔离后：单舰队本帧出错只跳过该舰队，其余照常；异常**照常 console.error**
+            //   （节流 2s，用 reportTickError，不掩盖问题）。
+            try {
             const pFac = this.store.factions.find((f: any) => f.type === 'player');
             if (!pFac || fleet.factionId !== pFac.id) return;
 
@@ -4586,6 +4592,10 @@ export class BattleScene extends Phaser.Scene {
             marker.setColor(color);
             marker.setPosition(fleet.x, fleet.y - 34);
             marker.setVisible(status !== 'direct' || pending > 0 || !hasCh || bw.flagshipDown);
+            } catch (fleetTickErr) {
+                // 隔离：单点异常不冻结全场（reportTickError 节流打日志，不掩盖）
+                this.reportTickError(fleet, fleetTickErr);
+            }
         });
 
         // 孤儿标记清理（舰队列表里已不存在的）
@@ -5627,6 +5637,27 @@ export class BattleScene extends Phaser.Scene {
         });
     }
 
+    /** [v87] update 内单舰队异常计数与日志节流（异常隔离的可观测性） */
+    private _tickErrCount = 0;
+    private _tickErrLastAt = 0;
+
+    /**
+     * [v87] 记录 update 内被隔离的单舰队异常。
+     * ⚠ **不掩盖**：异常原文照打 console.error（节流 2s 防刷屏），并累计计数。
+     *   目的：即使有未预料的 null/类型错误，也只让该舰队本帧跳过，
+     *   而不是冻结整个战场（v86 的"命令有反应但舰队不动"）。
+     */
+    private reportTickError(fleet: any, err: unknown): void {
+        this._tickErrCount += 1;
+        const now = performance.now();
+        if (now - this._tickErrLastAt > 2000) {
+            this._tickErrLastAt = now;
+            const msg = String((err as any)?.message ?? err);
+            // eslint-disable-next-line no-console
+            console.error(`[BattleScene.update] 舰队结算异常（已隔离，累计 ${this._tickErrCount} 次）fleet=${fleet?.id ?? "?"} | ${msg}`);
+        }
+    }
+
     update(time: number, delta: number) {
         if (this.store.gameOver) return;
 
@@ -5862,6 +5893,11 @@ export class BattleScene extends Phaser.Scene {
         this.applyTerrainDot(delta);
 
         this.globalFleets.forEach(fleet => {
+            // ── [v87] **单舰队异常隔离（主循环）** ───────────────────────────────
+            //   v86 的崩溃点（受击方 null 访问）就在本循环内 ⇒ 必须在此兜底：
+            //   单舰队本帧出错只跳过该舰队，其余舰队继续 ⇒ 不再"命令有反应但舰队不动"。
+            //   ⚠ 异常照常 console.error（reportTickError 节流 2s），**不掩盖根因**。
+            try {
             const myFac = this.factionMap.get(fleet.factionId);
             if (!myFac || !myFac.active) {
                 fleet.units.forEach((u: any) => { u.hp = 0; u.sprite.destroy(); });
@@ -5872,7 +5908,15 @@ export class BattleScene extends Phaser.Scene {
             // [W2] 主动电子战：电子姿态 + 真实电子舰 ⇒ 干扰 / 欺骗（假目标）/ 隐蔽转换
             if (fleet.stance === 'electronic') this.activateElectronicWarfare(fleet, myFac);
 
-            let minFleetDist = 99999; let closestEnemyFleet: any = null;
+            // [v87] `any` → **带 null 的宽松对象类型**：让 tsc 强制检查判空。
+            //   原因：用户实报「舰队卡住不动」= update 内 null 访问抛异常 ⇒ 全场停摆。
+            //   声明为 `any` 时 TS 完全放行 ⇒ 这类 bug 只能靠运行时暴露。
+            //   改成 `... | null` 后，**所有未判空的属性访问都会编译报错** ⇒ 一次列全。
+            //   ⚠ 用宽松的索引签名而非精确 Fleet 类型：本函数内对它的字段访问很杂
+            //     （x/y/vx/vy/facingAngle/state/id/formation/formFacing/_formationCollapsed…），
+            //     精确类型会引入大量无关的类型错误，反而掩盖真正的"未判空"问题。
+            let minFleetDist = 99999;
+            let closestEnemyFleet: ({ [k: string]: any } & Record<string, any>) | null = null;
             // === 阶段B：视野迷雾系统 ===
             // 视野 = 基础200 + 情报值×2 + 电子科技×30（随hexRadius缩放）
             const visionRange = this.getVisionRange(fleet, myFac);
@@ -6373,10 +6417,14 @@ export class BattleScene extends Phaser.Scene {
                     const pickedEf = pick.target ? candById.get(pick.target.id) : null;
                     if (pickedEf) {
                         closestEnemyFleet = pickedEf;
-                        minFleetDist = Phaser.Math.Distance.Between(fleet.x, fleet.y, closestEnemyFleet.x, closestEnemyFleet.y);
-                        if (!pick.keptPrev) (fleet as any)._lastTargetFleetId = closestEnemyFleet.id;
+                        // [v87] 用刚判非空的 pickedEf（TS 对外层 let 在嵌套块内赋值不做窄化）
+                        minFleetDist = Phaser.Math.Distance.Between(fleet.x, fleet.y, pickedEf.x, pickedEf.y);
+                        if (!pick.keptPrev) (fleet as any)._lastTargetFleetId = pickedEf.id;
                     }
 
+                    // [v87] **无敌人则跳过整段交战判定**（防 null 访问抛异常 ⇒ update 中断 ⇒ 全场停摆）。
+                    //   closestEnemyFleet 可为 null（无可见敌且无攻击者），而本段大量访问其 .id/.x/.y。
+                    if (closestEnemyFleet) {
                     // 威胁评估：战斗力和血量的比较加权
                     const myPower = this.calculateFleetPower(fleet);
                     const enemyPower = this.calculateFleetPower(closestEnemyFleet);
@@ -6387,7 +6435,8 @@ export class BattleScene extends Phaser.Scene {
                     this.globalFleets.forEach(af => {
                         if (af.factionId !== fleet.factionId) {
                             const afFac = this.factionMap.get(af.factionId);
-                            if (afFac && afFac.team === myFac.team && af._lastTargetFleetId === closestEnemyFleet.id) {
+                            // [v87] 闭包内 TS 不做窄化 ⇒ 显式判空（同 v86 教训：null 访问会中断 update ⇒ 全场停摆）
+                        if (afFac && afFac.team === myFac.team && closestEnemyFleet && af._lastTargetFleetId === closestEnemyFleet.id) {
                                 alliesOnTarget++;
                             }
                         }
@@ -6465,6 +6514,7 @@ export class BattleScene extends Phaser.Scene {
                 } else {
                     fleet.state = 'exploring';
                 }
+                    }
             }
 
             // 2. 根据状态设定战术目标坐标
@@ -6723,7 +6773,8 @@ export class BattleScene extends Phaser.Scene {
                     this.globalFleets.forEach(af => {
                         if (af.factionId !== fleet.factionId) {
                             const afFac = this.factionMap.get(af.factionId);
-                            if (afFac && afFac.team === myFac.team && af._lastTargetFleetId === closestEnemyFleet.id) {
+                            // [v87] 闭包内 TS 不做窄化 ⇒ 显式判空（同 v86 教训：null 访问会中断 update ⇒ 全场停摆）
+                        if (afFac && afFac.team === myFac.team && closestEnemyFleet && af._lastTargetFleetId === closestEnemyFleet.id) {
                                 alliesOnTarget++;
                             }
                         }
@@ -8244,6 +8295,9 @@ export class BattleScene extends Phaser.Scene {
                     }
                 }
             });
+            } catch (fleetTickErr) {
+                this.reportTickError(fleet, fleetTickErr);
+            }
         });
 
         // ===== v3 独立往返：运输舰每帧独立航行 + 2D sprite 同步 =====

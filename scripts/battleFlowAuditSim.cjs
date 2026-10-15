@@ -231,5 +231,21 @@ check('new detachments do not instantly rejoin merely because they use a tactica
     check('受击方块确实消费 fireTargetFleet（受击方语义）', () => usesFireTarget >= 3, String(usesFireTarget));
   }
 }
+
+// ── [v87] 主循环异常隔离守卫 ────────────────────────────────────────────
+//   背景（v86）：update 内单点 null 访问抛异常 ⇒ update 中断 ⇒ 全场停摆
+//   （UI 有反应说明是异常中断而非逻辑卡死）。
+//   要求：主循环有 try/catch 兜底，且异常**照常打日志**（不掩盖根因）。
+{
+  const src = fs.readFileSync('./frontend/src/game/scenes/BattleScene.ts', 'utf8');
+  check('主循环存在单舰队异常隔离（try/catch）',
+    () => /单舰队异常隔离（主循环）/.test(src) && /catch \(fleetTickErr\)/.test(src));
+  check('隔离处调用 reportTickError 记账',
+    () => /this\.reportTickError\(fleet, fleetTickErr\)/.test(src));
+  check('reportTickError 用 console.error 输出（不掩盖根因）',
+    () => /private reportTickError[\s\S]{0,900}console\.error/.test(src));
+  check('reportTickError 有 2s 节流（防刷屏）',
+    () => /_tickErrLastAt[\s\S]{0,240}> 2000/.test(src));
+}
 process.stdout.write(`\nbattleFlowAuditSim: ${passed} passed, ${failed} failed\n`);
 if (failed) process.exitCode = 1;
