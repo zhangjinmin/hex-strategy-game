@@ -67,6 +67,11 @@ import {
     supplyFactor, moraleDrainPerTick, RALLY_MORALE,
     type AdmiralDoctrine, type RetreatTier,
 } from '../retreatDoctrine';
+// [P2] 提督标准编制的**唯一入口**：部队组成按「阵营 × 军事风格」推导（覆盖表 > 基准表 > 兜底）。
+//   `resolveAdmiralStyleTag` = 提督**作战风格的唯一入口**（标签优先，无军事标签时由基础 stats 兜底）
+//   ⇒ 让 **阵型（formation）与部队组成（composition）共用同一个推导后的风格**。
+//   见 docs/design/3d-tactical-battle/33-p2-spec.md §2。
+import { resolveAdmiralComposition, resolveAdmiralStyleTag } from '../../config/admiralDoctrine';
 import { aggression, supplyDecision, turnDiscipline, approachLateralOffset } from '../combatDoctrine';
 // [v69] 舰种运动学表（30 号文档 §4.2）：让舰种真正参与运动学。
 //   旧实现五舰种在机动性上完全同质（共享 FLEET_BASE_SPEED 0.30 / UNIT_MOTION_LIMITS），
@@ -448,7 +453,9 @@ export class BattleScene extends Phaser.Scene {
     // P3 战术部署阶段
     private deployPhase: boolean = false;        // 开局部署是否进行中
     private deployText: Phaser.GameObjects.Text | null = null;
-    private deployFormation: string = 'wedge';   // 玩家选择的初始阵型
+    // 玩家选择的初始阵型。此处 'wedge' 只是**占位兜底**：开局由 create() 在 activateDeployPhase()
+    //   之前用玩家旗舰提督的教范阵型覆写（[P2 · 缺口1]），部署期玩家显式切换再覆写。
+    private deployFormation: string = 'wedge';
     private deployTactic: string = 'search';     // [#74 · R1] 旗舰开局姿态（值域=stance：search/siege/defend）
     private deployCountdownTimer: Phaser.Time.TimerEvent | null = null; // [#74 · A2] 演习部署倒计时器
     // P4 战术增援
@@ -977,7 +984,7 @@ export class BattleScene extends Phaser.Scene {
                             //      —— 因为人格**从未参与**阵型决策，见 `24` §1 证据 3）。
                             if (aiFac._deployTactic === 'encircle' && fleet.stance === 'siege') fleet.formation = 'wedge';
                             else if (fleet.stance === 'fallback') fleet.formation = 'circle'; // 撤退：全向防御
-                            else fleet.formation = aiDoctrine.formation;                       // 其余：**教范默认**
+                            else fleet.formation = resolveAdmiralDoctrine(aiFac.admiralStyleTag ? [aiFac.admiralStyleTag] : aiFac.admiralTags).formation; // [P2 · 最后补救] 教范默认（标签优先 / 无标签用基础 stats 推导；战役轨回落 admiralTags）
                         }
                 }
                 });
@@ -1086,6 +1093,17 @@ export class BattleScene extends Phaser.Scene {
         this.setupCommandDispatcher();
 
         // ===== P3 战术部署阶段：开局暂停，玩家选择阵型+指令卡 =====
+        // [P2 · 缺口1] 玩家「开局默认阵型」= 其旗舰提督的教范阵型（`MILITARY_STYLE_PARAMS` 唯一真源）。
+        //   历史病灶（死代码）：`deployFormation` 字段初值硬编码 'wedge'，而下方 `activateDeployPhase()`
+        //   会用它覆写 `spawnInitialFleets()` 按教范设好的玩家舰队阵型 ⇒ 提督阵型对玩家**永不可见**
+        //   （P2 此前只对敌方生效，用户可见阵型行为与改前逐位相同）。
+        //   必须在 `activateDeployPhase()` **之前**赋值（后者读 `this.deployFormation` 写玩家舰队）。
+        //   玩家在部署期用数字键显式切换仍生效（keydown 处理器覆写本值，见本文件 :787）。
+        //   [P2 · 最后补救] 阵型不再只看军事标签：`admiralStyleTag`（initFactions 按"标签优先、无标签
+        //     则用基础 stats 推导"写入）⇒ 87 名无标签提督的**阵型也随 stats 分化**，与 composition 同源。
+        //     战役轨 faction 无 `admiralStyleTag` ⇒ 回落 `admiralTags`，与改动前**逐位相同**。
+        const playerFacForFormation: any = this.store.factions.find((f: any) => f.type === 'player');
+        this.deployFormation = resolveAdmiralDoctrine(playerFacForFormation?.admiralStyleTag ? [playerFacForFormation.admiralStyleTag] : playerFacForFormation?.admiralTags).formation;
         this.activateDeployPhase();
     }
 
@@ -1314,7 +1332,9 @@ export class BattleScene extends Phaser.Scene {
             // [v31-A] **出场阵型 = 该提督的教范阵型**（用户核心诉求：毕典菲尔特出场就该是楔形，
             //   而不是"长条"）。此前本函数**全文无 formation 赋值** ⇒ 出场到战略层首个 Tick 之间
             //   的窗口里舰队没有阵型（出厂值未设）⇒ 观感上"提督特性完全没生效"。
-            fl.formation = doctrine.formation;
+            //   [P2 · 最后补救] 与 :985 同口径：`admiralStyleTag`（标签优先 / 无标签用基础 stats 推导）
+            //   ⇒ 无标签提督出场阵型也随 stats 分化；战役轨无该字段 ⇒ 回落 admiralTags，逐位不变。
+            fl.formation = resolveAdmiralDoctrine(aiFac.admiralStyleTag ? [aiFac.admiralStyleTag] : aiFac.admiralTags).formation;
         });
 
         // [v31-C] **分舰队编成**：按战法把本方舰队编成多路（够则直接分工、不足则拆最强的一支）。
@@ -1567,7 +1587,12 @@ export class BattleScene extends Phaser.Scene {
                 id: fleetId, displayId: this.globalFleets.length + 1, factionId: fac.id,
                 commanderId: fac.id, flagshipName: (fac as any).flagshipName || (this.store.allAdmirals as any[]).find((a: any) => a.id === fac.id)?.flagshipName || '',
                 x: fac.castlePos.x, y: fac.castlePos.y, target: null, state: 'assembling', units: [] as any[],
-                formation: ['wedge', 'line', 'spindle', 'circle', 'square'][Math.floor(Math.random() * 5)] as any,
+                // [P2] 阵型来自提督教范（`MILITARY_STYLE_PARAMS` 唯一真源），**不再随机**。
+                //   透传路径：initFactions 已把 `admiralTags` / `admiralStyleTag`（作战风格的唯一入口：
+                //   标签优先、无军事标签时由基础 stats 兜底）挂到 faction 上（玩家 / 敌方各一）。
+                //   [P2 · 最后补救] 有 `admiralStyleTag` 时用它 ⇒ 87 名无标签提督的阵型也随 stats 分化，
+                //   与 composition 同源；战役轨（无该字段）回落 `admiralTags` ⇒ 与改动前**逐位相同**。
+                formation: resolveAdmiralDoctrine((fac as any).admiralStyleTag ? [(fac as any).admiralStyleTag] : (fac as any).admiralTags).formation as any,
                 facingAngle: 0, stance: 'search', targetFlare: null,
                 lastState: 'assembling', halfHpTriggered: false, // 追加状态记忆
                 morale: 100,  // 士气(0-100)：断粮时先掉士气，归零后才扣结构生命
@@ -3393,12 +3418,13 @@ export class BattleScene extends Phaser.Scene {
     }
 
     /**
-     * 演习轨道编制 = 该军衔的满编比例（`gameStore.generateSimFullComposition`，与战役轨道同一真源）。
-     * 取不到时返回 null，调用方回落旧 deck 行为。
+     * 演习轨道编制（**实体预算 / 地图尺度所需的"总量"口径**）。
+     * [P2] 编制来源统一到 `resolveAdmiralComposition`（不再各写一份）：此处以**中性风格**
+     * 调用 ⇒ 与 initFactions 里带风格的编制**总量一致**（风格只改比例、不改总量），
+     * 保证 `skirmishEntityPlan` 的 Σ实体 与 `spawnInitialFleets` 建舰口径不漂移。
      */
     private skirmishCompositionFor(milRank: number, faction?: string): any {
-        const fn = (this.store as any).generateSimFullComposition;
-        return typeof fn === 'function' ? fn(milRank, faction) : null;
+        return resolveAdmiralComposition({ faction: faction || '', styleTag: null, milRank });
     }
 
     /**
@@ -5143,11 +5169,23 @@ export class BattleScene extends Phaser.Scene {
                 deck: isSimMode ? simFullDeck(admInfo.faction) : admInfo.deck, 
                 // [大战场] 折算口径：军衔 → 编制 → 实体预算（= spawnInitialFleets 的建舰依据）
                 milRank: this.skirmishMilRank(admInfo.rank),
-                composition: this.skirmishCompositionFor(this.skirmishMilRank(admInfo.rank), admInfo.faction),
+                // [P2] 部队组成 = 该提督（阵营 × 军事风格）；同军衔同阵营不再雷同，重点提督走覆盖表
+                // [P2 · 缺口2] 风格优先取军事标签；无标签的提督（全库 47.8%）由**基础能力值**兜底推导
+                //   （`resolveAdmiralStyleTag` = 作战风格唯一入口，确定性、无随机）——否则其编制退化为纯阵营基准。
+                composition: resolveAdmiralComposition({
+                    faction: admInfo.faction,
+                    styleTag: resolveAdmiralStyleTag(admInfo.tags, admInfo.stats),
+                    milRank: this.skirmishMilRank(admInfo.rank),
+                    admiralId: admInfo.id,
+                }),
                 entityBudget: spawnPlan.player[index] ?? 0,
                 admiralStats: effStats, rank: admInfo.rank,
                 // v29：把提督标签带进战场 faction → 战术层据此解析作战风格（动摇线 / 阵型偏好）
                 admiralTags: admInfo.tags,
+                // [P2 · 最后补救] **阵型与组成共用同一推导后的风格**：formation 站点（:1101 / :1586 /
+                //   :985 / :1330）读本字段 ⇒ 87 名无标签提督的阵型也随 stats 分化（此前恒为 wedge）。
+                //   本字段由**基础 stats**（admInfo.stats）求得，与上方 composition 同输入 ⇒ 二者必然一致。
+                admiralStyleTag: resolveAdmiralStyleTag(admInfo.tags, admInfo.stats),
                 // [v33 P1-4.4] 提督特技带进战场：新增的三维（阵型崩溃抵抗 / 拦截 / 射击武器专精）
                 //   需要战术层能读到特技；此前战场侧完全拿不到 skills（只在战略层 gameStore 用）。
                 admiralSkills: admInfo.skills || [],
@@ -5214,8 +5252,17 @@ export class BattleScene extends Phaser.Scene {
                // [大战场] 敌方难度改用**兵力（军衔）**表达：旧实现用 deck 条数 4/6/8 表达，已废。
                // 注意 `rank` 字段不能动 —— 它是另一套口径（副官/卡牌规模），与军衔无关。
                milRank: this.skirmishEnemyMilRank(),
-               composition: this.skirmishCompositionFor(this.skirmishEnemyMilRank(), eAdm.faction),
-               entityBudget: spawnPlan.enemy
+               // [P2] 敌方提督同样带自己的部队组成（个性不只属于玩家）
+               // [P2 · 缺口2] 同样走"标签优先、能力值兜底"（用提督**基础** stats，与难度加成无关）
+               composition: resolveAdmiralComposition({
+                   faction: eAdm.faction,
+                   styleTag: resolveAdmiralStyleTag(eAdm.tags, eAdm.stats),
+                   milRank: this.skirmishEnemyMilRank(),
+                   admiralId: eAdm.id,
+               }),
+               entityBudget: spawnPlan.enemy,
+               // [P2 · 最后补救] 敌方阵型也读同一推导后的风格（用**基础** eAdm.stats，与难度加成无关）
+               admiralStyleTag: resolveAdmiralStyleTag(eAdm.tags, eAdm.stats),
            });
         }
 
