@@ -102,6 +102,9 @@ export interface Mission {
   /** hold_point: 坚守点坐标（发布时可缺省 → BattleScene 用舰队当前位置填充） */
   x?: number;
   y?: number;
+  /** [W3.5] hold_point 巡逻半径（>0 ⇒ 在锚点圆周巡逻，接敌即战；0/缺省 ⇒ 原地驻守）。
+   *  用于"末位保守舰队"：不再永久死守，而是在己方据点附近游弋。 */
+  patrolRadius?: number;
   /** 头顶/面板显示文本 */
   text: string;
 }
@@ -171,7 +174,7 @@ export function formatAuthorityIntent(level: string | null | undefined, label: s
 
 export function buildMission(
   type: MissionType,
-  opts: { targetId?: number; targetName?: string; x?: number; y?: number } = {},
+  opts: { targetId?: number; targetName?: string; x?: number; y?: number; patrolRadius?: number } = {},
 ): Mission {
   switch (type) {
     case 'attack_fleet':
@@ -179,7 +182,7 @@ export function buildMission(
     case 'capture_planet':
       return { type, targetId: opts.targetId ?? 0, text: `夺取 ${opts.targetName || '最近的中立星球'}` };
     case 'hold_point':
-      return { type, x: opts.x, y: opts.y, text: '坚守指定空域' };
+      return { type, x: opts.x, y: opts.y, patrolRadius: opts.patrolRadius, text: '坚守指定空域' };
     case 'support_fleet':
       return { type, targetId: opts.targetId, text: `协同 ${opts.targetName || '友军舰队'}` };
     case 'retreat_supply':

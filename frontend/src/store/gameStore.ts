@@ -535,6 +535,23 @@ export const useGameStore = defineStore('game', () => {
   };
   const hideFloatBubble = () => { floatBubble.value = null; };
 
+  // [W1.1] 阶段横幅（DOM 可见层）：3D 模式下 Phaser 画布被 CSS 隐藏（body.battle3d-mode），
+  //   画在画布上的 `BattleScene.showBattleBanner()`（战役开始 / 全面会战 / 战局转折 / 决战时刻 /
+  //   增援抵达 / 通信阵列受损）**全部不可见** ⇒ 用户实报"流程乱"。现由 BattleScene 在
+  //   原方法内**同时**写本字段（调用点零改动），由 BattleBanner.vue 渲染 DOM。
+  //   单例 + 自动消隐：新横幅整体替换并重置 2.2s 消隐计时（与 Phaser 版 1800+400ms 观感一致）。
+  const battleBanner = ref<{ title: string; subtitle: string; color: string; ts: number } | null>(null);
+  let battleBannerTimer: any = null;
+  const showBattleBanner = (title: string, subtitle: string, color: string) => {
+    battleBanner.value = { title, subtitle, color, ts: Date.now() };
+    if (battleBannerTimer) clearTimeout(battleBannerTimer);
+    battleBannerTimer = setTimeout(() => { battleBanner.value = null; battleBannerTimer = null; }, 2200);
+  };
+
+  // [W1.2] 战损账单（左上角常驻）：BattleScene 原先画在 Phaser 画布（3D 不可见）⇒ 改镜像到本字段，
+  //   由 BattleBanner.vue 的常驻角标渲染。空串 = 隐藏（与 Phaser 版"仅在有战损时创建"同语义）。
+  const battleLossText = ref<string>('');
+
   const isCastingBomb = ref(false);
   const isSidebarCollapsed = ref(false);
   const gameState = ref<'title' | 'menu' | 'editor' | 'game' | 'strategy' | 'sim'>('title');
@@ -2343,6 +2360,9 @@ export const useGameStore = defineStore('game', () => {
   const deployFormation = ref<string>('wedge');
   /** [G4] 战前军议全屏层：旗舰开局姿态（值域=stance：search/siege/defend） */
   const deployTactic = ref<string>('search');
+  /** [W4.1] 部署倒计时到点是否**自动开战**（默认 false：到点仅提示，等玩家 [回车]/按钮手动开战）。
+   *  置 true 才恢复旧行为（到点自动 `startBattleAfterDeploy`）。 */
+  const deployAutoStart = ref<boolean>(false);
 
   // ===== P0 toast 队列化：避免后续通知覆盖前一条 =====
   const toastQueue = ref<string[]>([]);
@@ -4365,8 +4385,9 @@ export const useGameStore = defineStore('game', () => {
     setPhaserMatchLauncher, setPhaserEditorInitializer,
     battleDialog, showDialog,
     floatBubble, showFloatBubble, updateFloatBubblePos, hideFloatBubble,
+    battleBanner, showBattleBanner, battleLossText,
     setPhaserCommandDispatcher, dispatchFleetCommand,
-    setPhaserDeployDispatcher, dispatchDeployAction, deployFormation, deployTactic,
+    setPhaserDeployDispatcher, dispatchDeployAction, deployFormation, deployTactic, deployAutoStart,
     // 战略层
     strategicNodes, strategicFleets, universeDate, playerMerit, playerRank, initStrategicMap, strategicTimeSpeed, strategicTick,
     selectedFleetId, issueFleetMoveOrder, issueWarpOrder, retreatFleet,

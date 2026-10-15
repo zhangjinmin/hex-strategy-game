@@ -359,9 +359,20 @@ function ringCell(i: number): [number, number] {
     return [r * Math.cos(a), r * Math.sin(a)];
 }
 
-/** [#74 · A2] 演习专属战前部署倒计时（秒）。仅演习（!isCampaign）启用：静置满时自动开战。
+/** [#74 · A2] 演习专属战前部署倒计时（秒）。仅演习（!isCampaign）启用。
+ *  [W4.1] 到点**默认不再自动开战**（改为仅提示，等待玩家回车/按钮）；仅当 store.deployAutoStart=true 才自动开战。
  *  战役**不适用**（保持无限等待，且不显示倒计时行）。单一数据源 = store.deployCountdownSec。 */
 const DEPLOY_COUNTDOWN_SEC = 20;
+
+/** [W3.2] `hold_point` 到位后允许的最长驻守时长（毫秒）。超时 ⇒ 自动转 `search`（巡逻/索敌）
+ *  并清空该任务，彻底消除"开局即驻守、永不落回独立评估"的永久驻守（用户实报"敌方原地不动"）。 */
+const HOLD_POINT_MAX_MS = 25000;
+
+/** [W3.5] 保守末位舰队的默认巡逻半径（hex 格数 × 该值）。以锚点（己方开局位置）为圆心巡逻，接敌即战。 */
+const HOLD_PATROL_RADIUS_HEX = 4;
+
+/** [W3.7] 舰队行为快照输出周期（毫秒）。真机排查"舰队为何不动"时一轮定位（v81 教训）。 */
+const FLEET_SNAPSHOT_INTERVAL_MS = 2000;
 
 /** [v14 ⑤] 同方多舰队最小部署间距（像素，垂直于推进轴）：≥ 阵型足迹 + 安全沟。
  *  取 1.35×足迹（下限 160px）；足迹按各队 formationOffsets 的最大半跨 × 像素格距折算。 */
@@ -946,9 +957,13 @@ export class BattleScene extends Phaser.Scene {
                         //   零回归：team2（敌方）无锁 ⇒ isStanceLocked 恒 false ⇒ 敌军行为逐位不变；仅作用于被点过姿态的僚舰 12s 窗口。
                         if (!this.isStanceLocked(fleet)) { // [V18-B/#67 · (a)] 段③ 服从 L1 锁门
                             // === 战略角色分配（优先级从上到下，P5 性格化调整阈值）===
-                            // P3 部署指令卡影响：突袭→AI更早猛攻；合围→AI偏好侧翼；稳守→AI更保守
-                            const deployAdj = aiFac._deployTactic === 'aggressive' ? 0.85
-                                : (aiFac._deployTactic === 'encircle' ? 1.0 : 1.15);
+                            // [W3.6] `_deployTactic`（P3 部署指令卡对 AI 的镜像）**已废弃**：
+                            //   V18-A · F2 移除了写入端（`planAiFactionsForDeploy`/`startBattleAfterDeploy` 不再镜像）
+                            //   ⇒ `aiFac._deployTactic` 恒 undefined ⇒ 原式 `aggressive?0.85:encircle?1.0:1.15` 恒取 1.15。
+                            //   处置 = **(b) 移除机制**：把恒等结果显式写为常量（行为逐位不变，仅去死代码）。
+                            //   理由：恢复写入 (a) 会让"玩家选的部署卡"再次影响 AI 开局决策，与 V18-A 的设计裁定冲突，
+                            //   且会改动全局推进阈值、波及大量台架基线；而该机制当前对玩法零贡献。
+                            const deployAdj = 1.15;   // 已废弃：部署指令卡不再影响 AI 推进阈值
                             if (underTowerFire) {
                                 // 被塔打：拆塔或者跑（激进派顶着拆塔）
                                 fleet.stance = hpPct > (personalityType === 'aggressive' ? 0.3 : 0.5) ? 'siege' : 'fallback';
@@ -977,13 +992,13 @@ export class BattleScene extends Phaser.Scene {
                                 fleet.stance = 'search';
                             }
                             // [v31-A] 性格化阵型：**教范（`MILITARY_STYLE_PARAMS.formation`）首次生效**。
-                            //   优先级：合围指令(部署卡) > 撤退(圆阵) > **该提督教范阵型**。
+                            //   优先级：撤退(圆阵) > **该提督教范阵型**。
+                            //   [W3.6] 原「合围指令(部署卡) >」一档依赖 `_deployTactic`（已废弃，恒 false）⇒ 移除，行为不变。
                             //   ⚠ 旧实现只在 `siege+aggressive` / `fallback+cautious` **两个分支**赋值 ⇒
                             //     其余情况**根本不写 formation** ⇒ 舰队保持出厂值不回炉
                             //     （用户实报："毕典菲尔特特性是直冲，出来的阵型竟然是个长条"
                             //      —— 因为人格**从未参与**阵型决策，见 `24` §1 证据 3）。
-                            if (aiFac._deployTactic === 'encircle' && fleet.stance === 'siege') fleet.formation = 'wedge';
-                            else if (fleet.stance === 'fallback') fleet.formation = 'circle'; // 撤退：全向防御
+                            if (fleet.stance === 'fallback') fleet.formation = 'circle'; // 撤退：全向防御
                             else fleet.formation = resolveAdmiralDoctrine(aiFac.admiralStyleTag ? [aiFac.admiralStyleTag] : aiFac.admiralTags).formation; // [P2 · 最后补救] 教范默认（标签优先 / 无标签用基础 stats 推导；战役轨回落 admiralTags）
                         }
                 }
@@ -1083,7 +1098,10 @@ export class BattleScene extends Phaser.Scene {
                     backgroundColor: 'rgba(0,0,0,0.55)', padding: { x: 8, y: 4 }
                 }).setDepth(60).setScrollFactor(0);
             }
-            this.battleLossText.setText(`本场战损：${this.battleLosses.ships} 舰 · 抚恤 ₮${Math.round(this.battleLosses.pension / 10000)}万`);
+            const lossLine = `本场战损：${this.battleLosses.ships} 舰 · 抚恤 ₮${Math.round(this.battleLosses.pension / 10000)}万`;
+            this.battleLossText.setText(lossLine);
+            // [W1.2] 3D 可见层：同步镜像到 store（BattleBanner.vue 常驻角标），3D 模式下方能看见。
+            this.store.battleLossText = lossLine;
         }
 
             }
@@ -1143,6 +1161,8 @@ export class BattleScene extends Phaser.Scene {
         const pFleet = this.globalFleets.find((f: any) => f.factionId === pFac?.id);
         if (pFleet) pFleet.formation = this.deployFormation;
         this.updateDeployText();
+        // [W4.3] 阶段提示①「进入部署」：3D 模式下原中央菜单画在隐藏画布上 ⇒ 必须经 store 横幅（DOM）可见。
+        this.showBattleBanner('战前部署', '选择阵型/姿态 · 布阵后回车开战', '#00ff88');
         // [#74 · A2] 演习专属 20s 倒计时（战役保持无限等待、不显示倒计时行）
         if (!isCampaign) {
             (this.store as any).deployCountdownSec = DEPLOY_COUNTDOWN_SEC;
@@ -1156,16 +1176,26 @@ export class BattleScene extends Phaser.Scene {
                     const s = this.store as any;
                     if (s.deployCountdownPaused) {
                         // [FREEZE-D2] 暂停时也要刷文字：旧实现直接 return，中央菜单停留在
-                        //   「N 秒后自动开战」看不出已暂停（玩家误判为卡死）。刷出「（已暂停计时）」。
+                        //   「N 秒后…」看不出已暂停（玩家误判为卡死）。刷出「（已暂停计时）」。
                         this.updateDeployText();
                         return;   // 悬停军议面板：暂停计时（不减秒）
                     }
-                    s.deployCountdownSec = (s.deployCountdownSec ?? 0) - 1;
+                    if ((s.deployCountdownSec ?? 0) > 0) {
+                        s.deployCountdownSec = (s.deployCountdownSec ?? 0) - 1;
+                    }
                     this.updateDeployText();                  // 刷新中央菜单与秒数（单一数据源）
-                    if (s.deployCountdownSec <= 0) {
+                    if ((s.deployCountdownSec ?? 0) <= 0) {
                         this.deployCountdownTimer?.remove();
                         this.deployCountdownTimer = null;
-                        this.startBattleAfterDeploy();
+                        // [W4.1] 倒计时到点：**默认不自动开战**（旧实现到点即 startBattleAfterDeploy ⇒
+                        //   玩家还没布置完就被推进战斗，用户实报"流程乱"）。
+                        //   仅当显式开启 `store.deployAutoStart === true` 时才自动开战；
+                        //   否则只弹一次横幅提示，等待玩家 [回车] / 军议面板"开战"按钮。
+                        if (s.deployAutoStart === true) {
+                            this.startBattleAfterDeploy();
+                        } else {
+                            this.showBattleBanner('部署时间到', '可继续调整阵型/姿态 · 回车开战', '#fbbf24');
+                        }
                     }
                 },
             });
@@ -1193,7 +1223,10 @@ export class BattleScene extends Phaser.Scene {
         const cdSec = (this.store as any).deployCountdownSec;
         const cdPaused = !!(this.store as any).deployCountdownPaused;
         const cdLine = (!isCampaign && typeof cdSec === 'number' && cdSec >= 0)
-            ? (cdPaused ? '（已暂停计时）' : `${cdSec} 秒后自动开战`)
+            ? (cdSec <= 0
+                // [W4.1] 到点后不再自动开战：文案也要如实说明"仅提示"，避免玩家以为会被强推
+                ? '部署时间到 · 可继续调整（不会自动开战）'
+                : (cdPaused ? '（已暂停计时）' : `${cdSec} 秒 · 到点仅提示，不自动开战`))
             : '';
         const cam = this.cameras.main;
         this.deployText.setPosition(cam.width / 2, cam.height / 2 - 40);
@@ -1235,6 +1268,27 @@ export class BattleScene extends Phaser.Scene {
         // [#74 · R1] 旗舰开局姿态生效（不写 _userStanceLockUntil：开局初值无需 L1 锁；
         //   1Hz 战略层有 `if (aiFac.type === 'player') continue;` 显式跳过玩家 ⇒ 不会被覆写）
         if (pFleet) pFleet.stance = this.deployTactic;
+        // [W3.4] 玩家本队"无直接指令 / 无 mission"时也要能**自主索敌/推进**（与 AI 阵营同构——
+        //   AI 僚舰由 planFactionBattle 拿到 mission，玩家本队此前被 planAiFactionsForDeploy 排除 ⇒ 只靠手动）。
+        //   护栏（绝不越权）：
+        //     ① 玩家**显式选择"驻守"**（deployTactic==='defend'）⇒ 不派任务，尊重站桩意图；
+        //     ② 已有 directOrder / mission ⇒ 不覆盖；
+        //     ③ 运动层权威 direct_order > strategic_mission（CommandAuthority）⇒ 玩家直接指令恒优先；
+        //     ④ executeMissionTick 写 stance 前过 isStanceLocked（玩家 12s 手动姿态锁）；
+        //     ⑤ applyStanceToFleet 收到玩家姿态指令即撤下该默认任务、交回玩家控制。
+        //   ⚠ 仅限**演习轨**（!campaign）：战役轨玩家舰队承担战略意图（守点/护送），不宜被默认任务拽走。
+        const isCampaignW34 = ((this.store as any).tacticalState?.mode === 'campaign');
+        if (pFleet && !isCampaignW34 && this.deployTactic !== 'defend' && !(pFleet as any).directOrder && !pFleet.mission) {
+            const myTeamP = pFac?.team ?? 1;
+            const enemyFacAny = this.store.factions.find((f: any) => f.team !== myTeamP && f.active !== false);
+            if (enemyFacAny) {
+                pFleet.mission = buildMission('attack_fleet', {
+                    targetId: enemyFacAny.id, targetName: enemyFacAny.name || '敌军',
+                });
+                (pFleet as any)._playerDefaultMission = true;   // 标记：玩家一动手即撤销
+                (pFac as any).mission = pFleet.mission;
+            }
+        }
         // [V18-A · F2 去镜像] 不再把玩家指令卡镜像到 AI 阵营的 _deployTactic（见 updateDeployText 注释）。
         // [V18-A · P1] 部署结束钩子：确认/应用总指挥覆盖（override > 自动）并落定本场总指挥
         this.computeSupremeCommander();
@@ -1311,9 +1365,15 @@ export class BattleScene extends Phaser.Scene {
                     ? { targetId: tgt.id, targetName: this.factionMap.get(tgt.factionId)?.name || '敌舰队' }
                     : { targetId: enemyFacAny?.id, targetName: enemyFacAny?.name || '敌军' });
             } else if (isLast && (personality === 'cautious' || diff === 'easy')) {
-                // 末位且保守/低难度 → 原地坚守
+                // [W3.5] 末位且保守/低难度 → **在己方据点附近巡逻**（而非原地死守）。
+                //   旧实现 = `hold_point(自身坐标)` ⇒ executeMissionTick 判 dist<120 ⇒ stance='defend' ⇒ 开局即驻守原地不动
+                //   （用户实报"敌方也是原地不动"）。现给 hold_point 一个巡逻半径：巡弋 + 接敌即战；
+                //   即便敌情全无，W3.2 的超时也会兜底把它转成 search，不会永久驻守。
                 role = 'hold';
-                mission = buildMission('hold_point', { x: Math.round(fl.x), y: Math.round(fl.y) });
+                mission = buildMission('hold_point', {
+                    x: Math.round(fl.x), y: Math.round(fl.y),
+                    patrolRadius: Math.max(120, Math.round(this.hexRadius * HOLD_PATROL_RADIUS_HEX)),
+                });
             } else if (idx % 2 === 1 && enemyFleets.length > 1) {
                 // 次主力 → 协同头号主力作战
                 role = 'support';
@@ -1383,6 +1443,11 @@ export class BattleScene extends Phaser.Scene {
 
     /** P6 重大事件横幅：全屏居中大字 + 扩散动画（替代小 toast 的仪式感） */
     private showBattleBanner(title: string, subtitle: string, color: string = '#fbbf24') {
+        // [W1.1] 3D 可见层：3D 模式下 Phaser 画布被 CSS 隐藏（body.battle3d-mode）⇒ 画在画布上的
+        //   本横幅**不可见**（用户实报"阶段/流程什么都没有"）。此处**同时**写 store，由
+        //   BattleBanner.vue 渲染 DOM；调用点（:1243/:1990/:3685…）无需改动。
+        //   ⚠ 下方 Phaser 版**保留**：`body` 无 `battle3d-mode`（2D 降级 / 无 overlay）时仍是唯一可见路径。
+        this.store.showBattleBanner?.(title, subtitle, color);
         const cam = this.cameras.main;
         const cx = cam.width / 2;
         const cy = cam.height / 2;
@@ -3253,9 +3318,42 @@ export class BattleScene extends Phaser.Scene {
             if (!this.isStanceLocked(fleet)) fleet.stance = 'siege';   // [V18-B · B2] L2 写前检查 L1 锁
             fleet._missionDest = dest;
         } else if (m.type === 'hold_point') {
-            const hx = m.x ?? fleet.x, hy = m.y ?? fleet.y;
-            fleet._missionDest = { x: hx, y: hy };
-            if (!this.isStanceLocked(fleet)) fleet.stance = dist(hx, hy) < 120 ? 'defend' : 'search'; // [V18-B · B2] L2 写前检查 L1 锁；到位转驻守，未到先机动
+            const anchorX = m.x ?? fleet.x, anchorY = m.y ?? fleet.y;
+            const patrolR = m.patrolRadius ?? 0;
+            if (patrolR > 0) {
+                // [W3.5] **巡逻固守**：到达当前航点后另选锚点圆周上的新航点（按舰队 id + 秒级时间确定性派生，
+                //   非随机 ⇒ 台架可复现）。运动目标仍走 `_missionDest`；接敌由 per-frame 交战逻辑自动接管
+                //   （stance='search' ⇒ 咬敌）。⇒ 末位保守舰队"在据点附近巡逻 + 接敌即战"而非原地死守。
+                let wp = (fleet as any)._patrolWaypoint as { x: number; y: number } | undefined;
+                if (!wp || dist(wp.x, wp.y) < 80) {
+                    const seed = (Number(fleet.id) || 1) * 0.61803398875 + Math.floor(this.time.now / 1000) * 1.37;
+                    const ang = (seed - Math.floor(seed)) * Math.PI * 2;
+                    wp = { x: anchorX + Math.cos(ang) * patrolR, y: anchorY + Math.sin(ang) * patrolR };
+                    (fleet as any)._patrolWaypoint = wp;
+                }
+                fleet._missionDest = { x: wp.x, y: wp.y };
+                if (!this.isStanceLocked(fleet)) fleet.stance = 'search';
+                (fleet as any)._holdArrivedAt = undefined;   // 巡逻不算"到位驻守"
+            } else {
+                delete (fleet as any)._patrolWaypoint;
+                fleet._missionDest = { x: anchorX, y: anchorY };
+                const arrived = dist(anchorX, anchorY) < 120;
+                // [W3.2] 到位后不再**永久**驻守：记录到位时刻，超过 HOLD_POINT_MAX_MS ⇒ 转索敌并清任务
+                //   （清空 mission ⇒ 1Hz 循环的 `if (fleet.mission) continue` 不再早退 ⇒ 落回独立评估/自主行动）。
+                if (arrived) {
+                    if (typeof (fleet as any)._holdArrivedAt !== 'number') {
+                        (fleet as any)._holdArrivedAt = this.time.now;
+                    } else if (this.time.now - (fleet as any)._holdArrivedAt > HOLD_POINT_MAX_MS) {
+                        (fleet as any)._holdArrivedAt = undefined;
+                        clearMission();
+                        if (!this.isStanceLocked(fleet)) fleet.stance = 'search';   // 驻守超时 → 转巡逻/索敌
+                        return;
+                    }
+                } else {
+                    (fleet as any)._holdArrivedAt = undefined;
+                }
+                if (!this.isStanceLocked(fleet)) fleet.stance = arrived ? 'defend' : 'search'; // [V18-B · B2] L2 写前检查 L1 锁；到位转驻守，未到先机动
+            }
         } else if (m.type === 'support_fleet') {
             // [v64] 同 attack_fleet：targetId 兼容「舰队 id 或 factionId」（战前规划层写阵营 id 同病）。
             const myTeamSup = this.factionMap.get(fleet.factionId)?.team;
@@ -3330,14 +3428,22 @@ export class BattleScene extends Phaser.Scene {
                     if (fac && fac.team === 1) {
                         // ── 提督扮演 B：任务指令通道（非直接操控，任何己方舰队均可接收）──
                         if (type === 'mission') {
-                            const m: Mission = { ...(payload || {}) };
-                            // hold_point 缺省坐标 → 舰队当前位置（"坚守当前位置"）
-                            if (m.type === 'hold_point' && (m.x === undefined || m.y === undefined)) {
-                                m.x = Math.round(fleet.x); m.y = Math.round(fleet.y);
+                            const base: Mission = { ...(payload || {}) };
+                            // [W3.3] 任务下达改为**阵营广播**：同步到该 faction 的**全部**舰队
+                            //   （旧实现用 `find` 只命中第一支 ⇒ 分兵后其余舰队收不到任务，与用户实报"有的指令没反应"吻合）。
+                            //   hold_point 若未给坐标 ⇒ 各舰队"坚守各自当前位置"（逐支解析，不再只用被 find 到的那支）。
+                            const facFleets = this.globalFleets.filter((fl: any) =>
+                                fl.factionId === fleet.factionId && fl.units && fl.units.length > 0);
+                            for (const fl of facFleets) {
+                                const mm: Mission = { ...base };
+                                if (mm.type === 'hold_point' && (base.x === undefined || base.y === undefined)) {
+                                    mm.x = Math.round(fl.x); mm.y = Math.round(fl.y);
+                                }
+                                fl.mission = mm;
+                                (fl as any)._holdArrivedAt = undefined;   // 重新下达 ⇒ 重置驻守超时计时（W3.2）
                             }
-                            fleet.mission = m;
-                            (fac as any).mission = m; // 镜像到 store.factions → 军议面板/billboard 显示
-                            this.store.triggerToast(`◈ 任务已下达：${fac.name} — ${m.text || m.type}`);
+                            (fac as any).mission = { ...base }; // 镜像到 store.factions → 军议面板/billboard 显示
+                            this.store.triggerToast(`◈ 任务已下达：${fac.name}（${facFleets.length} 支舰队） — ${base.text || base.type}`);
                             return;
                         }
                         // ── 提督扮演 A：指挥权限——指挥制下只有总指挥旗舰接受直接命令 ──
@@ -5062,6 +5168,13 @@ export class BattleScene extends Phaser.Scene {
 
     /** 姿态命令的公共执行体（即时/延迟两路共用） */
     private applyStanceToFleet(fleet: any, payload: string) {
+        // [W3.4] 玩家对舰队下达姿态 ⇒ 撤下"玩家本队默认自主任务"，把控制权交回玩家（不覆盖玩家姿态）。
+        if ((fleet as any)._playerDefaultMission) {
+            fleet.mission = null;
+            const f = this.factionMap.get(fleet.factionId);
+            if (f) (f as any).mission = null;
+            (fleet as any)._playerDefaultMission = false;
+        }
         fleet.stance = payload;
         fleet.assignedRole = payload;
         // v6：用户手动姿态锁 12 秒——AI 状态机的姿态覆盖（残血自动撤退/断粮重组等）
@@ -5709,8 +5822,62 @@ export class BattleScene extends Phaser.Scene {
         }
     }
 
+    /**
+     * [W3.7] 舰队行为快照（默认每 2s 一次）：真机排查"舰队为何不动"时**一轮定位**
+     *   （v81 教训：与其继续猜，不如植入可观测性）。
+     *   输出：[阵营] 舰队 | type | mission | stance | state | target | 距目标。
+     *   查看：① devtools console 直接读（带 `[W3.7 舰队快照]` 前缀，含全部舰队）；
+     *         ② `window.__fleetSnap()` 手动拉一次（返回字符串数组，不依赖 2s 节流）；
+     *         ③ 读 `store.fleetBehaviorSnapshot`（同一份字符串数组，可供 DOM 面板消费）。
+     *   关闭：`window.__hexFleetSnapshot = false`（默认开启，节流 2s，开销 = 每 2s 一次字符串拼接）。
+     */
+    private collectFleetSnapshot(): string[] {
+        const rows: string[] = [];
+        for (const fleet of this.globalFleets as any[]) {
+            const fac = this.factionMap.get(fleet.factionId);
+            if (!fac) continue;
+            const do0 = fleet.directOrder ?? null;
+            const tgt: any = (do0 && do0.kind === 'move') ? { x: do0.x, y: do0.y }
+                : (fleet._missionDest ?? null);
+            const d = tgt ? Math.round(Phaser.Math.Distance.Between(fleet.x, fleet.y, tgt.x, tgt.y)) : -1;
+            const label = fleet.name || fleet.commanderName || `F${fleet.id}`;
+            rows.push(
+                `[${fac.name || fac.id}] ${label} | type=${fac.type} | #${String(fleet.id).slice(0, 6)} | `
+                + `mission=${fleet.mission?.type ?? '-'} | stance=${fleet.stance ?? '-'} | state=${fleet.state ?? '-'} | `
+                + `target=${tgt ? `${Math.round(tgt.x)},${Math.round(tgt.y)}` : '-'} | 距目标=${d < 0 ? '-' : `${d}px`}`,
+            );
+        }
+        return rows;
+    }
+
+    private maybeLogFleetSnapshot(time: number) {
+        if (time - ((this as any)._lastFleetSnap ?? -Infinity) < FLEET_SNAPSHOT_INTERVAL_MS) return;
+        (this as any)._lastFleetSnap = time;
+        const g: any = (typeof window !== 'undefined' ? window : globalThis) as any;
+        if (g && g.__hexFleetSnapshot === false) return;
+        const rows = this.collectFleetSnapshot();
+        (this.store as any).fleetBehaviorSnapshot = rows;
+        // eslint-disable-next-line no-console
+        console.log(`[W3.7 舰队快照 @${Math.round(time / 1000)}s]\n` + rows.join('\n'));
+    }
+
     update(time: number, delta: number) {
         if (this.store.gameOver) return;
+
+        // [W3.7] 舰队行为快照（含部署暂停期，便于确认"到底有没有在动"）
+        this.maybeLogFleetSnapshot(time);
+        // 手动拉取入口（不依赖 2s 节流；排查时在 console 直接调用）
+        {
+            const g: any = (typeof window !== 'undefined' ? window : globalThis) as any;
+            if (g && !g.__fleetSnap) {
+                g.__fleetSnap = () => {
+                    const rows = this.collectFleetSnapshot();
+                    // eslint-disable-next-line no-console
+                    console.log(rows.join('\n'));
+                    return rows;
+                };
+            }
+        }
 
         // ── 指挥点：空格键检测（每帧检查，暂停时也能工作）──
         if (this.spaceKey && Phaser.Input.Keyboard.JustDown(this.spaceKey)) {
@@ -6328,8 +6495,14 @@ export class BattleScene extends Phaser.Scene {
                 }
                 st.stalledSec = stallOut.stalledSec + w1DtSec;
                 // 三选一执行（chooseStallAction 策略已在 tickStallWatchdog 内裁决）：
-                //   仅 AI 且无 direct 指令的舰队执行（direct 权威更高，看门狗不得越权）
-                if (stallOut.directive !== 'none' && myFac.type !== 'player' && !w1DOrder) {
+                //   [W3.1] 不再整体排除玩家阵营：卡住的**玩家舰队**同样需要自愈
+                //     （用户实报"友军有的会动、有的不动" ⇒ 玩家本队一旦卡住此前无任何恢复路径）。
+                //   唯一保留的越权护栏 = `!w1DOrder`：玩家直接指令权威最高，看门狗不得覆盖（对玩家亦适用）。
+                //   ⚠ 但对玩家舰队**不施加 withdrawal**：它会把 stance 改成 fallback，
+                //     等于覆写玩家手动姿态，超出"看门狗只出意图、不越权"的边界（advance/objective_pressure 仅改临时目标，不写姿态）。
+                const w1PlayerFleet = myFac.type === 'player';
+                if (stallOut.directive !== 'none' && !w1DOrder
+                    && !(w1PlayerFleet && stallOut.directive === 'withdrawal')) {
                     if (stallOut.directive === 'advance') {
                         // 推进：向最近敌的临时运动目标（_stall.override；有进展即撤下）
                         if (closestEnemyFleet) st.override = { x: closestEnemyFleet.x, y: closestEnemyFleet.y };
@@ -8631,6 +8804,13 @@ export class BattleScene extends Phaser.Scene {
         
         this.store.fleetsUI = uiData;
 
+        // [W1.3 · 已存在，勿重复实现] 3D 舰队信息条 + 姿态按钮**已由 `Battle3DOverlay` 的 DOM
+        //   billboard 层提供**（`initBillboardLayer` / `updateBillboards`，见该文件 :4254-4585：
+        //   名称 / HP / 补给 / 士气 / 态势意图 + 索敌·电子战·攻坚·驻守按钮，逐帧 3D→屏幕投影）。
+        //   `body.battle3d-mode` 只隐藏 `.fleet-ui-layer`（Phaser 2D 跟随层），**不隐藏** bbLayer
+        //   ⇒ 3D 下信息条与姿态按钮本就可见。曾尝试在本文件再加一层 DOM 信息条 → 会造成**双份重叠**，
+        //   故**不再新增**（详见交付报告"W1.3 结论"）。
+
         // （原「CRT 模式强制隐藏单位 sprite」块已随该模式删除）
 
         // 实时覆盖地块迷雾：不在玩家视野内的地块统一涂暗
@@ -9226,6 +9406,13 @@ export class BattleScene extends Phaser.Scene {
                 const playerTeam = playerFac?.team ?? 1;
                 const winnerTeam = aliveTeams.size === 1 ? Array.from(aliveTeams)[0] : 0;
                 this.store.isWin = winnerTeam === playerTeam;
+
+                // [W4.3] 阶段提示④「战斗结束」：经 store 横幅（DOM）可见——3D 模式下 Phaser 文案不可见。
+                this.showBattleBanner(
+                    this.store.isWin ? '战斗胜利' : '战斗失利',
+                    this.store.isWin ? '敌方舰队已被清除' : '我方舰队已被清除',
+                    this.store.isWin ? '#22c55e' : '#ef4444',
+                );
 
                 // P4c 最后一击慢镜头
                 try {

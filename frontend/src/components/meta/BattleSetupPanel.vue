@@ -104,6 +104,12 @@
                   <span class="slot-ships">{{ getShipCount(dispatchAdmiralsList[i - 1]) }}艘</span>
                   <span v-for="t in (getAdmiralInfo(dispatchAdmiralsList[i - 1])?.tags || []).slice(0, 2)" :key="t" class="trait-tag">{{ tagShort(t) }}</span>
                 </div>
+                <!-- [W2.2] 教范阵型 + 编成明细（仅演习：战役轨 faction 无 P2 编制字段，显示会误导）。
+                     玩家一眼看出"换提督 ⇒ 阵型/编成不同"。 -->
+                <div v-if="isSimMode" class="slot-doctrine" :title="compDetailOf(getAdmiralInfo(dispatchAdmiralsList[i - 1]))">
+                  <span class="doctrine-form">阵型 {{ formationCnOf(getAdmiralInfo(dispatchAdmiralsList[i - 1])) }}</span>
+                  <span class="doctrine-comp">{{ compDetailOf(getAdmiralInfo(dispatchAdmiralsList[i - 1])) || '—' }}</span>
+                </div>
               </div>
               <span class="slot-remove" @click.stop="removeDispatch(i - 1)">×</span>
             </template>
@@ -175,6 +181,8 @@ import { useSettingsStore } from '../../store/settingsStore';
 import { totalShips } from '../../types/game';
 import { diffConfig, applyFactionShipRestriction } from '../../config/gameData';
 import { TAG_META_MAP } from '../../config/tagConfig';
+import { resolveAdmiralComposition, resolveAdmiralStyleTag } from '../../config/admiralDoctrine';
+import { resolveAdmiralDoctrine } from '../../game/retreatDoctrine';
 import ShipGalleryOverlay from '../battle/ShipGalleryOverlay.vue';
 
 const store = useGameStore();
@@ -286,32 +294,55 @@ const getEffective = (id: number) => {
   if (typeof (store as any).getEffectiveStats === 'function') return (store as any).getEffectiveStats(id);
   return null;
 };
-const getSimFullComp = (rankName: string, faction?: string) => {
-  const rankMap: Record<string, number> = {
-    '准尉': 1, '少尉': 2, '中尉': 3, '上尉': 4,
-    '少校': 5, '中校': 6, '上校': 7,
-    '准将': 8, '少将': 9, '中将': 10, '上将': 11, '一级上将': 12, '元帅': 13,
-  };
-  const rank = rankMap[rankName] || 9;
-  if (typeof (store as any).generateSimFullComposition === 'function') {
-    return (store as any).generateSimFullComposition(rank, faction);
-  }
-  // 兜底算法
-  const total = typeof (store as any).getShipLimit === 'function' ? (store as any).getShipLimit(rank) : 5000;
-  return applyFactionShipRestriction(faction || '', { battleships: Math.floor(total * 0.25), fastBattleships: Math.floor(total * 0.1), cruisers: Math.floor(total * 0.25), destroyers: Math.floor(total * 0.25), carriers: Math.floor(total * 0.05), fighters: Math.floor(total * 0.05), supplies: Math.max(1, Math.floor(total * 0.05)) });
+
+// ── [W2] P2 成果可见：编制 / 阵型显示的**唯一口径**（与 BattleScene.initFactions 完全一致）──
+//   风格：`resolveAdmiralStyleTag(tags, stats)`（标签优先 / 无标签用基础 stats 兜底）。
+//   编制：`resolveAdmiralComposition({ faction, styleTag, milRank, admiralId })`（重点提督走覆盖表）。
+//   阵型：`resolveAdmiralDoctrine([styleTag]).formation`（= `MILITARY_STYLE_PARAMS` 真源）。
+const FORMATION_CN: Record<string, string> = {
+  wedge: '楔形阵', line: '横阵', spindle: '纺锤阵', circle: '圆形阵', square: '方阵',
 };
-const getSimShipTotal = (rankName: string, faction?: string) => {
-  const comp = getSimFullComp(rankName, faction);
-  return totalShips(comp);
+const styleTagOf = (adm: any) => resolveAdmiralStyleTag(adm?.tags, adm?.stats);
+/** 教范阵型（中文名）：无标签且无 stats ⇒ null ⇒ 回落楔形阵（与战场默认一致） */
+const formationCnOf = (adm: any) => {
+  const tag = styleTagOf(adm);
+  const form = tag ? resolveAdmiralDoctrine([tag]).formation : 'wedge';
+  return FORMATION_CN[form] || form;
 };
+/** [W2.1] 演习编制：走 P2 真源（口径与战场一致，含重点提督覆盖表），**再**过一道阵营限制。
+ *  `resolveAdmiralComposition` 结构上不含 `fastBattleships`（同盟禁高战已隐含满足），此处再走
+ *  `applyFactionShipRestriction` 作**防御性**保证（真源将来若新增高战，限制仍生效）。 */
+const simCompositionFor = (adm: any) => {
+  const c = resolveAdmiralComposition({
+    faction: adm?.faction || '',
+    styleTag: styleTagOf(adm),
+    milRank: Math.max(8, Number(adm?.rank) || 8),
+    admiralId: adm?.id,
+  });
+  return applyFactionShipRestriction(adm?.faction || '', {
+    battleships: c.battleships, fastBattleships: 0, cruisers: c.cruisers,
+    destroyers: c.destroyers, carriers: c.carriers || 0, fighters: c.fighters || 0, supplies: c.supplies || 0,
+  });
+};
+/** [W2.1] 演习编制总量 */
+const simShipTotalFor = (adm: any) => totalShips(simCompositionFor(adm));
+/** 编成明细（只列非零舰种）：战列×N 巡洋×N … */
+const compDetailOf = (adm: any) => {
+  const c = simCompositionFor(adm);
+  const rows: [string, number][] = [
+    ['战列', c.battleships], ['巡洋', c.cruisers], ['驱逐', c.destroyers],
+    ['空母', c.carriers || 0], ['战机', c.fighters || 0], ['补给', c.supplies || 0],
+  ];
+  return rows.filter(([, n]) => n > 0).map(([k, n]) => `${k}×${n}`).join(' ');
+};
+
 const getShipCount = (id: number) => {
-  if (isSimMode.value) {
-    const adm = safeAllAdmirals.value.find((a: any) => a.id === id);
-    if (!adm) return 0;
-    return getSimShipTotal(adm.rankName || '少将', adm.faction);
-  }
   const adm = safeAllAdmirals.value.find((a: any) => a.id === id);
   if (!adm) return 0;
+  if (isSimMode.value) {
+    // [W2.1] 原走旧算法 `generateSimFullComposition`（与 P2 编成不一致）⇒ 改用 P2 真源
+    return simShipTotalFor(adm);
+  }
   return adm.deck ? adm.deck.filter(Boolean).length : 0;
 };
 
@@ -496,6 +527,10 @@ const launchBattle = () => {
 .slot-stats span { font-size: 10px; font-family: monospace; font-weight: 700; color: var(--color-text-secondary); white-space: nowrap; }
 .slot-bottom { display: flex; align-items: center; gap: 4px; flex-wrap: nowrap; }
 .slot-ships { font-size: 10px; color: var(--color-warning); font-weight: 800; white-space: nowrap; }
+/* [W2.2] 教范阵型 + 编成明细（P2 成果可见） */
+.slot-doctrine { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
+.doctrine-form { font-size: 10px; font-weight: 800; color: #22d3ee; white-space: nowrap; }
+.doctrine-comp { font-size: 9px; color: var(--color-text-secondary); font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .empty-mark { color: var(--color-border-emphasized); font-weight: 800; font-size: clamp(12px, 1.6vh, 14px); margin: auto; }
 .slot-remove { position: absolute; top: 2px; right: 4px; color: var(--color-empire); font-weight: 800; font-size: 16px; display: none; }
 .dispatch-slot:hover .slot-remove { display: block; }

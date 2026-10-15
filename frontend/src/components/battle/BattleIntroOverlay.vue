@@ -27,6 +27,11 @@
             <span class="io-rank">R{{ mine.rank }}</span>
             <span class="io-fleets">{{ mine.fleetCount }} 支舰队</span>
           </div>
+          <!-- [W2.2] 教范阵型 + 编成明细（P2 成果可见：换提督 ⇒ 阵型/编成不同） -->
+          <div class="io-doctrine" v-if="mine.formationCn">
+            <span class="io-form">阵型 {{ mine.formationCn }}</span>
+            <span class="io-comp">{{ mine.compText || '—' }}</span>
+          </div>
         </div>
 
         <div class="io-vs">VS</div>
@@ -42,6 +47,10 @@
             <span class="io-flag" :style="{ color: foe.cssColor }">{{ foe.traitLabel }}</span>
             <span class="io-rank">R{{ foe.rank }}</span>
             <span class="io-fleets">{{ foe.fleetCount }} 支舰队</span>
+          </div>
+          <div class="io-doctrine" v-if="foe.formationCn">
+            <span class="io-form">阵型 {{ foe.formationCn }}</span>
+            <span class="io-comp">{{ foe.compText || '—' }}</span>
           </div>
         </div>
       </div>
@@ -108,6 +117,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useGameStore, getPortrait } from '../../store/gameStore';
 import { admiralQuotes, generalQuotes, spawnBriefTemplates, standingOrders } from '../../config/dialoguesData';
+import { resolveAdmiralDoctrine } from '../../game/retreatDoctrine';
 import CouncilWarRoom from './CouncilWarRoom.vue';
 
 const store = useGameStore();
@@ -148,8 +158,33 @@ const cdLine = computed<string>(() => {
 
 const TRAIT_LABEL: Record<string, string> = { empire: '帝国', alliance: '同盟' };
 
+/** [W2.2] P2 成果可见：阵型中文名（`MILITARY_STYLE_PARAMS` 真源）+ 编成明细 */
+const FORMATION_CN: Record<string, string> = {
+  wedge: '楔形阵', line: '横阵', spindle: '纺锤阵', circle: '圆形阵', square: '方阵',
+};
+/** faction 的教范阵型：**仅在存在 P2 信号时**给出（`admiralStyleTag`/`composition`/`admiralTags`）。
+ *  战役轨三者皆无 ⇒ 空串 ⇒ 该行不渲染（避免硬显"楔形阵"而与战略数据实际阵型不符）。 */
+const formationCnOf = (f: any): string => {
+  const p2Signal = !!(f as any)?.admiralStyleTag || !!(f as any)?.composition
+    || !!((f as any)?.admiralTags && (f as any).admiralTags.length);
+  if (!p2Signal) return '';
+  const tag = (f as any)?.admiralStyleTag;
+  const form = resolveAdmiralDoctrine(tag ? [tag] : (f as any)?.admiralTags).formation;
+  return FORMATION_CN[form] || form;
+};
+/** 编成明细（只列非零舰种）：战列×N 巡洋×N …；无 composition（战役轨）⇒ 空串 */
+const compTextOf = (c: any): string => {
+  if (!c) return '';
+  const rows: [string, number][] = [
+    ['战列', c.battleships], ['巡洋', c.cruisers], ['驱逐', c.destroyers],
+    ['空母', c.carriers || 0], ['战机', c.fighters || 0], ['补给', c.supplies || 0],
+  ];
+  return rows.filter(([, n]) => n > 0).map(([k, n]) => `${k}×${n}`).join(' ');
+};
+
 interface Side {
   name: string; portrait: string; rank: number; traitLabel: string; cssColor: string; fleetCount: number;
+  formationCn: string; compText: string;
 }
 const factions = computed<any[]>(() => (unwrap<any[]>(store.factions) || []).filter((f: any) => f && f.active));
 
@@ -160,9 +195,11 @@ const buildSide = (f: any, fleetCount: number): Side => ({
   traitLabel: TRAIT_LABEL[String(f?.trait ?? '')] ?? '—',
   cssColor: String(f?.cssColor ?? '#22d3ee'),
   fleetCount,
+  formationCn: formationCnOf(f),
+  compText: compTextOf(f?.composition),
 });
 
-const empty: Side = { name: '——', portrait: '', rank: 0, traitLabel: '—', cssColor: '#64748b', fleetCount: 0 };
+const empty: Side = { name: '——', portrait: '', rank: 0, traitLabel: '—', cssColor: '#64748b', fleetCount: 0, formationCn: '', compText: '' };
 
 /** 按 team 取"主队"（优先 player 类型）并统计该方舰队数。
  *  ⚠ 不写回 store 对象（曾用 `f._fleetCount = …` 污染 store，已改成本地计算）。 */
@@ -325,6 +362,10 @@ onBeforeUnmount(() => {
 .io-flag { font-weight: 800; }
 .io-rank { color: #94a3b8; font-weight: 800; }
 .io-fleets { color: #64748b; }
+/* [W2.2] 教范阵型 + 编成明细 */
+.io-doctrine { margin-top: 4px; display: flex; flex-direction: column; align-items: center; gap: 1px; }
+.io-form { font-size: 11px; font-weight: 900; color: #22d3ee; letter-spacing: 1px; }
+.io-comp { font-size: 9px; color: #64748b; font-family: monospace; max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .io-vs { align-self: center; margin-top: 76px; font-size: 14px; font-weight: 900; color: #f59e0b; letter-spacing: 2px; }
 
 .io-speech {

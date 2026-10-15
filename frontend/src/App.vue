@@ -78,6 +78,8 @@
       <BattleIntroOverlay v-if="isCommandBattle" />
       <!-- [v59] 旗舰浮动气泡（战斗一句话，DOM 可见层，锚定旗舰屏幕坐标） -->
       <FloatBubble />
+      <!-- [W1.1/W1.2] 3D 可见层：阶段横幅 + 战损角标（3D 就绪才挂，避免 2D 降级时与 Phaser 版重复） -->
+      <BattleBanner v-if="battle3dReady" />
       <button v-if="isCommandBattle && !warRoomOpen" class="war-room-toggle" @click="setWarRoomOpen(true)">⚔ 军议 · 任务指令</button>
 
       <SettlementModal v-if="gameOver" />
@@ -159,6 +161,7 @@ import CommandPanel from './components/battle/CommandPanel.vue';
 import CouncilWarRoom from './components/battle/CouncilWarRoom.vue';
 import BattleIntroOverlay from './components/battle/BattleIntroOverlay.vue';
 import FloatBubble from './components/battle/FloatBubble.vue';
+import BattleBanner from './components/battle/BattleBanner.vue';
 import BattleLogPanel from './components/battle/BattleLogPanel.vue';
 import ForcePassDialog from './components/meta/ForcePassDialog.vue';
 import { commandBridge } from './services/CommandBridge';

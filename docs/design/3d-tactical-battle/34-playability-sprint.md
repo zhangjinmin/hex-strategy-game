@@ -22,7 +22,7 @@
 | 2 | 「友军有的会动，有的不动」 | 演习玩家方 `index===0` 是 `type:'player'`，其余是 `type:'ai'`；`planAiFactionsForDeploy` **只给 `type==='ai'` 分配 mission**，且 1Hz 战略层 `if (aiFac.type === 'player') continue;` | `BattleScene.ts:5133` / `planAiFactionsForDeploy` / `:880` |
 | 3 | 「敌方也是原地不动」 | `planFactionBattle` 末位保守舰队 ⇒ `hold_point(自身坐标)`；`executeMissionTick` 对 `hold_point` 判 `dist<120 ⇒ stance='defend'`（目标=自身 ⇒ dist=0）⇒ **永驻守**；且 `if (fleet.mission) continue` 使其**永不落回独立评估** | `BattleScene.ts:1316` / `:3258` / `:872` |
 | 4 | 「流程乱」 | 部署期中央菜单（阵型/姿态/回车开战）与倒计时**画在 Phaser 画布上** ⇒ 不可见；`BattleIntroOverlay` 可 Esc 收起，收起后**无任何阶段提示** | `updateDeployText()`（画布）/ `App.vue:78` |
-| 5 | 「控制手感差」 | 舰队浮动信息条含**姿态按钮**（索敌/电子战/攻坚/驻守），但 `.fleet-ui-layer` 在 3D 模式下 `display:none` ⇒ **玩家点不到** | `App.vue:698` / `App.vue:39-44` |
+| 5 | 「控制手感差」 | 见 §2 W5（**`1-5` 双绑定** / CP 面板只有空格键 / 右键静默失败 / 移动过重）。<br>⚠ **早期误判"姿态按钮点不到"已在 §1.1 修正** | `App.vue:437` / `BattleScene:785` / `:5716` |
 
 ---
 
@@ -44,7 +44,7 @@ body.battle3d-mode .fleet-ui-layer { display: none; }                        /* 
 | 战前部署中央菜单（阵型 1-5 / 姿态 T / 回车开战 / 倒计时） | `BattleScene.updateDeployText()`（Phaser text） | **不可见** | 玩家不知道部署期存在、不知道能改阵型/姿态、不知道何时开战 |
 | 阶段横幅（战役开始 / 全面会战 / 战局转折 / 决战时刻 / 增援抵达） | `BattleScene.showBattleBanner()`（Phaser） | **不可见** | 无节奏感、"流程乱" |
 | 战斗结束提示 | `battleLossText`（Phaser） | **不可见** | 输赢都不知道 |
-| 舰队浮动信息条（名称/艘数/HP/补给/士气）**+ 姿态按钮** | `App.vue` `.fleet-ui-layer`（DOM，但被 CSS 隐藏） | **被隐藏** | 看不到舰队状态；**姿态改不了** ⇒ "手感差" |
+| 舰队浮动信息条 **+ 姿态按钮** | `.fleet-ui-layer` 被隐藏，**但 `Battle3DOverlay.initBillboardLayer()` 已补回 DOM 版**（`.b3d-bb-layer`，`three/Battle3DOverlay.ts:4254`） | **可见** | ✅ **无需修改**（含 名称/HP/补给/士气/态势 + 索敌·电子战·攻坚·驻守 四按钮） |
 | 旗舰浮动气泡 | `FloatBubble.vue`（DOM） | 可见 | ✅ **唯一已修好的**（`[v59]` 注释自述"Phaser 画布被隐藏"） |
 
 ⇒ **`[v59]` 只修了"气泡"一个，其余全部漏掉** —— 这正是"界面什么都没有"的根因。
@@ -82,9 +82,18 @@ body.battle3d-mode .fleet-ui-layer { display: none; }                        /* 
 
 - W1.1 **部署期面板**：阵型（1-5）/ 姿态（T）/ 倒计时 / [回车开战] → DOM 覆盖层
 - W1.2 **阶段横幅**：战役开始 / 全面会战 / 战局转折 / 决战时刻 / 增援抵达 → DOM 覆盖层
-- W1.3 **战斗结束提示** → DOM
-- W1.4 **舰队信息条**（3D 模式下）：为每支舰队在 3D 投影位置显示 名称 / 艘数 / HP / 补给 / 士气 / **姿态按钮**
-  （可用"仅选中舰队显示"或"靠近相机显示"控制密度）
+- W1.3 **战斗结束提示 / 战损账单** → DOM
+- ~~W1.4 舰队信息条~~ ⇒ **已存在，勿重复实现**：`Battle3DOverlay.initBillboardLayer()`（`:4254`）
+  已用 3D→屏幕投影驱动 DOM 层 `.b3d-bb-layer`（名称/HP/补给/士气/态势 + 索敌·电子战·攻坚·驻守），
+  且**未被 CSS 隐藏**。
+
+> **★ 修正记录（2026-10-15，lead 失误 + 实现者纠正）**
+> 侦察 2 号只看到 `body.battle3d-mode .fleet-ui-layer{display:none}` 就下了"舰队信息条看不到"的结论；
+> **lead 未交叉验证"是否已有 DOM 替代层"便写入定稿** ⇒ 该结论错误。
+> W1+W2 实现者当场发现 `initBillboardLayer` 已补回，并**主动回退了自己的重复实现**（正确处置）。
+> **方法论教训**：任何"某 UI 不可见"的结论，必须同时查"**有没有 DOM 替代层/新实现**"，
+> 否则会基于"旧代码被隐藏"而重复造轮子。
+> 唯一小缺口：billboard 内「N 艘」是 `[v12.1]` **按用户要求主动删除**的 ⇒ **不要擅自加回**。
 
 ### W2 · P2 成果可见（★高）
 - W2.1 战前 `<N>艘` 改用 `resolveAdmiralComposition`（消除与 P2 的口径不一致）

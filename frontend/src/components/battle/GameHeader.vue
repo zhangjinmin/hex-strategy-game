@@ -26,7 +26,10 @@
           <div class="mini-gold" v-if="f.active">
             编制 <span class="text-cyan">{{ f.unitCount }}/{{ getShipLimit(f.rank) }}</span>
           </div>
-          <div class="mini-gold text-red" v-else>舰队已溃散</div>
+          <!-- [W2.3] 阵型（中文名）+ 编成摘要（P2 成果可见） -->
+          <div class="mini-gold" v-if="f.active">阵型 <span class="text-cyan">{{ formationCn(f) || '—' }}</span></div>
+          <div class="mini-comp" v-if="f.active && compText(f)">{{ compText(f) }}</div>
+          <div class="mini-gold text-red" v-else-if="!f.active">舰队已溃散</div>
         </div>
       </div>
     </div>
@@ -39,9 +42,35 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useGameStore, getPortrait } from '../../store/gameStore';
+import { resolveAdmiralDoctrine } from '../../game/retreatDoctrine';
 import GameControls from './GameControls.vue';
 
 const store = useGameStore();
+
+// [W2.3] P2 成果可见：faction 的教范阵型（`admiralStyleTag` 优先，回落 `admiralTags`；战役轨逐位不变）
+const FORMATION_CN: Record<string, string> = {
+  wedge: '楔形阵', line: '横阵', spindle: '纺锤阵', circle: '圆形阵', square: '方阵',
+};
+/** 教范阵型中文名：**仅在存在 P2 信号时**给出（`admiralStyleTag`/`composition`/`admiralTags`）。
+ *  战役轨 faction 三者皆无 ⇒ 返回空串（避免硬显"楔形阵"而与实际阵型不符；原 formation 站点在
+ *  战役轨回落 `admiralTags` ⇒ 无标签即 wedge，但战役舰队 formation 实际来自战略数据，不可硬编）。 */
+const formationCn = (f: any): string => {
+  const p2Signal = !!(f?.admiralStyleTag) || !!(f?.composition) || !!(f?.admiralTags && f.admiralTags.length);
+  if (!p2Signal) return '';
+  const tag = f?.admiralStyleTag;
+  const form = resolveAdmiralDoctrine(tag ? [tag] : f?.admiralTags).formation;
+  return FORMATION_CN[form] || form;
+};
+/** 编成摘要（只列非零舰种）：战列N 巡洋N …；无 composition（战役轨）⇒ 空串 */
+const compText = (f: any): string => {
+  const c = f?.composition;
+  if (!c) return '';
+  const rows: [string, number][] = [
+    ['战列', c.battleships], ['巡洋', c.cruisers], ['驱逐', c.destroyers],
+    ['空母', c.carriers || 0], ['战机', c.fighters || 0], ['补给', c.supplies || 0],
+  ];
+  return rows.filter(([, n]) => n > 0).map(([k, n]) => `${k}${n}`).join(' ');
+};
 
 const factionsList = computed<any[]>(() => {
   const raw = (store as any).factions;
@@ -93,6 +122,8 @@ const handleImgError = (e: Event) => {
 .bg-gold { background: var(--color-warning, #f59e0b); }
 .bg-green { background: #22c55e; }
 .mini-gold { color: var(--color-text-secondary); font-size: 11px; font-family: monospace; font-weight: 800; }
+/* [W2.3] 编成摘要（较小，单行省略） */
+.mini-comp { color: var(--color-text-disabled); font-size: 9px; font-family: monospace; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .text-cyan { color: var(--color-cyan); }
 /* [v58] .battle-dialog-overlay 立绘对话框样式已随模板删除（banter 改走旗舰浮动气泡） */
 
