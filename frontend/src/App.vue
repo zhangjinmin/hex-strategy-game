@@ -81,7 +81,9 @@
       <!-- [v59] 旗舰浮动气泡（战斗一句话，DOM 可见层，锚定旗舰屏幕坐标） -->
       <FloatBubble />
       <!-- [W1.1/W1.2] 3D 可见层：阶段横幅 + 战损角标（3D 就绪才挂，避免 2D 降级时与 Phaser 版重复） -->
-      <BattleBanner v-if="battle3dReady" />
+      <!-- [R3] 挂载条件补 `battle3dMode`：画布一被隐藏（3D 模式启用）即挂 DOM 横幅，
+           消除"画布已隐、DOM 未挂"窗口 ⇒ 部署期首条横幅不再可能被漏掉（见 battle3dMode 注释）。 -->
+      <BattleBanner v-if="battle3dReady || battle3dMode" />
       <button v-if="isCommandBattle && !warRoomOpen" class="war-room-toggle" @click="setWarRoomOpen(true)">⚔ 军议 · 任务指令</button>
 
       <SettlementModal v-if="gameOver" />
@@ -282,6 +284,13 @@ const terrainEnabled = TERRAIN_RULES.BATTLE_ENABLED;
 const terrainLegendOpen = ref(true);
 
 const battle3dReady = ref(false);
+// [R3] 「3D 模式已启用」（画布已隐，无论 overlay 是否就绪）：
+//   `enter3dMode()` 立刻置真、`fallbackTo2D()` 置假。供 BattleBanner 挂载判定使用。
+//   为什么需要它：DOM 横幅此前只在 `battle3dReady`（overlay onReady，约 1~2.5s 后）才挂载，
+//   而部署期首条横幅（「战前部署」）在 BattleScene.create() 时即写入 store（2.2s 后自动消隐）
+//   ⇒ 存在"画布已隐（画在隐藏画布上的 Phaser 横幅不可见）、DOM 横幅尚未挂载"的窗口，
+//   首条横幅可能整个落在窗口内被漏掉。改用 `battle3dMode` 后，DOM 层与"画布被隐藏"同一时刻就位。
+const battle3dMode = ref(false);
 let battle3dOverlay: Battle3DOverlay | null = null;
 let battle3dReadyTimer: number | null = null;
 
@@ -346,6 +355,7 @@ const dispose3dOverlay = () => {
  */
 const enter3dMode = () => {
   document.body.classList.add('battle3d-mode');
+  battle3dMode.value = true;
   // [v12 P2] 同步让 Phaser 停画 BattleScene（逻辑照跑，见 setBattleSceneVisible 注释）
   setBattleSceneVisible(false);
 };
@@ -354,6 +364,7 @@ const enter3dMode = () => {
 const fallbackTo2D = () => {
   dispose3dOverlay();
   document.body.classList.remove('battle3d-mode');
+  battle3dMode.value = false;
   setBattleSceneVisible(true);
 };
 

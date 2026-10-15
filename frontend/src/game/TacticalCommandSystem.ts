@@ -105,6 +105,10 @@ export interface Mission {
   /** [W3.5] hold_point 巡逻半径（>0 ⇒ 在锚点圆周巡逻，接敌即战；0/缺省 ⇒ 原地驻守）。
    *  用于"末位保守舰队"：不再永久死守，而是在己方据点附近游弋。 */
   patrolRadius?: number;
+  /** [R4] 该任务由**玩家显式下达**（军议面板 / 指挥通道）‖ AI 自动规划。
+   *  `hold_point` 无 `patrolRadius` 时，AI 自动派的走 `HOLD_POINT_MAX_MS` 超时（25s 后转索敌/巡逻）；
+   *  玩家明令「固守战区」是**长期命令**，不得被该超时误伤 ⇒ 执行层跳过超时。 */
+  manual?: boolean;
   /** 头顶/面板显示文本 */
   text: string;
 }

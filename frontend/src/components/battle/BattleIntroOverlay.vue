@@ -151,9 +151,13 @@ const formation = computed<string>(() => String(unwrap<string>(store.deployForma
 const tactic = computed<string>(() => String(unwrap<string>(store.deployTactic) ?? 'search'));
 
 const cdSec = computed<number>(() => Number(unwrap<number>(store.deployCountdownSec) ?? -1));
+// [R2] 文案必须与 W4.1 的新行为一致：**到点不再自动开战**（store.deployAutoStart 默认 false）。
+//   旧实现三分支只区分 `<0`，`>0` 与 `===0` 都渲染「N 秒后自动开战」⇒ 这是部署期**唯一常显**的倒计时
+//   文案（全屏层）⇒ 玩家看到「20…0 秒后自动开战」而实际不自动开战 = 承诺与行为直接矛盾（用户实报"流程乱"）。
 const cdLine = computed<string>(() => {
   if (cdSec.value < 0) return '等待你的命令';
-  return `${cdSec.value} 秒后自动开战`;
+  if (cdSec.value > 0) return `${cdSec.value} 秒 · 到点仅提示（不会自动开战）`;
+  return '部署时间到 · 可继续调整，回车开战';
 });
 
 const TRAIT_LABEL: Record<string, string> = { empire: '帝国', alliance: '同盟' };

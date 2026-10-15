@@ -43,7 +43,12 @@ const lossText = computed<string>(() => {
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
-  z-index: 40;
+  /* [R3] z-index 40 → 70：原值低于 `BattleIntroOverlay` 部署全屏层（z-index 60）
+     ⇒ 部署期的两条阶段横幅（W4.3「战前部署」/ W4.1「部署时间到」）被近不透明全屏层完全压住、
+     默认流程下**根本看不到**。抬到 70 ⇒ 高于部署层。
+     ⚠ 本横幅 `pointer-events: none` ⇒ 抬高后**不遮挡**部署层的阵型/姿态/开战操作区。
+     ⚠ `.battle-loss`（z-index 30）无需抬高：它只在 `deployPhase===false`（战斗期，部署层已卸载）显示。 */
+  z-index: 70;
   pointer-events: none;
   text-align: center;
   animation: bb-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);

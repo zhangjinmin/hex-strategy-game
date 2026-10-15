@@ -101,7 +101,9 @@
                   <span :class="statColor(getStat(dispatchAdmiralsList[i - 1], 'tactics'))" :title="'战术'">术{{ getStat(dispatchAdmiralsList[i - 1], 'tactics') }}</span>
                 </div>
                 <div class="slot-bottom">
-                  <span class="slot-ships">{{ getShipCount(dispatchAdmiralsList[i - 1]) }}艘</span>
+                  <!-- [R5] 文案澄清：此数值是**编制强度**（战略层兵力总量 MIL_RANK_TOTAL 5000~21000），
+                       与 3D 实建实体数（round(总量/K_VISUAL=100)，上限 200）差约 100× ⇒ 不可写"艘"。 -->
+                  <span class="slot-ships" title="编制强度：战略层兵力总量，非屏幕上可见舰数（约 100 编制 ≈ 1 个 3D 实体）">编制 {{ getShipCount(dispatchAdmiralsList[i - 1]) }}</span>
                   <span v-for="t in (getAdmiralInfo(dispatchAdmiralsList[i - 1])?.tags || []).slice(0, 2)" :key="t" class="trait-tag">{{ tagShort(t) }}</span>
                 </div>
                 <!-- [W2.2] 教范阵型 + 编成明细（仅演习：战役轨 faction 无 P2 编制字段，显示会误导）。
@@ -134,7 +136,7 @@
             <span></span>
             <span @click="handleSort('name')" class="sortable">将领</span>
             <span @click="handleSort('rank')" class="sortable">军阶</span>
-            <span @click="handleSort('ships')" class="sortable">舰船</span>
+            <span @click="handleSort('ships')" class="sortable" title="编制强度（非屏幕可见舰数）">编制</span>
             <span @click="handleSort('command')" class="sortable" title="统帅">统</span>
             <span @click="handleSort('attack')" class="sortable" title="攻击">攻</span>
             <span @click="handleSort('defense')" class="sortable" title="防御">防</span>
@@ -149,7 +151,7 @@
               <div class="cell-portrait"><img :src="getPortrait(adm.imageId)" class="mini-portrait" @error="handleImgError"/></div>
               <div class="cell-name" :class="adm.faction === 'empire' ? 'text-red' : 'text-ally'">{{ adm.name }}</div>
               <div class="cell-rank text-xs">{{ RANK_NAMES[adm.rank] }}</div>
-              <div class="text-xs text-gold">{{ getShipCount(adm.id) }}艘</div>
+              <div class="text-xs text-gold" title="编制强度：战略层兵力总量，非屏幕上可见舰数">{{ getShipCount(adm.id) }}</div>
               <div class="cell-stat" :class="statColor(getStat(adm, 'command'))">{{ getStat(adm, 'command') }}</div>
               <div class="cell-stat" :class="statColor(getStat(adm, 'attack'))">{{ getStat(adm, 'attack') }}</div>
               <div class="cell-stat" :class="statColor(getStat(adm, 'defense'))">{{ getStat(adm, 'defense') }}</div>

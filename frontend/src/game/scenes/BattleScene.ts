@@ -371,6 +371,14 @@ const HOLD_POINT_MAX_MS = 25000;
 /** [W3.5] 保守末位舰队的默认巡逻半径（hex 格数 × 该值）。以锚点（己方开局位置）为圆心巡逻，接敌即战。 */
 const HOLD_PATROL_RADIUS_HEX = 4;
 
+/** [R8-b] `assembling`（队形集结初始态）的最长持续时长（毫秒）。超时 ⇒ 转 `exploring` 进入索敌/探索。
+ *  病灶（真机 `__fleetSnap`）：原实现**没有任何"assembling → 其它"的迁移写在"无敌人时可达"的路径上**
+ *  —— 唯一写 `exploring` 的 else 分支嵌套在 `if (closestEnemyFleet && minFleetDist < engageDist)`
+ *  的假分支内（`closestEnemyFleet` 为 null 时整段不进入 ⇒ else 是死代码）⇒ 开局双方相距 4000+px、
+ *  既无敌又无塔 ⇒ `state` 永远停在 `assembling` ⇒ 每帧目标 = 自身（:6319）⇒ 速度≈0（玩家观感"原地不动"）。
+ *  本常量给集结态一个**与敌情无关**的结束条件，保证"即使没有任务，也会进入探索/索敌"。 */
+const ASSEMBLE_MAX_MS = 4000;
+
 /** [W3.7] 舰队行为快照输出周期（毫秒）。真机排查"舰队为何不动"时一轮定位（v81 教训）。 */
 const FLEET_SNAPSHOT_INTERVAL_MS = 2000;
 
@@ -3369,7 +3377,9 @@ export class BattleScene extends Phaser.Scene {
                 if (arrived) {
                     if (typeof (fleet as any)._holdArrivedAt !== 'number') {
                         (fleet as any)._holdArrivedAt = this.time.now;
-                    } else if (this.time.now - (fleet as any)._holdArrivedAt > HOLD_POINT_MAX_MS) {
+                    } else if (!m.manual && this.time.now - (fleet as any)._holdArrivedAt > HOLD_POINT_MAX_MS) {
+                        // [R4] `!m.manual`：玩家显式下达的「固守战区」= 长期命令，不受 W3.2 超时约束；
+                        //   只有 AI 自动派的（planFactionBattle 的末位保守部队）超出 25s 才转索敌/巡逻。
                         (fleet as any)._holdArrivedAt = undefined;
                         clearMission();
                         if (!this.isStanceLocked(fleet)) fleet.stance = 'search';   // 驻守超时 → 转巡逻/索敌
@@ -3454,7 +3464,10 @@ export class BattleScene extends Phaser.Scene {
                     if (fac && fac.team === 1) {
                         // ── 提督扮演 B：任务指令通道（非直接操控，任何己方舰队均可接收）──
                         if (type === 'mission') {
-                            const base: Mission = { ...(payload || {}) };
+                            // [R4] 本通道 = 玩家显式下达（军议面板 / CouncilWarRoom）⇒ 标记 manual：
+                            //   `hold_point`（无巡逻半径）的执行层超时只针对 **AI 自动驻守**（W3.2），
+                            //   玩家明令「固守战区」是长期命令 ⇒ 不得被 25s 超时误伤（见 executeMissionTick）。
+                            const base: Mission = { ...(payload || {}), manual: true };
                             // [W3.3] 任务下达改为**阵营广播**：同步到该 faction 的**全部**舰队
                             //   （旧实现用 `find` 只命中第一支 ⇒ 分兵后其余舰队收不到任务，与用户实报"有的指令没反应"吻合）。
                             //   hold_point 若未给坐标 ⇒ 各舰队"坚守各自当前位置"（逐支解析，不再只用被 find 到的那支）。
@@ -6622,6 +6635,23 @@ export class BattleScene extends Phaser.Scene {
             (fleet as any)._collapseReason = colResult.reason;
             const colMul = collapseMuls(colResult.collapsed);
 
+            // [R8-b] **集结态结束条件**（与敌情无关，保证"没任务也会动"）：
+            //   原实现没有任何"assembling → 其它"的迁移写在"无敌人时可达"的路径上（唯一写
+            //   exploring 的 else 嵌套在 `closestEnemyFleet && minFleetDist < engageDist` 的假分支里，
+            //   无敌舰队时整段不进入 ⇒ 死代码）⇒ 开局相距 4000+px 时 state 永远卡在 assembling。
+            //   现：开局后经 ASSEMBLE_MAX_MS，或已抵达任务目的地附近 ⇒ 转 exploring（进入探索/索敌）。
+            //   `_assemblingSince` 惰性置初值 —— update 在部署暂停期不跑 ⇒ 计时从**开战后第一帧**起算。
+            if (fleet.state === 'assembling') {
+                if (typeof (fleet as any)._assemblingSince !== 'number') (fleet as any)._assemblingSince = this.time.now;
+                const _assembleElapsed = this.time.now - (fleet as any)._assemblingSince;
+                const _assembleMd = fleet._missionDest as { x: number; y: number } | null | undefined;
+                const _assembleArrived = !!_assembleMd
+                    && Phaser.Math.Distance.Between(fleet.x, fleet.y, _assembleMd.x, _assembleMd.y) < 120;
+                if (_assembleElapsed > ASSEMBLE_MAX_MS || _assembleArrived) {
+                    fleet.state = 'exploring';
+                }
+            }
+
             // 确定当前优先级状态 — 带威胁评估 + 塔攻击
             // v2 修复：engaging 但目标消失（守军被灭/基地易主）→ 强制转 exploring 重新评估，杜绝死锁
             if (fleet.state === 'engaging' && !closestEnemyFleet && !closestEnemyTower && !fleet.targetFlare) {
@@ -7294,6 +7324,15 @@ export class BattleScene extends Phaser.Scene {
                     fleet._targetTileKey = null;
                     fleetTargetX = myFac.castlePos.x; fleetTargetY = myFac.castlePos.y;
                 }
+            } else if (fleet.state === 'assembling' && fleet._missionDest) {
+                // [R8-a] **集结中也听从任务牵引**（最小改动、不改变 `assembling` 语义）：
+                //   原实现 `_missionDest` 的牵引点位于 `if (fleet.state === 'exploring')` 分支**内部**
+                //   ⇒ state='assembling' 时 fleetTargetX/Y 恒 = 自身坐标（本函数开头默认值）
+                //   ⇒ distToTarget=0 ⇒ 只吃斥力（下方 :rawVX 分支）⇒ 速度≈0。
+                //   现在 assembling 也消费任务目的地：有目的地即被牵引；无目的地时保持不动（原样）。
+                //   `assembling` 仍是"队形集结"的初始态，只是"集结途中也朝任务点挪"。
+                const _asmdD = Phaser.Math.Distance.Between(fleet.x, fleet.y, fleet._missionDest.x, fleet._missionDest.y);
+                if (_asmdD > 60) { fleetTargetX = fleet._missionDest.x; fleetTargetY = fleet._missionDest.y; }
             }
 
             // === 恐慌响应：被看不见的敌人打→必须动 ===
