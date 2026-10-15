@@ -1050,6 +1050,10 @@ export class Battle3DOverlay {
    */
   private debugPanel: HTMLDivElement | null = null;
   private _dbgFlags: { checked: boolean; on: boolean } = { checked: false, on: false };
+  /** [v80] 调试热键是否已绑定（只绑一次） */
+  private _dbgHotkeyBound = false;
+  /** [v80] 控制台输出节流时间戳（面板与 console 双通道，便于用户复制数据） */
+  private _dbgLastLog = 0;
   /**
    * [v76] 当前 LOD 档位。用户明确要求「近景要全模型」（两次实报近景点模共存）。
    * ⚠ 判据必须用**相机高度**（camera.position.y），不能用
@@ -3634,7 +3638,43 @@ export class Battle3DOverlay {
   /**
    * [v79] 诊断面板更新（`?debug=1`）。只在开启时创建 DOM，关闭时零开销。
    */
+  /**
+   * [v80] 调试面板热键绑定：**Ctrl+Shift+D** 切换。
+   * ⚠ 本工程是 **Wails 桌面应用**（无地址栏）⇒ `?debug=1` 用不上，
+   *   热键是主入口。同时挂 `window.__b3dDebug()` 供 DevTools console 调用
+   *   （`wails dev` 可按 F12 开 DevTools，输入 `__b3dDebug()` 亦可）。
+   */
+  private bindDebugHotkey(): void {
+    if (this._dbgHotkeyBound) return;
+    this._dbgHotkeyBound = true;
+    const toggle = () => {
+      this._dbgFlags.checked = true;
+      this._dbgFlags.on = !this._dbgFlags.on;
+      if (!this._dbgFlags.on && this.debugPanel) {
+        this.debugPanel.remove();
+        this.debugPanel = null;
+      }
+      // 反馈：让用户知道按到了（面板出现/消失本身即反馈，此处只在控制台留痕）
+      // eslint-disable-next-line no-console
+      console.log('[b3d] debug panel', this._dbgFlags.on ? 'ON' : 'OFF');
+    };
+    try {
+      // ⚠ 用 **capture 阶段**注册：Phaser 的键盘插件在冒泡阶段处理，
+      //   若绑冒泡可能被其拦截/吞掉（届时热键"按了没反应"）。
+      //   capture 先于冒泡执行 ⇒ 稳定拿到事件。
+      window.addEventListener('keydown', (e) => {
+        if (e.ctrlKey && e.shiftKey && (e.key === 'D' || e.key === 'd')) {
+          e.preventDefault();
+          e.stopPropagation();
+          toggle();
+        }
+      }, true);
+      (window as any).__b3dDebug = toggle;
+    } catch { /* 非浏览器环境 */ }
+  }
+
   private updateDebugPanel(rows: { id: string; n: number; px: number; mesh: number }[]): void {
+    this.bindDebugHotkey();
     if (!this._dbgFlags.checked) {
       this._dbgFlags.checked = true;
       try {
@@ -3658,6 +3698,14 @@ export class Battle3DOverlay {
       .map((r) => `${r.id}  n=${String(r.n).padStart(3)}  px=${r.px.toFixed(1).padStart(6)}  mesh=${String(r.mesh).padStart(3)}  ${r.px >= this.lodKeep ? 'MODEL' : r.px >= this.lodLo ? 'FADE' : 'DOT'}`)
       .join('\n');
     this.debugPanel.textContent = head + '\n' + body;
+    // [v80] 同步输出到控制台（节流 1s）—— 便于用户直接复制文本反馈，
+    //   不依赖截图辨认面板数字。
+    const nowMs = performance.now();
+    if (nowMs - this._dbgLastLog > 1000) {
+      this._dbgLastLog = nowMs;
+      // eslint-disable-next-line no-console
+      console.log('[b3d-debug]\n' + head + '\n' + body);
+    }
   }
 
   /**
