@@ -63,28 +63,6 @@
         <button @click="fireShield">🛡 护盾</button>
         <button @click="fireHit">💥 命中</button>
       </div>
-      <div class="gh-fx">
-        <span class="gh-fx-label">喷口标注（点模型打点 → <b>扫描该处开口</b>求形状；<b>近点自动并成一块</b>）：</span>
-        <button :class="{ active: markMode }" @click="markMode = !markMode">📍 {{ markMode ? '标注中…（点模型）' : '标注喷口' }}</button>
-        <span class="gh-fx-label gh-yaw-gap">搜索半径</span>
-        <button v-for="r in [0.04, 0.06, 0.075, 0.1]" :key="'mr' + r" :class="{ active: markR === r }" @click="markR = r">{{ r }}</button>
-        <span class="gh-fx-label gh-yaw-gap">形状来源</span>
-        <button :class="{ active: markModeSel === 'scan' }" @click="setMarkMode('scan')">扫描内框</button>
-        <button :class="{ active: markModeSel === 'convex' }" @click="setMarkMode('convex')">外轮廓</button>
-        <button :class="{ active: markModeSel === 'inner' }" @click="setMarkMode('inner')">内框线</button>
-        <span class="gh-fx-label gh-yaw-gap">缩放</span>
-        <button v-for="sc in [0.5, 0.7, 0.85, 1]" :key="'ms' + sc" :class="{ active: markScale === sc }" @click="setMarkScale(sc)">{{ sc }}</button>
-        <span class="gh-yaw-val">{{ markSel || '（未标）' }} · {{ markCount }} 点 · 模式 {{ markModeSel }} ×{{ markScale }}</span>
-        <span v-if="scanInfo" class="gh-yaw-val">{{ scanInfo }}</span>
-        <button class="gh-yaw-copy" @click="copyMarkLine">📋 复制标注行</button>
-        <button @click="clearMarks">🗑 清除该舰标注</button>
-      </div>
-      <div v-if="anchorInfo" class="gh-tip">
-        <template v-if="anchorInfo.kind === 'anchor'">✅ 该模型<b>自带喷口锚点 ×{{ anchorInfo.n }}</b>（{{ anchorInfo.names }}）—— 优先于手点标注与自动探测，无需再标</template>
-        <template v-else-if="anchorInfo.kind === 'marks'">🖐 该模型无自带锚点，当前按<b>你手点的 {{ markCount }} 个标注</b>生成</template>
-        <template v-else>🤖 该模型无自带锚点也无标注，当前用<b>自动探测</b>；要精确请在 Blender 里放 <code>FX_ENGINE_*</code> 空物体（见 docs/design/3d-tactical-battle/20-model-fx-anchors.md）</template>
-      </div>
-      <div v-if="markCopied" class="gh-tip">{{ markCopied }}</div>
     </div>
 
     <button class="gallery-close" @click="emit('close')">✕ 关闭巡览</button>
