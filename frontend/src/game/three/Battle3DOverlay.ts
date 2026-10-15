@@ -1042,6 +1042,15 @@ export class Battle3DOverlay {
   /** [v77] 星空对象引用缓存（供调试开关用；星空创建时未存字段） */
   private _starsRef: THREE.Points | null = null;
   /**
+   * [v79] 诊断面板（URL `?debug=1` 开启）。
+   * 用户实报「同一条线上前半是点、后半是模型，为什么？」—— 需要**实测数据**定位：
+   *   · 若两支**不同 fleet** 各有不同 fleetPx ⇒ 是"多支舰队视觉相邻"（不是 bug）
+   *   · 若**同一 fleet** 内 px 分裂 ⇒ 是 fleetPx 聚合失效（真 bug）
+   * 面板显示每支舰队的：单位数 / fleetPx(均值) / 已获实体数 / 当前档位。
+   */
+  private debugPanel: HTMLDivElement | null = null;
+  private _dbgFlags: { checked: boolean; on: boolean } = { checked: false, on: false };
+  /**
    * [v76] 当前 LOD 档位。用户明确要求「近景要全模型」（两次实报近景点模共存）。
    * ⚠ 判据必须用**相机高度**（camera.position.y），不能用
    *   `camera.position.distanceTo(controls.target)` —— 后者被"跟随舰队"逻辑污染
@@ -3623,6 +3632,35 @@ export class Battle3DOverlay {
   }
 
   /**
+   * [v79] 诊断面板更新（`?debug=1`）。只在开启时创建 DOM，关闭时零开销。
+   */
+  private updateDebugPanel(rows: { id: string; n: number; px: number; mesh: number }[]): void {
+    if (!this._dbgFlags.checked) {
+      this._dbgFlags.checked = true;
+      try {
+        this._dbgFlags.on = new URLSearchParams(window.location.search).get('debug') === '1';
+      } catch { this._dbgFlags.on = false; }
+    }
+    if (!this._dbgFlags.on) return;
+    if (!this.debugPanel) {
+      const el = document.createElement('div');
+      Object.assign(el.style, {
+        position: 'fixed', left: '8px', bottom: '8px', zIndex: '9999',
+        font: '11px/1.4 ui-monospace,Consolas,monospace', color: '#9fe8ff',
+        background: 'rgba(2,10,20,.85)', padding: '6px 9px', borderRadius: '4px',
+        whiteSpace: 'pre', pointerEvents: 'none', border: '1px solid rgba(120,200,255,.25)',
+      } as CSSStyleDeclaration);
+      document.body.appendChild(el);
+      this.debugPanel = el;
+    }
+    const head = `tier=${this.lodNear ? 'NEAR' : 'FAR'} lo=${this.lodLo} hi=${this.lodHi} keep=${this.lodKeep}`;
+    const body = rows
+      .map((r) => `${r.id}  n=${String(r.n).padStart(3)}  px=${r.px.toFixed(1).padStart(6)}  mesh=${String(r.mesh).padStart(3)}  ${r.px >= this.lodKeep ? 'MODEL' : r.px >= this.lodLo ? 'FADE' : 'DOT'}`)
+      .join('\n');
+    this.debugPanel.textContent = head + '\n' + body;
+  }
+
+  /**
    * [v77] 应用调试隐藏开关。URL 形如 `?hide=flame,stars`。
    * ⚠ 只影响 `visible`，不改任何 LOD/分配逻辑 ⇒ 移除参数即完全恢复。
    */
@@ -3841,6 +3879,26 @@ export class Battle3DOverlay {
     this.lastStats.elig = cand.length;
     // [v12.1 C2] 报**实际**持实体数：限流/分帧迁移下可与预算 keep 短暂不等（稳态时两者相等）
     this.lastStats.kept = this.ships.size;
+    // ── [v79] 诊断收集（`?debug=1` 时显示；未开启零开销）──────────────────
+    //   用户实报「同一条线上前半是点、后半是模型」⇒ 需数据判断是
+    //   「多支 fleet 视觉相邻」（正常现象）还是「同一 fleet 内 px 分裂」（真 bug）。
+    //   位置：第二遍实体分配**之后**，此时 ships 已定，mesh 计数才准确。
+    {
+      const byFleet = new Map<any, { n: number; mesh: number; px: number }>();
+      for (const v of vis.values()) {
+        let r = byFleet.get(v.fleet);
+        if (!r) { r = { n: 0, mesh: 0, px: v.fleetPx }; byFleet.set(v.fleet, r); }
+        r.n += 1; r.px = v.fleetPx;
+        if (this.ships.has(v.key)) r.mesh += 1;
+      }
+      const rows: { id: string; n: number; px: number; mesh: number }[] = [];
+      for (const [f, r] of byFleet) {
+        const ff: any = f;
+        rows.push({ id: String(ff?.id ?? ff?.factionId ?? '?'), n: r.n, px: r.px, mesh: r.mesh });
+      }
+      rows.sort((a, b) => b.n - a.n);
+      this.updateDebugPanel(rows);
+    }
     // 【性能】实体负载 + 帧时压力 → 模型档位（见 autoLodByLoad 的量化依据）
     this.autoLodByLoad(keep, dt);
 
@@ -4076,9 +4134,14 @@ export class Battle3DOverlay {
     const hasMesh = this.ships.has(v.key);
     // grow 只对"确实拿到实体"的舰生效：落选 / 未长成实体的舰 grow = 0 → 点满亮，绝不留洞
     const grow = hasMesh ? v.grow : 0;
-    // 【v75】删除 v73 加的「grow>0.55 硬截断」—— 回归 v60-v66 的**连续 alpha 衰减**。
-    //   那个硬阈值虽能让点更早让位，但它是一处**未经验证的额外改动**；
-    //   用户实报「最早的版本这个没问题」⇒ 一律回归原行为，只保留已论证的改动。
+    // [v79] **模型长出一半以上 ⇒ 点完全让位**（恢复 v73 的硬截断，v75 曾删除）。
+    //   用户实报（v78 之后仍存在）：「同一条线上前半是点、后半是模型」「一半一半」。
+    //   若整队 fleetPx 落在过渡带（lodLo~lodHi），则 **grow≈0.5 ∀成员**
+    //   ⇒ 整队同时呈现「半透明模型 + 未消失的点」⇒ 用户读作"点+模型共存"。
+    //   连续 alpha 衰减（旧行为）**不解决**这个重叠：grow=0.5 时点仍有 0.39 alpha。
+    //   硬截断 ⇒ 过渡带内只显示（半透明）模型、点已退场 ⇒ 视觉上是
+    //   「点 → 半透明模型 → 实心模型」的单向流动，不再重叠。
+    if (hasMesh && grow > 0.5) return 0;
     // alpha 下限 0.78：远景清楚可见。**不得再出现 alpha 被距离打到 0 的分支** ——
     // "太远"由屏幕空间点距下限 DOT_PITCH_MIN_PX 表达，不再由亮度表达。
     const a = (1 - grow) * (0.78 + 0.22 * sstep(DOT_IN_LO, DOT_IN_HI, v.px));
