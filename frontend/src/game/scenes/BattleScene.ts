@@ -34,10 +34,12 @@ import {
     SHIP_TYPE_HP, SHIP_SCALE, resolveShipType,
     // [大战场] 演习轨道必须走**与战役轨道同一个**兵力折算入口（见 shipScaling.ts 的注释）：
     // 历史上演习用硬编码 deck（simFullDeck = 8 艘）建舰，完全绕过折算 ⇒ 用户看到的恒是 8 艘。
-    totalsOfComposition, buildTacticalUnits, fleetEntityCount, fleetVisualCount, totalShipsOf,
+    totalsOfComposition, fleetEntityCount, fleetVisualCount, totalShipsOf,
     allocateVisualCounts, SHIP_TYPE_CN,
-    type ShipStatMods, type TroopLike,
+    type TroopLike,
 } from '../../config/shipScaling';
+// [P1] 统一舰队生成入口（演习/战役两轨共用；见 docs/design/3d-tactical-battle/33-p1-spec.md）
+import { buildFleetUnits } from '../fleetGeneration';
 // [v62] troop 缺失时的 baseStats 合成兜底（getTroopById 静默折叠 bug 的配套修复）
 import { troopLikeFromClass } from '../../config/gameData';
 // 阵型排布：可随实体数 n 缩放的格位枚举（原 8 坐标硬编码表的替代）；rearCommandSlot = 后方中央指挥席
@@ -1486,7 +1488,8 @@ export class BattleScene extends Phaser.Scene {
      * 一支演习舰队要画出来的实体清单（**唯一建舰口径**）。
      *
      * 优先走兵力折算：`fac.composition`（该军衔的满编编制）+ `fac.entityBudget`（全场分摊后的实体预算）
-     *   → `buildTacticalUnits`（与战役轨道**同一个入口**）→ 每实体 { cls, count, hp/atk/def/speed/range/interval }。
+     *   → `buildFleetUnits({ mode:'sim', ... })`（与战役轨道**同一个入口**，P1 起）→ `buildTacticalUnits`
+     *     → 每实体 { cls, count, hp/atk/def/speed/range/interval }。
      * 编制缺失时回落旧的 `fac.deck` 行为（保底可用，且便于回归对照）。
      *
      * 补给舰：编制的 `supplies > 0` ⇒ `allocateUnitsPerType` 会给它 ≥1 个实体、`cls = '补给'`，
@@ -1500,23 +1503,24 @@ export class BattleScene extends Phaser.Scene {
         const budget = Number(fac.entityBudget) || 0;
         if (comp && budget > 0) {
             const totals = totalsOfComposition(comp);
-            // 倍率固定为 1：演习轨道历史上**没有**"提督属性乘到单舰数值"这一层（副官加成只进 admiralStats），
-            // 难度差改由兵力（军衔）表达 ⇒ 不要在这里引入新的数值层，否则两条轨道又不同源。
-            const mods: ShipStatMods = { hpMul: 1, atkMul: 1, defMul: 1, engineMul: 1 };
             const trait = String(fac.trait || 'empire');
-            const units = buildTacticalUnits(
-                totals, budget, mods,
+            // [P1] 演习轨改走**统一舰队生成入口**：mode='sim' ⇒ mods 固定全 1（与改前一致），
+            // troopOf 仍用演习轨真源（store.troopsData 严格查找 + baseStats 合成兜底）。
+            const { seeds: units } = buildFleetUnits({
+                mode: 'sim',
+                composition: totals,
+                visualCount: budget,
                 // [v62] 严格查找：getTroopById 找不到时会兜底返回 troopsData[0]（cls='战列'），
                 // 把 高战/空母/舰载 的 classType 静默折叠成'战列'（错误模型 + 错误数值）。
                 // troopNames 本就没有这三类 ⇒ 用 baseStats 合成，classType/range 等保持真源口径。
-                (type) => {
+                troopOf: (type) => {
                     const cn = SHIP_TYPE_CN[type];
                     const t = (this.store.troopsData as any[] | undefined)?.find(
                         (x) => x && x.id === `${trait}_${cn}_1`,
                     ) as TroopLike | undefined;
                     return t || troopLikeFromClass(cn);
                 },
-            );
+            });
             return units.map((u) => ({
                 cls: u.classType,
                 count: u.count,

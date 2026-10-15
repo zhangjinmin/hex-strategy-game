@@ -33,6 +33,8 @@ import {
   type TroopLike, type ShipStatMods, type ScaledSlot,
 } from '../config/shipScaling';
 import { useAdminStore } from './adminStore';
+// [P1] 统一舰队生成入口（演习/战役两轨共用；见 docs/design/3d-tactical-battle/33-p1-spec.md）
+import { buildFleetUnits } from '../game/fleetGeneration';
 import {
   executeProposalEffect,
   executeProposalRejection,
@@ -3605,24 +3607,37 @@ export const useGameStore = defineStore('game', () => {
     const persistedSlots = JSON.parse(JSON.stringify(fleet.tacticalSlots || []));
     const strength = totalShips(fleet.composition);
 
-    let slots: ScaledSlot[];
-    if (visualCount !== undefined && strength > 0) {
-      // [兵力折算·修复1] 战役路径：**每次会战都按当前兵力重算实体数**，
-      // 不让持久化的 tacticalSlots 决定实体个数。persistedSlots 仅作坐标来源（条数不等自动重排）。
-      slots = buildScaledSlots(fleet.composition, Math.max(1, visualCount), persistedSlots);
-    } else if (persistedSlots.length > 0) {
-      // 非战役路径（演习/旧调用，未传 visualCount）：保持原行为，直接用手点布阵的槽
-      slots = normalizeRawSlots(persistedSlots);
-    } else {
-      slots = buildScaledSlots(fleet.composition, fleetVisualCount(strength));
-    }
-
     const factionKey = admiral.faction;
     const troopOf = (type: ShipType): TroopLike | undefined =>
       getTroopById(`${factionKey}_${SHIP_TYPE_CN[type]}_1`) as TroopLike | undefined;
 
-    // ★ 唯一数值入口：逐实体 hp/atk/… + 按舰种守恒余数补偿（ΣHP 只取决于兵力，与实体数无关）
-    return applyStatsToSlots(slots, mods, troopOf);
+    if (visualCount !== undefined && strength > 0) {
+      // [兵力折算·修复1] 战役路径：**每次会战都按当前兵力重算实体数**，
+      // 不让持久化的 tacticalSlots 决定实体个数。persistedSlots 仅作坐标来源（条数不等自动重排）。
+      // [P1] 改走统一舰队生成入口：mode='campaign'，mods（提督×补给×士气×科技）由上方公式算好后原样透传。
+      return buildFleetUnits({
+        mode: 'campaign',
+        composition: totalsOfComposition(fleet.composition),
+        visualCount: Math.max(1, visualCount),
+        campaignMods: mods,
+        troopOf,
+        coordSource: persistedSlots,
+      }).seeds;
+    }
+
+    if (persistedSlots.length > 0) {
+      // 非战役路径（演习/旧调用，未传 visualCount）：保持原行为，直接用手点布阵的槽
+      return applyStatsToSlots(normalizeRawSlots(persistedSlots), mods, troopOf);
+    }
+
+    // [P1] 无持久化槽位的兜底：同样走统一入口（composition + 兵力折算出的实体预算）
+    return buildFleetUnits({
+      mode: 'campaign',
+      composition: totalsOfComposition(fleet.composition),
+      visualCount: fleetVisualCount(strength),
+      campaignMods: mods,
+      troopOf,
+    }).seeds;
   };
 
   // ===== 阶段四：战略→战术层联动入口 =====
