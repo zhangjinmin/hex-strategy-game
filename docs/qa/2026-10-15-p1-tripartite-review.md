@@ -251,3 +251,27 @@ shipModelResolutionSim: 61 assertions passed
 | 审核方复核 | 独立坐实"生产代码未动"（用**比 lead 更强的证据**：它自己审过那一版） |
 | lead 裁决 | 采纳红队 5 项 → 派加固；纠正自己的基线错误 |
 | 双向纠错 | 红队撤回"2000"、审核方撤回"行首12空格"、lead 撤回"基线 hash" —— **三方各自被纠正过一次** |
+
+---
+
+## 11. 审核方对 lead 更正基线的独立复跑（2026-10-15）
+
+审核方对 lead 改用后的三条判据**各自独立复跑**（用它自己的命令，不照抄），全部一致：
+
+| 判据 | 审核方独立结果 |
+|---|---|
+| 1 变化文件集 | `git diff --stat` = `BattleScene.ts | 24`、`gameStore.ts | 39`（`41 insertions / 22 deletions`）；`git status --short` 仅 4 项 ⇒ **确无第三个生产文件被动过** |
+| **2 逐行 diff 未见公式改动** | **用正则过滤 diff**（`classType\|\bdef\b\|mods\|hpMul\|atkMul\|defMul\|engineMul\|SHIP_TYPE_HP\|SHIP_TYPE_ATK\|Math\.floor`），命中的增删行**只有**：import 清理、注释、`mods` 常量移入 `SIM_MODS`（**同值**）、实参变化、raw-slot 分支等价改写 ⇒ **未见任何 `classType` 表达式 / `def` 公式 / `mods` 计算（`:3600-3605` 的四条公式）被改**（那些行不在 diff 内） |
+| 3 新台架 | **82 assertions passed**（§1=9/§2=3/§3=9/§4=54/§5=7） |
+| 附加：`admiral` 判空顺序 | **安全** —— `:3576 if(!fleet)return[]` → `:3579 if(!admiral)return[]` → `:3582 if(!stats)return[]` → `:3610 const factionKey = admiral.faction`（上移后仍在守卫之后） |
+| 附加：tsc 前台复跑 | **退出码 0** |
+
+⇒ **#4 通过；lead 更正的基线点已闭环；无新增阻塞。**
+
+### 11.1 为什么这条"正则过滤 diff"是强证据
+
+它把"**是否动了数值公式**"这个 P1 最关键的约束，从"人眼看 diff"提升为"**用关键词机器过滤**"：
+若 `classType` / `def` / `mods` 相关行被改，正则必然命中增删行 —— 而实测**只有**注释/import/实参/等价改写，
+且 `:3600-3605` 的四条 mods 公式**根本不在 diff 内**。
+
+⇒ 这是本轮"独立审核"给出的**最有说服力的一条**（比"hash 相等"更直接地回答了"有没有偷偷改口径"）。
