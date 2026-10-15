@@ -166,8 +166,17 @@ check('troopLikeFromClass：全中文 cls 都取 baseStats 真源值（射程口
   assert.equal(gameData.troopLikeFromClass('不存在的舰种'), undefined);
 });
 check('BattleScene troopOf 不再裸用 getTroopById（防 troopsData[0] 静默折叠复发）', () => {
-  const m = battleSceneSrc.match(/buildTacticalUnits\([\s\S]{0,700}?\n {12}\)/);
-  assert.ok(m, '找不到 buildTacticalUnits 调用块');
+  // [P1] 演习轨改经统一入口 buildFleetUnits({ mode:'sim', ... troopOf }) —— troopOf 块随之外移内联，
+  //      断言口径不变（仍是"BattleScene 内联 troopOf 不得裸调 getTroopById 且必须接 troopLikeFromClass"）。
+  // [P1 加固] 锚点唯一化：在起始 token 右侧追加「紧跟换行」约束。
+  //   原因（红队+审核方交叉实测）：`buildFleetUnits({` 在 BattleScene 出现 **2 次** ——
+  //     · :1491 文档注释里也写了该调用写法（无换行紧跟）
+  //     · :1509 真实 troopOf 代码块（起始 token 后**紧跟换行**）
+  //   无此约束时，匹配**起点**由窗口 N 决定：N∈[700,1676] 命中 :1509（正确）；
+  //   N≥1677 起点前移到 :1491 注释跨度（吞进块外文本 ⇒ 假失败）。
+  //   加上 `\r?\n` 后锚点唯一 ⇒ 不再依赖窗口值的正确性（保持 1200 即可）。
+  const m = battleSceneSrc.match(/buildFleetUnits\(\{\r?\n[\s\S]{0,1200}?\n {12}\}/);
+  assert.ok(m, '找不到 buildFleetUnits 调用块');
   assert.ok(!/getTroopById\(/.test(m[0]), 'troopOf 仍在裸调用 getTroopById（高战/空母/舰载会被折叠成 troopsData[0].cls）');
   assert.ok(m[0].includes('troopLikeFromClass'), 'troopOf 未接 troopLikeFromClass 合成兜底');
 });
