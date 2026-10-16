@@ -1,12 +1,37 @@
 /**
- * [传送门·**连续光带门框**（生长 / 收回）· v5 `GATE_STYLE = 'D'` + 开场动画设置项] 离线台架。
+ * [传送门·**连续光带门框**（生长 / 收回）· v5 `GATE_STYLE = 'D'` + 开场动画设置项
+ *  + **v6 门框电弧化** + **v7 门内光条全删（位面 + 扫描前沿光带）**] 离线台架。
+ *
+ * ── v7 改动（用户 2026-10-16 第 7 次反馈）────────────────────────────────────
+ * 「**中间这个光条太抢戏了，删掉不要了**，其余的继续推进」。
+ * ⇒ 真机**分部隐藏隔离测试**（冻结同一相位，逐个子对象隐藏后与全开逐像素比对**门内区域**）判定：
+ *   门内亮度的 **~80% 来自 `scan`（扫描前沿光带）**，v6 的**门内位面**（水平扫描线）只有 ~5%
+ *   ⇒ **两样都删**：
+ *     · **门内位面**：`DOOR_SCAN_LINES` / `doorScanLine*` / `doorScanFalloff` / `makeDoorScanLineTexture`
+ *       / `DoorScanLineVis` / `DoorVis.scanLines|scanTex` —— 整块移除；
+ *     · **扫描前沿光带**：`doorScanAmt` / `makeDoorScanTexture` / `DoorVis.scan|scanMat` / `scanColor` ——
+ *       一并移除（它本就是"5 个裁剪平面随 `g.p` 沿舰队朝向平移"的**视觉冗余**，
+ *       裁剪机制与它无关 ⇒ 删掉后"舰队被门扫过"的表达**依然成立**）。
+ * ⇒ 台架对应：**删除位面 / 扫描线 / 扫描前沿的全部断言与反例**；**新增可执行契约断言**
+ *   （真跑模块对象不再导出位面符号；渲染块不含位面记号、也不含横贯光条记号；`DoorVis` 无任何门内光条句柄；
+ *    门根组 `root.add(` 恰好 4 处；裁剪推进机制仍在）——**每条都配反例（改坏必须 FAIL）**。
+ * ⚠ 「位面与门框同步消退」随位面删除而作废；但**陪衬包络**（`doorAuxFadeK`，v6 的 `doorPlaneFadeK` 更名）
+ *   仍要「生长优先 + 与门框同刻归零」⇒ 保留对应断言（改称"陪衬"，语义 / 数值不变）。
+ * ⚠ **门内已无任何横贯光条 ⇒ 门内只剩"空门 + 舰队"**（"不遮挡舰队"由"门内为空"天然满足）。
+ * ⚠ `aperture`（轮廓线，"门框从一条线展开"的动作感来源）**保留**，它不是中间光条。
+ *
+ * ── v6 落地：门框**电弧化**（保留；v7"其余的继续推进"即沿用这套噪声）────────────
+ * 用户第 6 次反馈：「**边框呼吸感不够……边框曲线抖动起来，像是电弧一样的那种，有呼吸感**，现在还是
+ *   **太死板了**」。
+ * ⇒ ω 提高一档（周期 0.30~1.80 秒）/ 6 层整数频率 / **脉冲幅度调制**（间歇性加剧 = 呼吸/放电）/
+ *   **尖峰化**（`|n|^p`，出现尖角）/ 幅度 1.8% → 3.0%。
  *
  * ── v5 重做背景（用户 2026-10-16 五次反馈，语气强烈）──────────────────────────
  * 「**这个边框是什么鬼，一根虚线吗！！这个也太丑了**……可以**再长方形的边框上下功夫**，
  *   比如有**流动的光线**，或者把**边框变成微微的随机曲线，让边框流动起来**，
  *   都比现在这个**上面一格一格的什么玩意**强……但**边框中间的部分效果还是可以的**」。
  * ⇒ v4 的"72 个离散能量块"读作**虚线 / 珠子串**（块是"小段"，球体瓦片是"面片"）；方向性错误。
- * ⇒ v5 门框 = **一条连续的发光带** + **微随机平滑曲线** + **沿周长流动的光**；门内位面**保留**。
+ * ⇒ v5 门框 = **一条连续的发光带** + **微随机平滑曲线** + **沿周长流动的光**。
  *
  * ── 为什么这样写（沿用本项目 R1 教训）────────────────────────────────────────
  * `block.includes('...')` 式断言**没有牙齿**。本台架因此：
@@ -16,11 +41,17 @@
  *      （`stripTypeScriptTypes` + `new Function`）真跑，断言 `'off'` 时**不建对象 / 不聚焦**；
  *   ③ 源码契约层（少量，只用于防"整段删除"与"接线丢失"；行为由上面的真跑保证）。
  *
- * ── 被验证的关键命题（v5）───────────────────────────────────────────────────
+ * ── 被验证的关键命题（v5 + v6 + v7）───────────────────────────────────────────
  *   · 门框 = **连续光带**：采样 ≥ 100 点；相邻点**间距有上界且均匀**（不是"一格一格"）；
  *     UV / 索引**闭合连通**（一条带，不是一堆点）；带宽 ∈ [1%,2%] 门尺寸
  *   · **曲线平滑**：轮廓**圆角**（法线沿周长夹角有上界 ⇒ 不是折角）；噪声函数**Lipschitz + 二阶差分**有上界
  *     （改白噪声 ⇒ 必红 ⇒ 证明"不是锯齿"）；噪声幅度 ∈ [1.5%,3%] 半尺寸（**不是 0，也不是大扭曲**）
+ *   · ★v6 **电弧感**：ω 提高一档（0.12s 内明显位移 ⇒ 不是"太死板"）；**脉冲幅度调制**（rms 起伏 > 1.5×）；
+ *     **尖峰化**（`|n|^p`，p<1 ⇒ 推离 0）；且仍**平滑有界 + 严格周期**（不是白噪声、闭合无缝）
+ *   · ★v7 **门内光条全删**：纯逻辑层不再导出位面符号、也不再导出 `doorScanAmt`；
+ *     渲染块不含位面 / 横贯光条记号；`DoorVis` 无 `scanLines|scanTex|scan|scanMat`；门根组 `root.add(` = 4
+ *   · ★v7 **裁剪推进机制仍在**（`entryGateWritePlanes` + `g.p` + `entryGateFront` ⇒ "舰队被门扫过"不受影响）
+ *   · ★v7 **陪衬与门框同刻归零**：`doorAuxFadeK` 在消散末 = 0，且**归零时刻 ≤ 门框归零时刻**
  *   · **确定性**：同 seed 两次采样逐位一致；噪声对 `t` **严格周期**（闭合无缝）
  *   · 组装 = 沿周长**生长**（growth 单调不减、中期在半程 ⇒ 不是"一步到位"）；
  *     消散 = 沿周长**反向收回**（growth 单调不增、消散末 0）；流动 offset **单调增**（亮波只朝一个方向流）
@@ -157,8 +188,43 @@ const Pred = {
   // ── 平滑（不是折角 / 不是锯齿）──
   smoothNormal: (M) => PROBE_TIMES.every((t) => ribbonStats(M, t).maxAng <= 0.6),
   smoothCurve: (M) => PROBE_TIMES.every((t) => ribbonStats(M, t).maxSecond <= 0.05),
-  noiseSmooth: (M) => { const s = noiseStats(M); return s.maxD <= 0.06 && s.maxDD <= 0.01; },
+  // ★v6 新参数下的**解析上界**：`|d noise/dt| ≤ 2π·Σ(w·f)/1`，其中 `Σ(w·f) = 7.70`
+  //   ⇒ `≤ 2π×7.70 = 48.38`；尖峰化 `|n|^0.9` 在 0 附近再放大约 1.4× ⇒ 连续上界 ≲ 0.07。
+  //   **实测**（取样密度 N=1024，与 `noiseStats` 默认一致；扫过 8 个 time）：
+  //     maxD = 0.036，maxDD = 0.0069 ⇒ 阈值取 **0.06 / 0.012**（各留 ~1.7× 余量）。
+  //   ⚠ 这个阈值**有牙齿**：白噪声相邻样本跳变量级 ≈ 1.0、二阶差分 ≈ 2.0 ⇒ 阈值比它小 **16~166 倍**
+  //     （见 section 7 变异 C：把噪声改成白噪声 ⇒ 必红）。**不是为了"过"而随手放大**。
+  noiseSmooth: (M) => { const s = noiseStats(M); return s.maxD <= 0.06 && s.maxDD <= 0.012; },
   noiseBounded: (M) => noiseStats(M).maxAbs <= 1 + 1e-9,
+  /** ★v6 电弧脉冲：噪声的**有效幅度**随时间起伏（rms 比值 > 1.5 ⇒ 间歇性加剧 / 呼吸感）。 */
+  noiseArcPulse: (M) => {
+    const rmsAt = (tm) => {
+      let s = 0; const K = 256;
+      for (let i = 0; i < K; i++) { const v = M.doorRibbonNoise(i / K, tm); s += v * v; }
+      return Math.sqrt(s / K);
+    };
+    const list = [];
+    for (let k = 0; k < 10; k++) list.push(rmsAt(k * 0.37));
+    const mn = Math.min(...list), mx = Math.max(...list);
+    return M.DOOR_NOISE_PULSE_DEPTH > 0.3 && mx > mn * 1.5;
+  },
+  /** ★v6 尖峰化：`sign(n)·|n|^p`（`p<1`）把取值推离 0（`0<x<1 ⇒ x^p > x`）⇒ "尖角 / 放电"；`p=1` ⇒ 关闭。 */
+  noiseSpikeShapes: (M) => M.DOOR_NOISE_SPIKE < 1 && M.DOOR_NOISE_SPIKE > 0.5
+    && M.arcNoiseSpike(0.25) > 0.25 + 0.005 && M.arcNoiseSpike(-0.25) < -0.25 - 0.005
+    && Math.abs(M.arcNoiseSpike(1) - 1) < 1e-9 && M.arcNoiseSpike(0) === 0,
+  /** ★v6 电弧抖动：同一点在**很短的 Δt（0.12s）**内就明显变化 ⇒ 读作"抖 / 颤"（不是"缓慢起伏"）。 */
+  curveArcJitter: (M) => {
+    // 门槛按"噪声本身"给：0.12s 内的平均位移 > 0.08 × 幅度（旧参数 ω 太慢 ⇒ 必红）。
+    let sum = 0, changed = 0;
+    for (let i = 0; i < 200; i++) {
+      const t = i / 200;
+      const a = M.doorRibbonPoint(t, 0), b = M.doorRibbonPoint(t, 0.12);
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      sum += d;
+      if (d > 1e-4) changed += 1;
+    }
+    return sum / 200 > 0.08 * M.DOOR_NOISE_AMP && changed > 150;
+  },
   noisePeriodic: (M) => [0, 0.9, 2.3].every((tm) =>
     Math.abs(M.doorRibbonNoise(1, tm) - M.doorRibbonNoise(0, tm)) < 1e-9),
   outlineClosed: (M) => Math.hypot(
@@ -177,8 +243,8 @@ const Pred = {
     }
     return maxDev <= M.DOOR_NOISE_AMP + 1e-6 && maxDev > M.DOOR_NOISE_AMP * 0.1;
   },
-  curveTimeVarying: (M) => {
-    // 随时间**缓慢**演变：同一点两时刻有差异，但差异 ≤ 2×幅度（不是"抖动"）
+  /** 随时间**确实演进**（同一点两时刻不同），且位移恒 ≤ 2×幅度（调制只改变"何时更抖"，不放大上限）。 */
+  curveEvolvesBounded: (M) => {
     let changed = 0;
     for (let i = 0; i < 200; i++) {
       const t = i / 200;
@@ -333,7 +399,86 @@ const Pred = {
     }
     return true;
   },
+  // ══════════ ★v7 陪衬包络：`rim` / 外辉光 / 轮廓线 / 扫描前沿光带 **必须与门框一起归零** ══════════
+  //   （v6 时该包络服务于"门内位面"，名叫 `doorPlaneFadeK`；v7 位面已删除 ⇒ 更名为 `doorAuxFadeK`，
+  //    **语义 / 数值不变**，继续为上述陪衬元素提供「生长优先 + 同刻归零」。）
+  /** 消散期陪衬**跟着门框一起收**：包络恒 ≤ 门框生长系数 + 单调不增（不可能"剩得比门框多"）。 */
+  auxTracksFrameDisperse: (M) => {
+    const cfg = M.DOOR_MOTION_DEFAULT;
+    const a = M.doorDisperseStart(cfg), b = M.doorDisperseEnd(cfg);
+    let prev = Infinity;
+    for (let i = 0; i <= 400; i++) {
+      const t = a + ((b - a) * i) / 400;
+      const pk = M.doorAuxFadeK(t, cfg), gk = M.doorRibbonGrowthK(t, cfg);
+      if (pk > gk + 1e-9) return false;
+      if (pk > prev + 1e-12 || pk < 0 || pk > 1) return false;
+      prev = pk;
+    }
+    return true;
+  },
+  /** 门框归零（消散末 / 总末 / 超时）时陪衬**必须为 0**。 */
+  auxFadeZeroWhenFrameGone: (M) => {
+    const cfg = M.DOOR_MOTION_DEFAULT;
+    return M.doorAuxFadeK(M.doorDisperseEnd(cfg), cfg) === 0
+      && M.doorAuxFadeK(M.doorTotalSec(cfg), cfg) === 0
+      && M.doorAuxFadeK(99, cfg) === 0;
+  },
+  /** 完整期陪衬**确实亮着**（不是"永远为 0"的假通过）。 */
+  auxAliveOnHold: (M) => {
+    const cfg = M.DOOR_MOTION_DEFAULT;
+    return M.doorAuxFadeK(M.doorHoldStart(cfg), cfg) > 0.5
+      && M.doorAuxFadeK(M.doorDisperseStart(cfg), cfg) > 0.5;
+  },
+  /** ★决定性：**陪衬首次归零时刻 ≤ 门框首次归零时刻**（反例：让陪衬晚于门框 ⇒ FAIL）。 */
+  auxDiesNoLaterThanFrame: (M) => {
+    const cfg = M.DOOR_MOTION_DEFAULT;
+    const firstZeroAfter = (fn) => {
+      let prev = fn(0.5);
+      for (let i = 1; i <= 3000; i++) {
+        const t = 0.5 + (7.5 * i) / 3000;
+        const v = fn(t);
+        if (prev > 1e-9 && v <= 1e-9) return t;
+        prev = v;
+      }
+      return Infinity;
+    };
+    const gkZero = firstZeroAfter((t) => M.doorRibbonGrowthK(t, cfg));
+    const pkZero = firstZeroAfter((t) => M.doorAuxFadeK(t, cfg));
+    return Number.isFinite(gkZero) && Number.isFinite(pkZero) && pkZero <= gkZero + 1e-9;
+  },
 };
+
+// ── ★v7 契约谓词：纯逻辑层**不再导出**任何"门内位面"符号（真跑模块对象；正向 + 反例共用）──
+//   （v6 位面 = `DOOR_SCAN_LINES` 水平扫描线层：数据 + `doorScanLineY/Fade/WaveOffset` +
+//    `doorScanFalloff` + `DOOR_SCAN_BAND` / `DOOR_SCAN_MAX_OPACITY` / `DOOR_SCAN_EDGE_FADE` /
+//    `DOOR_SCAN_END_TAPER`。v7 全部删除 ⇒ 这些名字在模块对象上必须**全部 undefined**。）
+function noPlaneExports(M) {
+  return M.DOOR_SCAN_LINES === undefined
+    && M.DOOR_SCAN_BAND === undefined
+    && M.DOOR_SCAN_MAX_OPACITY === undefined
+    && M.DOOR_SCAN_EDGE_FADE === undefined
+    && M.DOOR_SCAN_END_TAPER === undefined
+    && M.doorScanLineY === undefined
+    && M.doorScanLineFade === undefined
+    && M.doorScanLineWaveOffset === undefined
+    && M.doorScanLineLimit === undefined
+    && M.doorScanFalloff === undefined;
+}
+// ── ★v7 契约谓词：渲染块源码**不含**任何位面痕迹（大小写敏感的 ASCII 记号；正向 + 反例共用）──
+const PLANE_MARKERS = [
+  'DOOR_SCAN_LINES', 'DoorScanLineVis', 'DoorScanLine',
+  'doorScanLineY', 'doorScanLineFade', 'doorScanLineWaveOffset', 'doorScanLineLimit',
+  'doorScanFalloff', 'makeDoorScanLineTexture', 'scanLines', 'scanTex', 'SEG_X',
+];
+function noPlaneCode(text) {
+  return PLANE_MARKERS.every((m) => !text.includes(m));
+}
+// ── ★v7 契约谓词：**门内横贯光条（扫描前沿光带 `scan`）**已删除（正向 + 反例共用）──
+//   只要有下面任一记号，就说明那条横贯门中的亮条又回来了（它是用户第 7 轮点名要删的东西）。
+const INNER_STRIP_MARKERS = ['makeDoorScanTexture', 'scanMat', 'doorScanAmt', 'scanColor', 'root.add(scan'];
+function noInnerStrip(text) {
+  return INNER_STRIP_MARKERS.every((m) => !text.includes(m));
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 // 1) 门框光带几何（真跑）：连续 / 均匀 / 平滑 / 微随机 / 带宽 / 闭合 / 确定性
@@ -347,13 +492,18 @@ console.log('\n=== 1. 门框**连续光带**几何：连续 · 平滑 · 微随�
   check('★曲线**平滑**（法线夹角）：相邻法线夹角 ≤ 0.6 rad（圆角 ⇒ 无折角）', () => Pred.smoothNormal(D));
   check('★曲线**平滑**（位置二阶差分）：≤ 0.05（证明不是锯齿）', () => Pred.smoothCurve(D));
   check('★四角做**圆角过渡**（DOOR_CORNER_R > 2%）⇒ 法线处处连续', () => Pred.cornerSmooth(D));
-  check('★噪声函数**平滑**（Lipschitz ≤ 0.06 且二阶差分 ≤ 0.01 ⇒ 不是白噪声/锯齿）', () => Pred.noiseSmooth(D));
+  check('★噪声函数**平滑**（Lipschitz ≤ 0.06 且二阶差分 ≤ 0.012 ⇒ 不是白噪声/锯齿；白噪声量级 ~1.0/~2.0 ⇒ 差 16~166 倍）',
+    () => Pred.noiseSmooth(D));
+  check('★v6 噪声有**电弧脉冲**（rms 随时间起伏 > 1.5× ⇒ 间歇性加剧 / 呼吸感）', () => Pred.noiseArcPulse(D));
+  check('★v6 噪声有**尖峰化**（|n|^p，p<1 ⇒ 推离 0 ⇒ 尖角/放电；p=1 恒等）', () => Pred.noiseSpikeShapes(D));
   check('噪声**有界** |noise| ≤ 1', () => Pred.noiseBounded(D));
   check('★噪声对 t **严格周期**（闭合无接缝：noise(1)=noise(0)）', () => Pred.noisePeriodic(D));
   check('轮廓**闭合**（outline(1) = outline(0)）', () => Pred.outlineClosed(D));
   check('★噪声幅度在 **[1.5%, 3%]** 门半尺寸区间（不是 0，也不是大扭曲）', () => Pred.noiseAmpOk(D));
   check('曲线位移**有界**（≤ 噪声幅度，且确实非零 ⇒ 真的"微微"弯了）', () => Pred.curveDeviationBounded(D));
-  check('曲线**随时间缓慢演变**（不是静止，也不是抖动）', () => Pred.curveTimeVarying(D));
+  check('★v6 曲线**电弧抖动**（0.12s 内平均位移 > 0.08×幅度 ⇒ 明显"抖/颤"，不是"缓慢起伏"）',
+    () => Pred.curveArcJitter(D));
+  check('曲线**随时间演进**（不是静止）且位移恒 ≤ 2×幅度（调制不放大上限）', () => Pred.curveEvolvesBounded(D));
   check('★光带是**一条连通带**：索引闭合连通（每个顶点被用到、段段相接）', () => Pred.bandConnected(D));
   check('★带宽**恒定**（每采样点 = 2×halfW ⇒ 不出现"粗细不均"）', () => Pred.bandWidthUniform(D));
   check('★带宽 ∈ **[1%, 2%]** 门尺寸（细带，不是粗棒）', () => Pred.bandWidthInRange(D));
@@ -372,6 +522,8 @@ console.log('\n=== 1. 门框**连续光带**几何：连续 · 平滑 · 微随�
   process.stdout.write(`  [info] N=${st.N} 步长∈[${st.minStep.toFixed(4)},${st.maxStep.toFixed(4)}] `
     + `法线夹角上界=${st.maxAng.toFixed(4)} 二阶差分上界=${st.maxSecond.toFixed(4)} `
     + `噪声Amp=${D.DOOR_NOISE_AMP} 半宽=${D.DOOR_RIBBON_HALF_W}\n`);
+  process.stdout.write(`  [info] 噪声 f=${D.DOOR_NOISE_FREQS.join(',')} ω=${D.DOOR_NOISE_OMEGA.join(',')} `
+    + `脉冲深度=${D.DOOR_NOISE_PULSE_DEPTH} 尖峰指数=${D.DOOR_NOISE_SPIKE}\n`);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -395,7 +547,7 @@ console.log('\n=== 2. 组装（生长）/ 完整 / 消散（反向收回）+ 流
   check('★消散期生长系数**单调不增**（沿周长反向收回）', () => Pred.growthMonotoneDown(D));
   check('★消散中期（50%）生长系数在半程（真的在"收回"，不是恒亮/一步消失）', () => Pred.growthRetractMid(D));
   check('★消散末 / 余晖末 / 超时 ⇒ 生长系数恒 0（收回干净，不"复活"）', () => Pred.growthEndsZero(D));
-  check('★**生长优先**：光带长过半之前，陪衬（rim/位面/外辉光/轮廓线）**完全不可见**',
+  check('★**生长优先**：光带长过半之前，陪衬（rim/外辉光/轮廓线/扫描前沿光带）**完全不可见**',
     () => Pred.lateFollowGated(D) && Pred.lateFollowMonotone(D));
   check('★流动 offset **单调不减**（亮波只朝一个方向流，不回摆）', () => Pred.flowMonotone(D));
   check('★流动 offset **确实在流动**（1s → 3s 增量 > 0.05）', () => Pred.flowIncreases(D));
@@ -412,9 +564,64 @@ console.log('\n=== 2. 组装（生长）/ 完整 / 消散（反向收回）+ 流
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// 3) 门的"开启"动作 + 位面 / 扫描前沿包络（**保留项**）
+// 2b) ★v7 陪衬元素（rim / 外辉光 / 轮廓线 / 扫描前沿光带）与门框**同刻归零**
+//     （包络 `doorAuxFadeK` = v6 `doorPlaneFadeK` 更名；位面已删除，语义 / 数值不变）
 // ════════════════════════════════════════════════════════════════════════════
-console.log('\n=== 3. 门"开启"动作 + 位面 / 扫描前沿包络（保留） ===');
+console.log('\n=== 2b. ★陪衬包络与门框**同步归零**（生长优先 + 同刻归零）===');
+{
+  const cfg = D.DOOR_MOTION_DEFAULT;
+  const dispEnd = D.doorDisperseEnd(cfg);
+  const total = D.doorTotalSec(cfg);
+  check('★门框归零瞬间（消散末 / 总末 / 超时）⇒ 陪衬包络**必须为 0**（不会晚于门框）',
+    () => Pred.auxFadeZeroWhenFrameGone(D));
+  check('★t = 组装末+完整期+消散末 ⇒ **门框包络 0 且陪衬包络 0**（同一刻一起归零）', () => {
+    const t0 = cfg.assembleSec + cfg.holdSec + cfg.disperseSec;
+    return D.doorRibbonGrowthK(t0, cfg) === 0 && D.doorAuxFadeK(t0, cfg) === 0;
+  });
+  check('★陪衬在**消散期跟着门框一起收**（包络 ≤ 门框生长系数 + 单调不增）', () => Pred.auxTracksFrameDisperse(D));
+  check('★**决定性**：陪衬首次归零时刻 ≤ 门框首次归零时刻', () => Pred.auxDiesNoLaterThanFrame(D));
+  check('完整期陪衬**确实亮着**（不是"永远为 0"的假通过）', () => Pred.auxAliveOnHold(D));
+  check('陪衬包络在生长 < 50% 时恒 0（沿用 v5「生长优先」；组装期读得出"生长"）',
+    () => Pred.lateFollowGated(D) && D.doorAuxFadeK(1.0, cfg) === 0);
+  // 归零时刻实例化（便于报告）
+  const firstZero = (fn) => {
+    let prev = fn(0.5);
+    for (let i = 1; i <= 3000; i++) {
+      const t = 0.5 + (7.5 * i) / 3000;
+      const v = fn(t);
+      if (prev > 1e-9 && v <= 1e-9) return t;
+      prev = v;
+    }
+    return Infinity;
+  };
+  process.stdout.write(`  [info] 门框归零 t=${firstZero((t) => D.doorRibbonGrowthK(t, cfg)).toFixed(3)}s `
+    + `陪衬归零 t=${firstZero((t) => D.doorAuxFadeK(t, cfg)).toFixed(3)}s `
+    + `（消散末=${dispEnd} 总末=${total}）\n`);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 2c) ★v7 门内位面**已彻底移除**（真跑模块对象 + 渲染块源码契约）
+// ════════════════════════════════════════════════════════════════════════════
+console.log('\n=== 2c. ★门内位面**已移除**（纯逻辑层不再导出位面符号）===');
+{
+  check('★真跑：`entryDoor` 模块**不再导出**任何位面符号（`DOOR_SCAN_LINES` / `doorScanLine*` / `doorScanFalloff` / `DOOR_SCAN_BAND`）',
+    () => noPlaneExports(D));
+  // 反例：把位面符号重新加回去 ⇒ 必须红
+  checkThrows('★反例：源码重新导出一个位面符号 ⇒ "不再导出位面符号"断言必须红', () => {
+    const M = loadDoorModule(`${doorSrcLF}\nexport const DOOR_SCAN_LINES = [1];`);
+    assert.equal(noPlaneExports(M), true);
+  });
+  // 反例：`doorScanFalloff`（同为位面专用）重新出现 ⇒ 亦须红
+  checkThrows('★反例：重新导出 `doorScanFalloff` ⇒ 断言必须红', () => {
+    const M = loadDoorModule(`${doorSrcLF}\nexport function doorScanFalloff(u) { return u; }`);
+    assert.equal(noPlaneExports(M), true);
+  });
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 3) 门的"开启"动作 + 外辉光 / 扫描前沿包络（**保留项**；位面相关已随 v7 删除）
+// ════════════════════════════════════════════════════════════════════════════
+console.log('\n=== 3. 门"开启"动作 + 外辉光 / 扫描前沿包络（保留） ===');
 {
   const cfg = D.DOOR_MOTION_DEFAULT;
   check('★doorApertureK：t=0 ⇒ 0（门塌成一条线）；组装前 60% 末 ⇒ 1（展开成完整矩形）', () =>
@@ -443,11 +650,11 @@ console.log('\n=== 3. 门"开启"动作 + 位面 / 扫描前沿包络（保留�
     }
     return true;
   });
-  check('★doorScanAmt（扫描前沿光带）：两端 0、中段满亮', () =>
-    D.doorScanAmt(0) === 0 && D.doorScanAmt(0.5) === 1 && D.doorScanAmt(1) === 0);
-  check('doorScanAmt 与 entryGlowAmt 同源（同一"两端起落"语义）', () =>
-    [0, 0.1, 0.25, 0.5, 0.75, 0.9, 1].every((p) => D.doorScanAmt(p) === E.entryGlowAmt(p)));
-  check('扫描光带厚度为正（DOOR_SCAN_BAND > 0 ⇒ 真有一条带）', () => D.DOOR_SCAN_BAND > 0);
+  check('★v7：纯逻辑层**不再有** `doorScanAmt`（扫描前沿光带的强度包络已随之删除）', () =>
+    D.doorScanAmt === undefined);
+  check('★`entryGlowAmt`（entrySlice，被 A/B/C 与球体共用）**仍在且行为未变**（只删了门这边的消费）', () =>
+    typeof E.entryGlowAmt === 'function'
+    && E.entryGlowAmt(0) === 0 && E.entryGlowAmt(0.5) === 1 && E.entryGlowAmt(1) === 0);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -474,7 +681,8 @@ console.log('\n=== 4. 参数一致性 + 门/球/ENTRY_TOTAL_SEC 总时长同源 
     && P.dispA !== P.dispB && P.dispA !== P.bandColor && P.dispB !== P.bandColor);
   check('色散偏移是**微妙值**（0 < dispersion ≤ 0.02 ⇒ 窄丝带，不整圈粗红箍）', () =>
     P.dispersion > 0 && P.dispersion <= 0.02);
-  check('扫描光带颜色存在（门"前缘"有明确色）', () => typeof P.scanColor === 'number');
+  check('★v7：`scanColor`（扫描前沿光带用色）已随光带删除（连 `GATE_STYLE_PARAMS.D` 里都不再留死旋钮）', () =>
+    P.scanColor === undefined);
   check('位面不透明度极小（≤ 0.12 ⇒ 透过门能看清舰队）', () =>
     P.barrierOpacity > 0 && P.barrierOpacity <= 0.12);
   check('门框光带方案**不再有 blockCount**（v4 的离散块已废弃）', () =>
@@ -621,9 +829,61 @@ console.log('\n=== 6. ★设置项 \'off\'：不建特效对象 / 不聚焦 / �
   check('★v5：**离散能量块彻底移除**（无 buildDoorBlocks / PlaneGeometry(1,1) 逐块网格）', () =>
     !overlay.includes('buildDoorBlocks') && !overlay.includes('doorBlockMotion')
     && !overlay.includes('blocks.push(') && !doorSrc.includes('buildDoorBlocks'));
-  check('★v5：门内位面 / 锐利内缘 rim / 外辉光 / 扫描光带 **仍在**（保留项未丢）', () =>
-    doorBlk.includes('makeDoorPlaneTexture(') && doorBlk.includes('rimMat')
-    && doorBlk.includes('makeGateHaloTexture(') && doorBlk.includes('makeDoorScanTexture('));
+  check('★v7：门框**锐利内缘 rim / 外柔边辉光 / 轮廓线 aperture 仍在**（保留项未丢）', () =>
+    doorBlk.includes('rimMat') && doorBlk.includes('makeGateHaloTexture(')
+    && doorBlk.includes('const aperture = new THREE.LineLoop(')
+    && doorBlk.includes('d.aperture.scale.set(1, ap, 1)'));
+  check('★v7：**门内位面已彻底移除**（渲染块不含位面记号：makeDoorScanLineTexture / DOOR_SCAN_LINES / doorScanLine* / doorScanFalloff / scanLines / scanTex）', () =>
+    noPlaneCode(doorBlk));
+  // 反例：把位面记号塞回渲染块 ⇒ 必须红
+  checkThrows('★反例：渲染块重新出现 `makeDoorScanLineTexture(` ⇒ "位面已移除"断言必须红', () => {
+    assert.equal(noPlaneCode(`${doorBlk}\n    const scanTex = this.makeDoorScanLineTexture();`), true);
+  });
+  checkThrows('★反例：渲染块重新出现 `DOOR_SCAN_LINES` ⇒ "位面已移除"断言必须红', () => {
+    assert.equal(noPlaneCode(`${doorBlk}\n    for (const line of DOOR_SCAN_LINES) {}`), true);
+  });
+  check('★v7：**门内有横贯光条已彻底移除**（渲染块不含：makeDoorScanTexture / scanMat / `doorScanAmt` / `scanColor`）', () =>
+    noInnerStrip(doorBlk));
+  check('★v7：**门内只剩**"空门 + 舰队"——门根组只 add 了「3 层光带 + aperture + rim + halo」（4 处 `root.add(`）', () => {
+    const adds = (doorBlk.match(/root\.add\(/g) || []).length;
+    return adds === 4 && !doorBlk.includes('root.add(scan');
+  });
+  // 反例：把横贯光条塞回渲染块 ⇒ 必须红
+  checkThrows('★反例：渲染块重新出现 `makeDoorScanTexture(`（横贯光条）⇒ "门内无横贯光条"断言必须红', () => {
+    assert.equal(noInnerStrip(`${doorBlk}\n    const t = this.makeDoorScanTexture(0xffffff);`), true);
+  });
+  checkThrows('★反例：渲染块重新出现 `d.scanMat.opacity = ...`（横贯光条）⇒ "门内无横贯光条"断言必须红', () => {
+    assert.equal(noInnerStrip(`${doorBlk}\n    d.scanMat.opacity = 0.55;`), true);
+  });
+  checkThrows('★反例：渲染块重新出现 `doorScanAmt(`（横贯光条强度包络）⇒ "门内无横贯光条"断言必须红', () => {
+    assert.equal(noInnerStrip(`${doorBlk}\n    d.scanMat.opacity = doorScanAmt(g.p);`), true);
+  });
+  check('★v7：`DoorVis` 接口**不再声明** `scanLines` / `scanTex` / `scan` / `scanMat`（门内光条句柄全部删除）', () => {
+    const dvis = slice(overlay, 'interface DoorVis {', 'interface SphereTileVis {');
+    return dvis.length > 0 && !dvis.includes('scanLines') && !dvis.includes('scanTex')
+      && !/\bscan\b/.test(dvis) && !dvis.includes('scanMat');
+  });
+  checkThrows('★反例：`DoorVis` 重新声明 `scanLines` ⇒ "接口不再含门内光条句柄"断言必须红', () => {
+    const dvis = slice(overlay, 'interface DoorVis {', 'interface SphereTileVis {');
+    const mutated = `${dvis}\n  scanLines: unknown[];`;
+    assert.equal(mutated.length > 0 && !mutated.includes('scanLines') && !mutated.includes('scanTex'), true);
+  });
+  checkThrows('★反例：`DoorVis` 重新声明 `scanMat` ⇒ 断言必须红', () => {
+    const dvis = slice(overlay, 'interface DoorVis {', 'interface SphereTileVis {');
+    const mutated = `${dvis}\n  scanMat: THREE.MeshBasicMaterial;`;
+    assert.equal(mutated.length > 0 && !mutated.includes('scanMat') && !/\bscan\b/.test(mutated), true);
+  });
+  check('★v7：陪衬（rim / 外辉光 / 轮廓线 aperture）opacity **一律乘 `doorAuxFadeK`**（生长优先 + 同刻归零）', () => {
+    const n = doorBlk.split('doorAuxFadeK(').length - 1;
+    return n >= 1 && doorBlk.includes('const fadeK = doorAuxFadeK(elapsed, cfg);')
+      && !doorBlk.includes('doorPlaneFadeK(');
+  });
+  check('★v7：**不再有**任何"门内位面"整面 / 竖直能量流（`makeDoorPlaneTexture` / `d.barrierTex` 已移除）', () =>
+    !overlay.includes('makeDoorPlaneTexture') && !doorBlk.includes('d.barrierTex'));
+  check('★v7：**"舰队被门扫过"的机制仍在**（5 个裁剪平面 + 沿舰队朝向推进 ⇒ 与已删的视觉冗余无关）', () =>
+    overlay.includes('entryGateWritePlanes(') && overlay.includes('g.p = p;')
+    && overlay.includes('entryGateFront(p, g.box.sLo, g.box.sHi, g.margin)'));
+
 
   // ── ★'off' 不暂停：BattleScene.beginEntryPhase 有 off 提前返回 + 显式解除暂停 ──
   check('★BattleScene.beginEntryPhase：off ⇒ 提前返回且**显式 `isPaused = false`**（绝不卡在暂停）', () =>
@@ -676,21 +936,40 @@ console.log('\n=== 7. 变异自检（改坏 entryDoor.ts ⇒ 断言必须能红�
   // C：平滑噪声改成**白噪声**（锯齿）⇒ "噪声平滑（Lipschitz/二阶差分）" 必须红
   checkThrows('★变异C（噪声改白噪声 ⇒ 锯齿）已被"噪声 Lipschitz / 二阶差分有上界"断言检出', () => {
     const M = mut(
-      `    n += DOOR_NOISE_WEIGHTS[i]
+      `    n += DOOR_NOISE_WEIGHTS[i] * pulse
       * Math.sin(TWO_PI * DOOR_NOISE_FREQS[i] * t + NOISE_PHASES[i] + DOOR_NOISE_OMEGA[i] * time);`,
       `    n = (Math.sin(t * 9973.0 + i * 1.7) > 0 ? 1 : -1) * 0.5;`);
     assert.equal(Pred.noiseSmooth(M), true);
   });
 
+  // C2：★去掉**电弧脉冲调制**（回归"匀速抖动"）⇒ "电弧脉冲" 必须红
+  checkThrows('★变异C2（PULSE_DEPTH = 0 ⇒ 无间歇放电 / 无呼吸）已被"电弧脉冲 rms 起伏 > 1.5×"断言检出', () => {
+    const M = mut('export const DOOR_NOISE_PULSE_DEPTH = 0.6;', 'export const DOOR_NOISE_PULSE_DEPTH = 0;');
+    assert.equal(Pred.noiseArcPulse(M), true);
+  });
+
+  // C3：★去掉**尖峰化**（p=1 ⇒ 恒等）⇒ "尖峰化" 必须红
+  checkThrows('★变异C3（SPIKE = 1 ⇒ 恒等，无尖角）已被"尖峰化 |n|^p 推离 0"断言检出', () => {
+    const M = mut('export const DOOR_NOISE_SPIKE = 0.9;', 'export const DOOR_NOISE_SPIKE = 1;');
+    assert.equal(Pred.noiseSpikeShapes(M), true);
+  });
+
+  // C4：★把 ω 退回 v5 的"缓慢"档（周期 2~11 秒）⇒ "电弧抖动" 必须红（证明用户"太死板"确被修掉）
+  checkThrows('★变异C4（ω 退回 v5 缓慢档 ⇒ 又"太死板"）已被"0.12s 内明显位移"断言检出', () => {
+    const M = mut('export const DOOR_NOISE_OMEGA: number[] = [3.5, 5.0, 7.5, 11.0, 16.0, 21.0];',
+      'export const DOOR_NOISE_OMEGA: number[] = [0.55, 0.80, 1.15, 1.55, 2.10, 2.60];');
+    assert.equal(Pred.curveArcJitter(M), true);
+  });
+
   // D：噪声幅度为 0（边框变"笔直的光带"⇒ 丢掉用户点名的"随机曲线"）⇒ "幅度 ∈ [1.5%,3%]" 必须红
   checkThrows('★变异D（噪声幅度 = 0 ⇒ 没有"微微的随机曲线"）已被"幅度 ∈ [1.5%,3%]"断言检出', () => {
-    const M = mut('export const DOOR_NOISE_AMP = 0.018;', 'export const DOOR_NOISE_AMP = 0;');
+    const M = mut('export const DOOR_NOISE_AMP = 0.030;', 'export const DOOR_NOISE_AMP = 0;');
     assert.equal(Pred.noiseAmpOk(M) && Pred.curveDeviationBounded(M), true);
   });
 
   // E：噪声幅度过大（大扭曲）⇒ "幅度 ∈ [1.5%,3%]" 必须红
   checkThrows('★变异E（噪声幅度 = 0.4 ⇒ 大扭曲）已被"幅度 ≤ 3% / 位移有界"断言检出', () => {
-    const M = mut('export const DOOR_NOISE_AMP = 0.018;', 'export const DOOR_NOISE_AMP = 0.4;');
+    const M = mut('export const DOOR_NOISE_AMP = 0.030;', 'export const DOOR_NOISE_AMP = 0.4;');
     assert.equal(Pred.noiseAmpOk(M) && Pred.curveDeviationBounded(M), true);
   });
 
@@ -743,8 +1022,8 @@ console.log('\n=== 7. 变异自检（改坏 entryDoor.ts ⇒ 断言必须能红�
 
   // J：噪声不再对 t 周期（闭合处出现接缝）⇒ "严格周期" 必须红
   checkThrows('★变异J（噪声加非整数频率 ⇒ 闭合接缝）已被"noise(1)=noise(0)"断言检出', () => {
-    const M = mut('export const DOOR_NOISE_FREQS: number[] = [2, 3, 5, 8, 13];',
-      'export const DOOR_NOISE_FREQS: number[] = [2.5, 3.1, 5.3, 8.7, 13.4];');
+    const M = mut('export const DOOR_NOISE_FREQS: number[] = [3, 5, 7, 11, 17, 23];',
+      'export const DOOR_NOISE_FREQS: number[] = [2.5, 3.1, 5.3, 8.7, 13.4, 19.3];');
     assert.equal(Pred.noisePeriodic(M) && Pred.outlineClosed(M), true);
   });
 
@@ -769,6 +1048,34 @@ console.log('\n=== 7. 变异自检（改坏 entryDoor.ts ⇒ 断言必须能红�
     assert.notEqual(s, doorSrcLF, '变异未生效（锚点未匹配）');
     const fp = (src) => Array.from(loadDoorModule(src).doorRibbonSamples(0.7, 32)).join(',');
     assert.equal(fp(s) === fp(s), true);
+  });
+
+  // N：陪衬包络改回 doorBarrierAmt（比门框晚 0.3s 归零）⇒ 必须红
+  checkThrows('★变异N（陪衬包络改回 doorBarrierAmt ⇒ 陪衬比门框晚 0.3s 归零）已被断言检出', () => {
+    const M = mut('  if (t >= dispStart) return gk;          // 收回侧：与门框**同刻**归零\n  return doorLateFollowK(gk);             // 组装 / 完整侧：生长优先',
+      '  return doorBarrierAmt(elapsed, cfg);');
+    assert.equal(Pred.auxDiesNoLaterThanFrame(M) && Pred.auxFadeZeroWhenFrameGone(M) && Pred.auxTracksFrameDisperse(M), true);
+  });
+  // N2：陪衬**不跟门框**（恒 1 ⇒ 门框没了它还全亮）⇒ 必须红
+  checkThrows('★变异N2（doorAuxFadeK 恒 1 ⇒ 门框没了陪衬还亮）已被断言检出', () => {
+    const M = mut('  if (t >= dispStart) return gk;          // 收回侧：与门框**同刻**归零\n  return doorLateFollowK(gk);             // 组装 / 完整侧：生长优先',
+      '  return 1;');
+    assert.equal(Pred.auxFadeZeroWhenFrameGone(M) && Pred.auxTracksFrameDisperse(M), true);
+  });
+
+  // ── ★v7 反例：位面 / 扫描前沿光带"复活"（把导出加回源码）必须被对应契约断言检出 ──
+  checkThrows('★变异T（把 `DOOR_SCAN_LINES` 加回纯逻辑层 ⇒ 位面"复活"）已被"不再导出位面符号"断言检出', () => {
+    const M = loadDoorModule(`${doorSrcLF}\nexport const DOOR_SCAN_LINES = [{ a: 0.2 }];`);
+    assert.equal(noPlaneExports(M), true);
+  });
+  checkThrows('★变异U（把 `doorScanAmt` 加回纯逻辑层 ⇒ 横贯光条"复活"）已被"不再有 doorScanAmt"断言检出', () => {
+    const M = loadDoorModule(`${doorSrcLF}\nexport function doorScanAmt(p) { return p; }`);
+    assert.equal(M.doorScanAmt === undefined, true);
+  });
+  // U2：渲染层把横贯光条塞回来 ⇒ 必须被"门内无横贯光条"断言检出
+  checkThrows('★变异U2（渲染块把 `makeDoorScanTexture` 塞回来 ⇒ 横贯光条"复活"）已被断言检出', () => {
+    const blk = slice(overlay, 'private buildDoorVisual(g: FleetGate): void {', 'private disposeDoorVisual(g: FleetGate): void {');
+    assert.equal(noInnerStrip(`${blk}\n    const scan = this.makeDoorScanTexture(0xffffff);`), true);
   });
 }
 

@@ -1,24 +1,40 @@
 /**
- * [传送门·连续光带门框 · v5 `GATE_STYLE = 'D'`] —— **门框几何 + 运动学纯逻辑层**。
+ * [传送门·连续光带门框 · v7 `GATE_STYLE = 'D'`] —— **门框几何 + 运动学纯逻辑层**。
  *
- * ── v5 重做原因（用户 2026-10-16 五次反馈原话，语气强烈）──────────────────────
- * 「我想说，**这个边框是什么鬼，一根虚线吗！！这个也太丑了**，我觉得你可以**再长方形的边框上下功夫**，
- *   比如有**流动的光线**之类的，或者把**边框变成微微的随机曲线，让边框流动起来**，
- *   都比现在这个**上面一格一格的什么玩意**强，你这已经**丑爆了**，
- *   但是**边框中间的部分效果还是可以的**」。
+ * ── v7 改动（用户 2026-10-16 第 7 次反馈）────────────────────────────────────
+ * 「**中间这个光条太抢戏了，删掉不要了**，其余的继续推进」。
+ * ⇒ 真机**分部隐藏隔离测试**（冻结同一相位，逐个子对象隐藏后与全开逐像素比对**门内区域**）判定：
+ *   门内亮度的 **~80% 来自 `scan`（扫描前沿光带）**，而 v6 的门内位面（水平扫描线）只有 ~5%。
+ *   ⇒ **两样都删**：
+ *     · **门内位面**（v6 的 `DOOR_SCAN_LINES` 水平扫描线层 + 其贴图 / 网格）—— 整块移除；
+ *       本文件不再导出任何 `doorScanLine*` / `doorScanFalloff` 符号。
+ *     · **扫描前沿光带**（`doorScanAmt` + 渲染层那个横贯门中的亮条 `scan`）—— 一并移除。
+ *       它本就是"舰队被裁剪面扫过"的**视觉冗余**：真正的推进机制是 **5 个裁剪平面**
+ *       （`entryGateWritePlanes`，随 `g.p` 沿舰队朝向平移），与它无关。
+ *   ⇒ **门内现在是空的**：只剩"空门 + 舰队"，**没有任何横贯的光条**（"不遮挡舰队"天然满足）。
+ * ⚠ 「位面与门框同步消退」这条随位面删除而**作废**（无对象可消退）；
+ *   但**陪衬元素**（`rim` 锐利内缘 / 外柔边辉光 / 轮廓线 `aperture`）仍要「生长优先 + 与门框同刻归零」
+ *   ⇒ 保留包络函数（v7 由 `doorPlaneFadeK` 更名 `doorAuxFadeK`，语义不变）。
+ *   ⚠ **`aperture`（轮廓线）保留** —— 它是"门框从一条线展开"的动作感来源，不是中间光条。
  *
- * 诊断：v4 把门框做成 **72 个离散能量块**（沿矩形周长弧长均匀撒块）—— 主观感来自球体的"瓦片"，
- *   但**球体的瓦片是"面片"（有体积感），门框的块是"小段"** ⇒ 渲染出来读作"一格一格的虚线 / 珠子串"。
- *   **⇒ 方向性错误：门框不该是"离散的点"，而应该是"连续的光"。**
+ * ── v6 落地：门框"电弧化"（**保留**）─────────────────────────────────────────
+ * 用户第 6 次反馈：「**边框呼吸感不够，没什么流动感**……比如**边框曲线抖动起来，像是电弧一样的那种，
+ *   有呼吸感**，现在还是**太死板了**」。
+ * 诊断（对照 v5 实现）：v5 的 `ω = [0.55…2.10]`（周期 3~11 秒）⇒ 读作**静止**；幅度仅 1.8%；
+ *   纯正弦叠加 ⇒ 规则平滑。
+ * ⇒ ① 提高 `ω`（周期 0.30~1.80 秒）② 层数 5 → 6 ③ 加**电弧脉冲**幅度调制（间歇性加剧 = 呼吸/放电）
+ *   ④ 加**尖峰化**（`|n|^p`，出现尖角而非圆滑波浪）⑤ 幅度 1.8% → 3.0%。
  *
- * ── v5 门框设计（照用户点名要的两点重做）────────────────────────────────────
+ * ── v5 门框设计（保留：连续光带 + 微随机曲线 + 圆角矩形 + 沿周长生长/收回）───────
  *   ① **连续发光带（ribbon）**：沿矩形周长**连续采样** `DOOR_RIBBON_SAMPLES` 点，每点在轮廓**法线**
  *      两侧各偏移 `DOOR_RIBBON_HALF_W` ⇒ 生成一条**闭合的带状网格**（UV：u = 弧长参数 / v = 横跨带宽）。
  *      带宽 = 门尺寸的 1%~2%（细带，不是粗棒）。
- *   ② **微微的随机曲线**：轮廓点 = **圆角矩形**轮廓 + `normal(t) × DOOR_NOISE_AMP × noise(t, time)`。
- *      · `noise` = 5 个不同频率的 `sin` 叠加（整数频率 ⇒ 对 `t` 严格周期 ⇒ 闭合无缝；权重和 = 1 ⇒ 有界）；
- *      · 幅度 `DOOR_NOISE_AMP` = 门半尺寸的 **1.8%**（"微微一颤"，不是"扭曲"）；
- *      · 随时间缓慢演变（`noise(t, time)` 带时间相位）⇒ 边框"活"起来。
+ *   ② **微微的随机曲线（v6 改为"电弧抖动"）**：轮廓点 = **圆角矩形**轮廓
+ *      + `normal(t) × DOOR_NOISE_AMP × noise(t, time)`。
+ *      · `noise` = **6 个整数频率**的 `sin` 叠加 × **电弧脉冲幅度调制** → **尖峰化**
+ *        （整数频率 ⇒ 对 `t` 严格周期 ⇒ 闭合无缝；归一化 ⇒ `|noise| ≤ 1` 有界）；
+ *      · 幅度 `DOOR_NOISE_AMP` = 门半尺寸的 **3.0%**（"微微一颤"，不是"扭曲"）；
+ *      · 随时间**快速抖动**（`ω` 周期 0.30~1.80 秒）+ **间歇性加剧**（脉冲调制）⇒ 边框"电弧化"。
  *   ③ **门框 = 圆角矩形**：四角做**圆角过渡**（`DOOR_CORNER_R`）⇒ 法线沿轮廓**处处连续**
  *      （直角处的法线不连续会读作"折角 / 断线"，正是要消除的观感）。
  *   ④ **组装 = 沿周长生长 / 消散 = 沿周长反向收回**（渲染层用 `drawRange` 消费 `doorRibbonGrowthK`）。
@@ -44,14 +60,26 @@ export const DOOR_RIBBON_SAMPLES = 200;
 export const DOOR_RIBBON_HALF_W = 0.016;
 /** 门框**圆角半径**（局部单位）—— 四角做圆角过渡 ⇒ 法线沿轮廓处**处连续**（消除折角/断线观感）。 */
 export const DOOR_CORNER_R = 0.10;
-/** 曲线噪声**幅度**（× 门半尺寸；1.8% ⇒ "微微一颤"，不是"扭曲"）。 */
-export const DOOR_NOISE_AMP = 0.018;
-/** 曲线噪声**空间频率**（整数 ⇒ 对弧长参数 `t` 严格周期 ⇒ 闭合无接缝）。 */
-export const DOOR_NOISE_FREQS: number[] = [2, 3, 5, 8, 13];
-/** 曲线噪声各频率**权重**（和 = 1 ⇒ `|noise| ≤ 1` ⇒ 位移恒 ≤ `DOOR_NOISE_AMP`）。 */
-export const DOOR_NOISE_WEIGHTS: number[] = [0.40, 0.28, 0.18, 0.09, 0.05];
-/** 曲线噪声各频率的**时间角速度**（弧度/秒；缓慢 ⇒ 边框"缓慢起伏"而不是"抖动"）。 */
-export const DOOR_NOISE_OMEGA: number[] = [0.55, 0.80, 1.15, 1.55, 2.10];
+/** 曲线噪声**幅度**（× 门半尺寸；**3.0%** ⇒ 电弧抖动的可见幅度 —— 仍是"微微一颤"，不扭曲几何）。 */
+export const DOOR_NOISE_AMP = 0.030;
+/** 曲线噪声**空间频率**（整数 ⇒ 对弧长参数 `t` 严格周期 ⇒ 闭合无接缝）—— **6 层高频**叠加
+ *  ⇒ 不规则"电弧"感（层数越多越不像"规则正弦"，但仍严格周期可闭合）。 */
+export const DOOR_NOISE_FREQS: number[] = [3, 5, 7, 11, 17, 23];
+/** 曲线噪声各频率**权重**（和 = 1 ⇒ `|noise| ≤ 1` ⇒ 位移恒 ≤ `DOOR_NOISE_AMP`）——
+ *  高频层留足权重（0.13/0.09/0.06）⇒ 细节 / 电弧"毛刺"感。 */
+export const DOOR_NOISE_WEIGHTS: number[] = [0.30, 0.24, 0.18, 0.13, 0.09, 0.06];
+/** 曲线噪声各频率的**时间角速度**（弧度/秒）—— **提高一档**（周期 0.30~1.80 秒）
+ *  ⇒ 边框明显"抖 / 颤"，而不是"缓慢起伏"（用户："太死板了"）。 */
+export const DOOR_NOISE_OMEGA: number[] = [3.5, 5.0, 7.5, 11.0, 16.0, 21.0];
+/** **电弧脉冲**幅度调制深度 0..1：每层权重再乘 `1 + DEPTH × (2·u^1.5 − 1)`（`u = (1+sin(ω_p·time+φ))/2`）
+ *  ⇒ 抖动**间歇性加剧**（放电 / 呼吸感），而不是恒定幅度的匀速抖动。
+ *  ⚠ 归一化因子 `1 + DEPTH` 同时除掉 ⇒ `|noise| ≤ 1` 恒成立（调制只改变"何时更抖"，不放大位移上限）。 */
+export const DOOR_NOISE_PULSE_DEPTH = 0.6;
+/** **电弧脉冲**的角速度（弧度/秒，与频率层一一对应）—— 取较低频 ⇒ "呼吸式"放电（周期 1.6~5.2 秒）。 */
+export const DOOR_NOISE_PULSE_OMEGA: number[] = [4.0, 3.1, 2.4, 1.9, 1.5, 1.2];
+/** **尖峰化**指数（< 1 ⇒ 输出被推离 0、更常贴近极值 ⇒ "尖角 / 放电"特征；= 1 ⇒ 关闭）。
+ *  ⚠ 仍是**连续**且 Lipschitz 有界（仅在 0 附近斜率略增大）—— 不是白噪声 / 锯齿。 */
+export const DOOR_NOISE_SPIKE = 0.9;
 /** **流动光**沿周长（u 方向）的滚动速度（UV 单位/秒；单调为正 ⇒ 亮波只朝一个方向流）。 */
 export const DOOR_FLOW_SPEED = 0.16;
 /** 光带上**移动亮点**数量（能量脉冲沿门框跑；渲染层贴图里等距撒亮点，随 UV 滚动而移动）。 */
@@ -62,7 +90,7 @@ export const DOOR_ASSEMBLE_SEC = 2.6;
 export const DOOR_HOLD_SEC = 1.6;
 /** 消散阶段时长（秒，4.2 → 6.2）—— 光带沿周长**反向收回** + 淡出。 */
 export const DOOR_DISPERSE_SEC = 2.0;
-/** 余晖阶段时长（秒，6.2 → 6.5）—— 外辉光 / 位面残余淡出。
+/** 余晖阶段时长（秒，6.2 → 6.5）—— 外辉光残余淡出。
  *  ⚠ 组装/完整/消散（2.6+1.6+2.0=6.2）已定，余晖取 0.3 ⇒ 总时长恰 **6.5**（= `ENTRY_TOTAL_SEC` = 球）。 */
 export const DOOR_AFTERGLOW_SEC = 0.3;
 /** 门"开启"动作占组装阶段的比例（0.6 ⇒ 前 60% 的组装时间内完成 从线 → 矩形 的展开）。 */
@@ -74,8 +102,6 @@ export const DOOR_SEED = 0x1d007a1e;
  *  ⚠ 与 `entrySlice.GATE_STYLE_PARAMS.D.dispersion` **必须一致**（台架断言防两处漂移）；
  *    取球体精修后的**微妙值**量级（微偏移 ⇒ 窄丝带，不整圈粗红箍）。 */
 export const DOOR_DISPERSION_K = 0.006;
-/** 位面扫描光带沿门的**厚度**（局部 z，仅渲染参考；纯数据便于台架断言"确实有光带"）。 */
-export const DOOR_SCAN_BAND = 0.06;
 
 // ════════════════════════════════════════════════════════════════════════════
 // 1) 工具：确定性伪随机 / 缓动（自包含，零 import）
@@ -113,6 +139,12 @@ export function randRange(rand: () => number, lo: number, hi: number): number {
 /** 噪声各频率的**初相**（由 `DOOR_SEED` 确定性导出 ⇒ 同 seed 逐位一致）。 */
 const NOISE_PHASES: number[] = (() => {
   const rand = mulberry32(DOOR_SEED >>> 0);
+  return DOOR_NOISE_FREQS.map(() => rand() * Math.PI * 2);
+})();
+
+/** **电弧脉冲**各频率的**初相**（另取一段 seed 派生 ⇒ 与 `NOISE_PHASES` 不相关 ⇒ 放电时刻不规则）。 */
+const NOISE_PULSE_PHASES: number[] = (() => {
+  const rand = mulberry32((DOOR_SEED ^ 0x9e3779b9) >>> 0);
   return DOOR_NOISE_FREQS.map(() => rand() * Math.PI * 2);
 })();
 
@@ -183,18 +215,36 @@ export function doorRibbonOutline(t: number): DoorRibbonPoint {
 }
 
 /**
- * **曲线噪声** `noise(t, time) ∈ [-1, 1]`：多个整数频率 `sin` 叠加（权值和 = 1 ⇒ 有界），
- * 带时间相位（缓慢演变）。整数频率 ⇒ 对 `t` **严格周期**（`noise(t+1)=noise(t)`）⇒ 闭合无接缝。
- * ⚠ 平滑（`sin` ⇒ C∞）—— 绝不是白噪声 / 锯齿。
+ * **尖峰化**：`sign(n) × |n|^p`（`p = DOOR_NOISE_SPIKE < 1`）。
+ * 把取值**推离 0**（`0<x<1 ⇒ x^p > x`）⇒ 波形更常贴近极值、过零点更陡 ⇒ "尖角 / 放电"特征。
+ * ⚠ `p = 1` ⇒ 恒等（关闭）；`|n| ≤ 1 ⇒ |输出| ≤ 1`（不放大幅度）。
+ */
+export function arcNoiseSpike(n: number): number {
+  if (!(Math.abs(n) > 1e-9)) return 0;
+  const s = Math.pow(Math.abs(n), DOOR_NOISE_SPIKE);
+  return n < 0 ? -s : s;
+}
+
+/**
+ * **曲线噪声** `noise(t, time) ∈ [-1, 1]`：多个**整数频率** `sin` 叠加（权值和 = 1 ⇒ 有界），
+ * 带时间相位（**快速**演变）+ **电弧脉冲幅度调制**（间歇性加剧）+ **尖峰化**。
+ *
+ *  · 整数频率 ⇒ 对 `t` **严格周期**（`noise(t+1) = noise(t)`）⇒ 门框闭合无接缝；
+ *  · 幅度调制 `m_i(time) ∈ [1−D, 1+D]` 只依赖 `time` ⇒ 对 `t` 的导数不含它，且整体除以 `1+D`
+ *    ⇒ `|noise| ≤ 1` 与"位移 ≤ 幅度"两条性质**恒成立**；
+ *  · 仍是**连续**函数（`sin` + 连续调制 + `|x|^p` 连续）—— **绝不是白噪声 / 锯齿**。
  */
 export function doorRibbonNoise(t: number, time: number): number {
   const TWO_PI = Math.PI * 2;
+  const norm = 1 + DOOR_NOISE_PULSE_DEPTH;
   let n = 0;
   for (let i = 0; i < DOOR_NOISE_FREQS.length; i++) {
-    n += DOOR_NOISE_WEIGHTS[i]
+    const u = 0.5 + 0.5 * Math.sin(NOISE_PULSE_PHASES[i] + DOOR_NOISE_PULSE_OMEGA[i] * time);
+    const pulse = 1 + DOOR_NOISE_PULSE_DEPTH * (2 * Math.pow(u, 1.5) - 1);
+    n += DOOR_NOISE_WEIGHTS[i] * pulse
       * Math.sin(TWO_PI * DOOR_NOISE_FREQS[i] * t + NOISE_PHASES[i] + DOOR_NOISE_OMEGA[i] * time);
   }
-  return n;
+  return arcNoiseSpike(n / norm);
 }
 
 /** 门框光带**中心线**上一点 = 轮廓点 + `normal × 幅度 × 噪声`。 */
@@ -345,7 +395,7 @@ export function doorRibbonGrowthK(elapsed: number, cfg: DoorMotionCfg = DOOR_MOT
 }
 
 /**
- * 「**生长优先**」跟随系数 0..1 —— 陪衬元素（`rim` 锐利内缘 / 门内位面 / 外辉光 / 轮廓线）
+ * 「**生长优先**」跟随系数 0..1 —— 陪衬元素（`rim` 锐利内缘 / 外柔边辉光 / 轮廓线 `aperture`）
  * 的不透明度乘子。取 `doorRibbonGrowthK` 的**后半段**：
  *   · 光带生长 < 50% ⇒ 恒 `0`（画面上**只有**"正在沿周长长出来的光带"）；
  *   · 生长 ≥ 100% ⇒ 恒 `1`（完整态的陪衬齐备）。
@@ -353,6 +403,27 @@ export function doorRibbonGrowthK(elapsed: number, cfg: DoorMotionCfg = DOOR_MOT
  */
 export function doorLateFollowK(growthK: number): number {
   return smooth01((growthK - 0.5) * 2);
+}
+
+/**
+ * ★[v7] **陪衬元素的消退包络** 0..1 —— `rim` / 外柔边辉光 / 轮廓线 `aperture` 的 opacity 乘子，
+ * 取「**生长优先**」+「**与门框同刻归零**」两侧语义的组合。
+ *
+ * （历史：v6 时它叫 `doorPlaneFadeK`，为的是让**门内位面**不晚于门框消失；v7 位面已删除，
+ *   但同一包络仍被上述**陪衬元素**沿用 ⇒ 更名 `doorAuxFadeK`，**语义 / 数值完全不变**。）
+ *
+ * 分两侧，各自取该侧该用的语义：
+ *   · **组装 / 完整侧**：用 `doorLateFollowK(gk)` —— 「生长优先」，光带长过半陪衬才亮（读得出"生长"）；
+ *   · **消散 / 余晖侧**：直接用 `gk` —— **门框画到多少，陪衬就剩多少** ⇒
+ *     `doorAuxFadeK` 与 `doorRibbonGrowthK` **同刻归零**（`disperseEnd`）。
+ * ⚠ 两侧在 `disperseStart` 处均为 1（`doorLateFollowK(1) = 1 = gk`）⇒ 包络连续，无跳变。
+ */
+export function doorAuxFadeK(elapsed: number, cfg: DoorMotionCfg = DOOR_MOTION_DEFAULT): number {
+  const gk = doorRibbonGrowthK(elapsed, cfg);
+  const t = Number.isFinite(elapsed) ? elapsed : 0;
+  const dispStart = cfg.assembleSec + cfg.holdSec;
+  if (t >= dispStart) return gk;          // 收回侧：与门框**同刻**归零
+  return doorLateFollowK(gk);             // 组装 / 完整侧：生长优先
 }
 
 /**
@@ -373,7 +444,7 @@ export function doorApertureK(elapsed: number, cfg: DoorMotionCfg = DOOR_MOTION_
   return smooth01(clamp01(elapsed / dur));
 }
 
-/** **位面 / 外辉光**强度包络 0..1：组装后半段升起 → 完整期满亮 → 消散 + 余晖段淡出（余晖 = 残余）。 */
+/** **外辉光**强度包络 0..1：组装后半段升起 → 完整期满亮 → 消散 + 余晖段淡出（余晖 = 残余）。 */
 export function doorBarrierAmt(elapsed: number, cfg: DoorMotionCfg = DOOR_MOTION_DEFAULT): number {
   const holdStart = cfg.assembleSec;
   const dispStart = cfg.assembleSec + cfg.holdSec;
@@ -381,15 +452,4 @@ export function doorBarrierAmt(elapsed: number, cfg: DoorMotionCfg = DOOR_MOTION
   const rise = clamp01((elapsed - holdStart * 0.35) / Math.max(1e-6, holdStart * 0.65));
   const fall = 1 - clamp01((elapsed - dispStart) / Math.max(1e-6, total - dispStart));
   return Math.min(smooth01(rise), smooth01(fall));
-}
-
-/**
- * **扫描前沿光带**强度 0..1：门沿舰队纵轴推进（`p: 0→1`）时，前缘那条明亮光带的亮度。
- * 复用 `entryGlowAmt` 的两端起落语义（两端 0、中段 1）—— 由调用方传入门的进度 `p`。
- */
-export function doorScanAmt(p: number): number {
-  if (!(p > 0) || p >= 1) return 0;
-  const rise = Math.min(1, p / 0.15);
-  const fall = Math.min(1, (1 - p) / 0.15);
-  return Math.max(0, Math.min(rise, fall));
 }

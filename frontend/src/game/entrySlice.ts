@@ -183,8 +183,6 @@ export interface GateStyleParams {
   ribbonSamples?: number;
   /** [D] 光带**主色**（亮青白 ⇒ 自发光光带）。 */
   bandColor?: number;
-  /** [D] 位面**扫描光带**颜色（门沿舰队纵轴推进时的明亮前缘）。 */
-  scanColor?: number;
 }
 
 /** [v3] 三套外观参数（颜色 / 线宽 / 切角 / 位面不透明度 / 纹路 / 脉冲）。 */
@@ -228,18 +226,18 @@ export const GATE_STYLE_PARAMS: Record<GateStyleId, GateStyleParams> = {
     gapRatio: 0.08,
   },
   // D · **[v5] 传送门·连续光带门框**（用户五次反馈「这个边框是什么鬼，一根虚线吗！！」⇒ 放弃"离散能量块"，
-  //   改为**一条连续的发光带**：圆角矩形轮廓 + 微随机平滑曲线 + 沿周长流动的光；保留门内位面）。
+  //   改为**一条连续的发光带**：圆角矩形轮廓 + 微随机平滑曲线 + 沿周长流动的光；**门内无光条**）。
   //   观感三层（同球体优先级）：色散镶边（红/青，光带沿法线微偏移）> 亮青白连续光带 > 青/紫外辉光。
   //   `ribbonSamples` 与 `entryDoor.DOOR_RIBBON_SAMPLES` 同源（台架断言防漂移）。
   D: {
-    // 门框"边缘 / 亮心 / 外辉光"三层色 —— 亮青白为主，外辉光取紫（与球体一致的冷色层次）
+    // 门框"亮心 / 外辉光"两层色 + 光带主色 —— 亮青白为主，外辉光取紫（与球体一致的冷色层次）
+    // ⚠ `edge` 是 `GateStyleParams` 的**必填**字段（A/B/C 在用）；D 的渲染路径不消费它，此处只作占位。
     edge: 0x63c4ff, core: 0xffffff, halo: 0x8f7bff,
-    // A/B/C 的旧旋钮 D 不使用（位面走自绘 flowing 纹理；脉冲由 `doorBarrierAmt` 驱动）
+    // A/B/C 的旧旋钮 D 不使用（光带自带 flow 纹理；亮度包络由 `doorBarrierAmt` / `doorAuxFadeK` 驱动）
     chamfer: 0, edgeWidth: 0, feather: 0,
     barrierOpacity: 0.085, flow: 0, density: 0, pulse: 0, shard: false,
     ribbonSamples: 200,
     bandColor: 0x8fe9ff,
-    scanColor: 0xdaf6ff,
     dispA: 0xff5a78,
     dispB: 0x5ad6ff,
     coreColor: 0xffffff,
