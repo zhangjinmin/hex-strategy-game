@@ -16,7 +16,10 @@
  *
  * 设计要点：
  *   - 纯计算模块，不碰 Phaser 渲染；updateSupplyChain 每 1s 逻辑 Tick 调用（状态迁移+卸货），
- *     moveAuxShips 每帧调用（独立坐标推进）；可视化由调用方绘制
+ *     moveAuxShips 每帧调用（独立坐标推进）；可视化由调用方绘制。
+ *   - 例外：`syncAuxVisual` 是运输舰**唯一**的逐帧视觉写入点（sprite 位置/朝向/贴图补偿），
+ *     与 moveAuxShips 同帧调用。之所以放在本模块而不是 BattleScene：运输舰被舰队列循环跳过，
+ *     逐舰视觉在这里才唯一可控，且能被台架真跑断言（见函数注释）。
  */
 /** 补给源作用半径（基地/星球直接覆盖） */
 export const SUPPLY_SOURCE_RADIUS = 420;
@@ -269,6 +272,61 @@ export function moveAuxShips(auxShips: AuxShip[], dt: number): void {
     aux.x += Math.cos(aux.heading) * step;
     aux.y += Math.sin(aux.heading) * step;
   });
+}
+
+/** 运输舰 sprite 追踪死区（px）：与舰队列的 `UNIT_CHASE_EPS` 同值，口径统一。 */
+export const AUX_CHASE_EPS = 0.02;
+
+/**
+ * 运输舰「显示层」同步（每帧调用，必须在 `moveAuxShips` 之后）。
+ *
+ * 为什么要独立成函数（而不是内联在 BattleScene）：
+ *   **运输舰在舰队列循环里被提前 return 跳过**（BattleScene `if (isSupplyUnit(u)) return;`），
+ *   凡是"逐舰视觉设定"都不会作用于它 —— 舰首贴图补偿、文字反向补偿、朝向全缺。
+ *   本函数是运输舰**唯一**的逐帧视觉写入点；抽出来才能被台架真跑逻辑断言（反之只能读源码字符串）。
+ *
+ * ★ 朝向真源（`visHeading` / `sprite.rotation`）**无条件写入**，不受 sprite 是否存在 / active 影响：
+ *   3D 层（Battle3DOverlay `fa = u.visHeading ?? fleet.facingSmooth`）以 `visHeading` 为舰首真源，
+ *   缺失即回退「舰队朝向」⇒ 位置随运输舰航向走、舰首却跟舰队摆 ⇒ 用户实报「横着飞」。
+ *   （实机探针观测到 `sprite.visible === false` 的运输舰：sprite 在、3D 却不为它建实体；
+ *     若把赋值放在 sprite 守卫之后，这类舰的 visHeading 就会永久缺失 —— 该分支必须无条件覆盖。）
+ *
+ * @returns 是否写入了朝向（= `aux.unit` 存在）
+ */
+export function syncAuxVisual(aux: AuxShip, dt: number): boolean {
+  const u: any = (aux as any).unit;
+  if (!u) return false;
+
+  // ① 朝向真源：**先写、无条件写**（不依赖 sprite 的存在 / active / visible）
+  u.visHeading = aux.heading;
+
+  const sp: any = u.sprite;
+  if (!sp || sp.active === false) return true;
+
+  // ② 位置跟随独立坐标：固定步长（不用指数插值 —— 否则会吞掉积累误差）
+  const dx = aux.x - sp.x, dy = aux.y - sp.y;
+  const d = Math.hypot(dx, dy);
+  if (d > AUX_CHASE_EPS) {
+    const step = Math.min(AUX_SPEED * dt, d);
+    sp.x += (dx / d) * step;
+    sp.y += (dy / d) * step;
+  }
+
+  // ③ 2D 降级路径的舰首贴图补偿：舰头贴图是「竖向、舰头朝上(-Y)」，而容器 +X = 前进方向
+  //    ⇒ 必须给 border 子件 +π/2（与舰队列 `borderShape.rotation = Math.PI / 2` 同口径）。
+  //    ⚠ 运输舰被舰队列跳过 ⇒ 此前该补偿恒不生效（border.rotation 恒 0）
+  //      ⇒ 2D 降级路径下舰身与航向差 90° = 用户实报「舰首朝 A、船身横着沿航向飞」。
+  const border = sp.getByName ? sp.getByName('border') : null;
+  if (border && Math.abs(border.rotation - Math.PI / 2) > 1e-6) border.rotation = Math.PI / 2;
+
+  // ④ 舰体朝向 = 航向（hp ≤ 0 的运输舰由 collectAuxShips 在下一逻辑 Tick 摘除，无需清朝向）
+  if (u.hp > 0) sp.rotation = aux.heading;
+
+  // ⑤ 文字永远正向可读（与舰队列同式）
+  const textObj = sp.getByName ? sp.getByName('text') : null;
+  if (textObj) textObj.rotation = -aux.heading;
+
+  return true;
 }
 
 /** 判断是否为补给运输舰（舰种 supply / 中文 classType '补给'） */

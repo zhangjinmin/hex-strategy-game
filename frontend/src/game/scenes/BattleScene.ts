@@ -21,8 +21,8 @@ import { createBandwidthState, updateBandwidthState, getLinkStatus, hasChannel, 
 import { commandBridge } from '../../services/CommandBridge';
 // 3D 战场覆盖层特效桥：只推送事件，2D 特效代码零改动（3D 模式下 2D 层被隐藏）
 import { pushFx3d } from '../battle3dFx';
-import { updateSupplyChain, collectAuxShips, moveAuxShips, isSupplyUnit, AUX_SPEED, SUPPLY_SOURCE_RADIUS, SUPPLY_RELAY_RADIUS, SUPPLY_AUX_RADIUS, type SupplyNode, type FleetSupplyInfo } from '../SupplyChainSystem';
-import { advanceFormationFacing, headingDistance, leadInterceptPoint, moveTowardsAtSpeed, stepShipSlotFollow, UNIT_MOTION_LIMITS, UNIT_VIS_TURN_RATE } from '../fleetKinematics';
+import { updateSupplyChain, collectAuxShips, moveAuxShips, syncAuxVisual, isSupplyUnit, SUPPLY_SOURCE_RADIUS, SUPPLY_RELAY_RADIUS, SUPPLY_AUX_RADIUS, type SupplyNode, type FleetSupplyInfo } from '../SupplyChainSystem';
+import { advanceFormationFacing, headingDistance, leadInterceptPoint, stepShipSlotFollow, UNIT_MOTION_LIMITS, UNIT_VIS_TURN_RATE } from '../fleetKinematics';
 import { pickShip, type ShipTargetCandidate } from '../clusterAI';
 import { buildFocusTable, type FocusEntry } from '../fireCoordinator';
 import { combatUnits, hasCombatUnits, targetableUnits } from '../combatRoster';
@@ -305,13 +305,9 @@ const SLOT_FLIP_MIN_RAD = Math.PI / 2;
 const FORM_FACING_MIN_SPD2 = 0.02 * 0.02;
 
 
-/** [v21 JIT] 单位阵位跟随的**除零保护**（px）。旧值是 2px「死区」，与 `chase` 的
- *  1.0px/帧下限构成极限环：单位进入死区即完全停止，而目标随舰队每帧移动 ~0.5px，
- *  数帧后越过阈值 ⇒ 单帧猛追 ~1px ⇒ 又落入死区 ⇒ sprite 绝对位移在 **0 与 2×舰队步长
- *  之间逐帧交替**（取证 _jit_probe1_base：|Δsprite| med=0 / p90=2.05×|Δfleet|，
- *  Δrel 沿航向投影符号翻转率 0.98）。放大到实体档后即读作"一抖一抖"。
- *  `Math.min(uDist, …)` 本身已保证不越冲 ⇒ 阈值只需大于浮点噪声即可。 */
-const UNIT_CHASE_EPS = 0.02;
+// [v21 JIT] 阵位跟随的除零保护阈值（px）已随 P2 的 `stepShipSlotFollow` 收进
+//   fleetKinematics（ARRIVE_EPS 内生）；运输舰 sprite 跟随的死区见
+//   `SupplyChainSystem.AUX_CHASE_EPS`（同值 0.02，口径统一，此处不再保留副本）。
 
 // [P2] 阵位移动硬速度上限 → `UNIT_MOTION_LIMITS.maxSpeed`（fleetKinematics 单一真源）。
 
@@ -8221,7 +8217,7 @@ export class BattleScene extends Phaser.Scene {
                 //   期望速度 = 槽速前馈 + Arrive 制动项 ⇒ 「布阵按到槽时间提前转向」（前馈使船头
                 //   提前响应槽横移/换阵 morph）+ 零超调收敛；|dv/dt| ≤ accel 与转速 ≤ ω_max
                 //   （UNIT_MOTION_LIMITS）双约束 = 质量感。到位死区由 ARRIVE_EPS 内生，
-                //   不再需要 UNIT_CHASE_EPS 外部门控——**贴槽时前馈必须继续生效**（舰队移动中）。
+                //   不再需要外部"死区门控"——**贴槽时前馈必须继续生效**（舰队移动中）。
                 //   状态 (u as any)._kin 承载滞回量（vx/vy/上帧槽位）；位置真源仍为 sprite
                 //   （外部瞬移/重生不积累积分误差），速度真源 = _kin.vx/vy。
                 {
@@ -8738,32 +8734,19 @@ export class BattleScene extends Phaser.Scene {
             }
         });
 
-        // ===== v3 独立往返：运输舰每帧独立航行 + 2D sprite 同步 =====
+        // ===== v3 独立往返：运输舰每帧独立航行 + sprite 同步 =====
         // moveAuxShips 推进独立坐标（朝目标舰队/母港）；sprite 跟随独立坐标而非舰队阵型。
         // 3D 侧 syncShips() 每帧读 u.sprite.x/y → 真模型（alliance_supply.glb 等）自动跟随。
         moveAuxShips(this.auxShips, dt);
-        this.auxShips.forEach((aux: any) => {
-            if (!aux.unit?.sprite || !aux.unit.sprite.active) return;
-            const sp = aux.unit.sprite;
-            const uDist = Phaser.Math.Distance.Between(sp.x, sp.y, aux.x, aux.y);
-            // 显示层同样以固定步长跟随独立航行坐标，不能用指数插值吞掉积累误差。
-            if (uDist > UNIT_CHASE_EPS) {
-                const nextPosition = moveTowardsAtSpeed(
-                    { x: sp.x, y: sp.y },
-                    { x: aux.x, y: aux.y },
-                    AUX_SPEED * dt,
-                );
-                sp.x = nextPosition.x;
-                sp.y = nextPosition.y;
-            }
-            // 朝向 = 航向（容器 +X 为前进方向，贴图竖向需 +π/2 补偿，与作战舰一致）
-            if (aux.unit.hp > 0) sp.rotation = aux.heading;
-            // [v60] 3D 舰首真源 = 运输舰自身航向 aux.heading。
-            //   旧实现运输舰无 visHeading ⇒ Battle3DOverlay 回退「舰队 facingSmooth」，
-            //   舰队转向时模型舰首跟舰队朝向、位移却走 aux.heading
-            //   ⇒ 用户实报「明明在转向，但边转向边侧着飞」。
-            (aux.unit as any).visHeading = aux.heading;
-        });
+        // [v95] 运输舰的逐帧视觉（朝向真源 / 位置跟随 / 舰首贴图补偿 / 文字正向）统一走
+        //   SupplyChainSystem.syncAuxVisual —— 运输舰在舰队列循环里被 `if (isSupplyUnit(u)) return`
+        //   提前跳过（:8146），这些"逐舰视觉设定"是**唯一**由本段负责的：
+        //     ① `visHeading` 必须**无条件写入**。旧实现写在 `if (!aux.unit?.sprite || !sprite.active) return`
+        //        之后 ⇒ sprite 缺失/不 active 时 visHeading 永不更新 ⇒ 3D 层（Battle3DOverlay
+        //        `fa = u.visHeading ?? fleet.facingSmooth`）回退「舰队朝向」：位置随 aux.heading 走、
+        //        舰首却跟舰队摆 = 「横着飞」。（实机探针确曾观测到 sprite.visible===false 的运输舰。）
+        //     ② 舰头贴图 border 的 +π/2 补偿同样被舰队列跳过 ⇒ 2D 降级路径下舰身与航向差 90°。
+        this.auxShips.forEach((aux: any) => { syncAuxVisual(aux, dt); });
 
         // ===== [v68 阶段B] 舰载机波次系统 =====
     // 旧实现（:7631-7655）是**装饰**：6 个半径 1.5px 青色圆点绕母舰画圈

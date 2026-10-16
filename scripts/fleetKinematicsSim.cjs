@@ -32,6 +32,78 @@ const headingError = Math.abs(Math.atan2(Math.sin(motionHeading - aux.heading), 
 check('transport displacement follows its hull heading rather than sliding directly toward a side target',
   Math.hypot(aux.x, aux.y) < 1e-9 || headingError < 1e-9, `motion=${motionHeading}, hull=${aux.heading}`);
 
+console.log('\n=== Transport visual sync: bow source must NOT depend on sprite aliveness ===');
+{
+  // 真跑 SupplyChainSystem.syncAuxVisual（真源码）——运输舰在舰队列循环里被提前跳过，
+  // 本函数是它**唯一**的逐帧视觉写入点，故"朝向是否写入"必须在这里被断言得住。
+  const mkAux = (sprite) => ({
+    unit: { hp: 100, sprite }, fleet: null,
+    x: 100, y: 0, heading: 1.2345, cargo: 100,
+    state: 'outbound', targetFleet: null, homeX: 0, homeY: 0,
+  });
+  const mkSprite = (active, visible) => ({
+    x: 0, y: 0, rotation: 0, active, visible,
+    _kids: { border: { rotation: 0 }, text: { rotation: 0 } },
+    getByName(n) { return this._kids[n] || null; },
+  });
+
+  // ① sprite.active === false：朝向真源仍必须写入
+  //    （旧实现 `if (!sprite || !sprite.active) return;` 之后才赋值 ⇒ 该分支 visHeading 永久缺失
+  //     ⇒ Battle3DOverlay 回退舰队朝向 ⇒ 位置走 aux.heading、舰首跟舰队 = 横着飞）
+  const sOff = mkSprite(false, false);
+  const aOff = mkAux(sOff);
+  S.syncAuxVisual(aOff, 1);
+  check('visHeading is written even when sprite.active === false (3D bow truth must not depend on the 2D sprite)',
+    aOff.unit.visHeading === aOff.heading,
+    `visHeading=${aOff.unit.visHeading}, heading=${aOff.heading}`);
+
+  // ② sprite 缺失（被销毁 / 尚未创建）
+  const aNone = mkAux(null);
+  S.syncAuxVisual(aNone, 1);
+  check('visHeading is written even when sprite is missing',
+    aNone.unit.visHeading === aNone.heading, `visHeading=${aNone.unit.visHeading}`);
+
+  // ③ 正常 sprite：朝向 + 舰首贴图 +90° 补偿（舰队列口径）+ 文字正向
+  const sOn = mkSprite(true, true);
+  const aOn = mkAux(sOn);
+  S.syncAuxVisual(aOn, 1);
+  check('normal sprite: visHeading / rotation / bow(+90deg) / upright text all applied',
+    aOn.unit.visHeading === aOn.heading
+    && sOn.rotation === aOn.heading
+    && Math.abs(sOn._kids.border.rotation - Math.PI / 2) < 1e-9
+    && Math.abs(sOn._kids.text.rotation + aOn.heading) < 1e-9,
+    `vis=${aOn.unit.visHeading}, rot=${sOn.rotation}, border=${sOn._kids.border.rotation}, text=${sOn._kids.text.rotation}`);
+
+  // ④ 位置跟随：固定步长（目标再远也不加速）、不越冲
+  const sFar = mkSprite(true, true); sFar.x = -1000; sFar.y = 0;
+  const aFar = mkAux(sFar);
+  S.syncAuxVisual(aFar, 1);
+  check('sprite follows the independent coord by a bounded step (a far coord never speeds it up)',
+    Math.abs(sFar.x - (-1000 + S.AUX_SPEED)) < 1e-9 && Math.abs(sFar.y) < 1e-9, `sprite=(${sFar.x},${sFar.y})`);
+  const sNear = mkSprite(true, true); sNear.x = 99.5; sNear.y = 0;
+  const aNear = mkAux(sNear);
+  S.syncAuxVisual(aNear, 1);
+  check('sprite stops exactly on the coord without overshoot', sNear.x === 100 && sNear.y === 0, `sprite=(${sNear.x},${sNear.y})`);
+
+  // ⑤ 反例自检：把 visHeading 的赋值放回 `if (!sprite || !sprite.active) return` 之后（旧顺序）
+  //    ⇒ 同一场景下 visHeading 必须**缺失**。这条通过 = 台架确实抓得住这次回归（而非"怎么写都绿"）。
+  const legacySyncAuxVisual = (a) => {
+    const sp = a.unit && a.unit.sprite;
+    if (!sp || sp.active === false) return;   // ← 旧实现的提前 return
+    a.unit.visHeading = a.heading;
+  };
+  const aBad = mkAux(mkSprite(false, false));
+  legacySyncAuxVisual(aBad);
+  check('counterexample: the legacy order (assign after the sprite guard) DOES leave visHeading missing',
+    aBad.unit.visHeading === undefined, `visHeading=${aBad.unit.visHeading}`);
+
+  // ⑥ 反例对照：同一条旧顺序断言在**新实现**下必须不成立（即新实现确实修好了）
+  const aGood = mkAux(mkSprite(false, false));
+  S.syncAuxVisual(aGood, 1);
+  check('the same scenario is healed by the shipped implementation (visHeading present)',
+    aGood.unit.visHeading === aGood.heading, `visHeading=${aGood.unit.visHeading}`);
+}
+
 console.log('\n=== Lead pursuit / intercept course (P2 提前量) ===');
 {
   // 静止目标 ⇒ 退化为纯追踪（返回目标原位）
