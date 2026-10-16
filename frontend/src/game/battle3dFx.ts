@@ -11,7 +11,9 @@ export interface Fx3dEvent {
   kind: 'laser' | 'shield' | 'hit' | 'capture' | 'strike' | 'fortress_charge' | 'fortress_beam'
     | 'pointer_chevron' | 'pointer_target_lock' | 'pointer_clear' | 'pointer_notice'
     // [切片传送入场 · 时机修复] 开战即启动切片入场（3D 侧 `startEntryFx`）。无坐标/无阵营色。
-    | 'entry_start';
+    | 'entry_start'
+    // [切片传送入场 v2 · N3] 入场阶段结束（BattleScene 解除暂停时推送）⇒ 3D 侧立刻收掉门与裁剪。
+    | 'entry_end';
   /** laser / strike：发射端像素坐标 */
   from?: { x: number; y: number };
   /** laser：目标端像素坐标 */

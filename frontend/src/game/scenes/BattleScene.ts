@@ -48,6 +48,10 @@ import { formationOffsets, formationSpacing, rearCommandSlot, rotateOffsetPx, FO
 import type { FormationType } from '../../config/formations';
 // [切片传送入场] 入场相位（按阵位索引错开）—— 纯逻辑层，见 docs/design/3d-tactical-battle/35-*
 import { entryDelayForSlot, entrySpreadEffective, SLICE_DUR_PER_SHIP, SLICE_SPREAD, SLICE_TOTAL_MAX } from '../entrySlice';
+// [切片传送入场 v2] 入场阶段（"加载"窗）的时长/暂停/聚焦参数 —— 与 3D 层**同一常量真源**（禁手抄）
+import {
+    ENTRY_TOTAL_SEC, ENTRY_RESUME_GRACE_SEC, ENTRY_HOLD_PAUSE, ENTRY_NEEDS_ASSEMBLE_RESET,
+} from '../entrySlice';
 // [v33] 旧案 44 图战术模块整合（docs/design/loch-web-plan/02_*）：
 //   **全部走单一真源 import，禁止再在本文件内联 beats 表 / 地形分支 / 舰种装甲表。**
 //   数值真源 = config/balance.ts 的 TACTICAL_V33 / COLUMN_MATRIX / DIRECTION_ARMOR / INTERCEPT /
@@ -480,6 +484,11 @@ export class BattleScene extends Phaser.Scene {
     private deployFormation: string = 'wedge';
     private deployTactic: string = 'search';     // [#74 · R1] 旗舰开局姿态（值域=stance：search/siege/defend）
     private deployCountdownTimer: Phaser.Time.TimerEvent | null = null; // [#74 · A2] 演习部署倒计时器
+    // [切片传送入场 v2 · N3] 「入场阶段」= 开战后的**加载窗**：游戏保持暂停，3D 播 5s 传送门入场。
+    //   与 `deployPhase` 的分工：`deployPhase` = 军议/布阵（玩家操作期）；`entryPhase` = 开战后的过场。
+    //   ⚠ 时长真源 = `ENTRY_TOTAL_SEC`（3D 层同源常量）；结束必须解除暂停 + 重置 `_assemblingSince`。
+    private entryPhase: boolean = false;
+    private entryTimer: Phaser.Time.TimerEvent | null = null;
     // P4 战术增援
     private reinforceTimer: number = 0;          // 增援计时（ms）
     private reinforceInterval: number = 90000;   // 90秒一波
@@ -594,6 +603,10 @@ export class BattleScene extends Phaser.Scene {
         this.commandCollapsed = false;
         this.battleSelectedFleetId = null;
         this.store.factions.forEach((fac: any) => { delete fac._contactPlanCommitted; });
+        // [切片传送入场 v2] 重进战斗必然重置入场阶段（否则残留的 entryPhase/定时器会拦住暂停解除）
+        this.entryPhase = false;
+        this.entryTimer?.remove();
+        this.entryTimer = null;
     }
 
     create() {
@@ -1261,13 +1274,15 @@ export class BattleScene extends Phaser.Scene {
     private startBattleAfterDeploy() {
         if (!this.deployPhase) return;
         this.deployPhase = false;
-        this.store.isPaused = false;
         (this.store as any).battleDeployPhase = false;
         // [切片传送入场 · 时机修复] 开战即显式启动切片入场：部署期 3D 侧不登记（3D 独立 rAF
         //   在部署期照样跑 ⇒ 若不拦，切片会在被 BattleIntroOverlay 盖住的部署期播完）。
         //   经 battle3dFx 正式总线（不碰 window 全局）；Enter / 军议"开战"按钮 / deployAutoStart
         //   三条路径都汇入本方法，故在方法体内推送即可全部覆盖。
         pushFx3d({ kind: 'entry_start', color: 0 });
+        // [切片传送入场 v2 · N3] **不再立即 `isPaused = false`**：先进入「入场阶段」（保持暂停 + 播 5s
+        //   传送门加载），由 `endEntryPhase` 定时解除。见 beginEntryPhase 的三条要点。
+        this.beginEntryPhase();
         // [#74 · A2] 结束部署：清倒计时器并复位镜像（单一数据源，防残留）
         this.deployCountdownTimer?.remove();
         this.deployCountdownTimer = null;
@@ -1309,6 +1324,54 @@ export class BattleScene extends Phaser.Scene {
         this.showBattleBanner('战役开始', '第一阶段：试探接触', '#00ff88');
         this.scriptPhase = 'probe';
         this.scriptReported = false;
+    }
+
+    /**
+     * [切片传送入场 v2 · N3] 进入**入场阶段**：开战后先播 5s「传送门」加载动画，期间游戏保持暂停。
+     *
+     * 三条要点（v1 失败根因 + 红队红线）：
+     *   ① v1 开战即 `isPaused = false` ⇒ **没有"加载"时间窗**，动画与战斗起步混在一起
+     *      （用户实报「我没看出来什么加载」「加载的时候应该是游戏暂停的状态」）。
+     *   ② **绝不卡在暂停**：解除走 Phaser 定时器 —— `store.isPaused` 只挡 `update()`，
+     *      **Phaser 定时器照跑**（与 `deployCountdownTimer` 同一依据）⇒ 只要本方法被调用过，
+     *      就一定有人解除暂停；且每条提前返回路径都已显式解除。
+     *   ③ 时长 = `ENTRY_TOTAL_SEC + ENTRY_RESUME_GRACE_SEC`：3D 在 `entry_start` 之后若干帧才起算，
+     *      暂停必须**略长于**动画 ⇒ 解除时舰体已完整（不会"边跑边被门切"）。
+     */
+    private beginEntryPhase() {
+        this.entryTimer?.remove();
+        this.entryTimer = null;
+        if (!ENTRY_HOLD_PAUSE) { this.store.isPaused = false; return; }
+        // 无 3D 层（2D 降级路径，`__b3dOverlay` 为空）⇒ 没有入场动画，白暂停 5s 只会像卡死 ⇒ 直接解除。
+        const has3d = typeof window !== 'undefined' && !!(window as any).__b3dOverlay;
+        if (!has3d) { this.store.isPaused = false; return; }
+        this.entryPhase = true;
+        this.store.isPaused = true;
+        this.entryTimer = this.time.delayedCall(
+            (ENTRY_TOTAL_SEC + ENTRY_RESUME_GRACE_SEC) * 1000,
+            () => this.endEntryPhase(),
+        );
+    }
+
+    /** [切片传送入场 v2 · N3] 结束入场阶段：解除暂停 + **重置集结计时** + 通知 3D 收门（幂等）。 */
+    private endEntryPhase() {
+        this.entryTimer?.remove();
+        this.entryTimer = null;
+        if (!this.entryPhase) return;
+        this.entryPhase = false;
+        this.store.isPaused = false;
+        // ⚠ 入场时长(5s) > ASSEMBLE_MAX_MS(4s)：若 `_assemblingSince` 已起算，解除暂停瞬间
+        //   `elapsed > 4s` ⇒ 舰队**直接跳进 exploring**（跳过"集结"观感）。故重置到当前时刻
+        //   （等价于原语义「计时从开战后第一帧起算」，因为 update() 在暂停期不跑）。
+        if (ENTRY_NEEDS_ASSEMBLE_RESET) this.resetAssemblingClock();
+        pushFx3d({ kind: 'entry_end', color: 0 });   // 3D 层立刻收掉门与裁剪
+    }
+
+    /** 把各舰队 `assembling` 计时重置到当前时刻（入场结束后调用；`state` 非 assembling 者不动）。 */
+    private resetAssemblingClock() {
+        for (const f of this.globalFleets) {
+            if ((f as any).state === 'assembling') (f as any)._assemblingSince = this.time.now;
+        }
     }
 
     /** [V18-A · B-0] 为所有 AI 阵营生成战前计划（两模式共用入口，见 activateDeployPhase 两分支；[V18-B · C2] 去恒假 '盟友' 分支） */
@@ -4443,6 +4506,9 @@ export class BattleScene extends Phaser.Scene {
     /** 打开命令面板（暂停游戏） */
     private openCommandPanel() {
         if (this.deployPhase) return;   // [#74 · H1] 部署期不开放指挥点面板（否则叠在中央部署菜单之上）
+        // [切片传送入场 v2 · N3] 入场阶段（开战后 5s 加载窗）同样不开放：面板会写 `isPaused`，
+        //   与入场阶段的暂停所有权打架（入场结束时无法可靠解暂停）。
+        if (this.entryPhase) return;
         if (!this.cpState) return;
         const pFac = this.store.factions.find((f: any) => f.type === 'player');
         const pFleet = this.globalFleets.find((f: any) => f.factionId === pFac?.id);
@@ -4468,7 +4534,7 @@ export class BattleScene extends Phaser.Scene {
             //   ⇒ isPaused 卡真（同 FREEZE-B1 冻结签名 B）。双重恢复幂等无害。
             commandBridge.visible = false;
             commandBridge.pendingCallback = null;
-            if (!this.deployPhase) this.store.isPaused = false;
+            if (!this.deployPhase && !this.entryPhase) this.store.isPaused = false;
         };
         this.store.isPaused = true;
     }
@@ -4641,7 +4707,7 @@ export class BattleScene extends Phaser.Scene {
         commandBridge.visible = false;
         commandBridge.selectedAbilityId = null;
         commandBridge.pendingCallback = null;
-        if (!this.deployPhase) this.store.isPaused = false;
+        if (!this.deployPhase && !this.entryPhase) this.store.isPaused = false;
     }
 
     /** [2a] 2D 拾取（hex/crt）：世界坐标最近邻到候选舰队的任一舰 sprite。阈值 40px。 */
@@ -4708,7 +4774,7 @@ export class BattleScene extends Phaser.Scene {
         } finally {
             // [2a] 契约⑦：执行后 selectedAbilityId 一律归 null（成功或失败都清，防残留复用）
             commandBridge.selectedAbilityId = null;
-            if (!this.deployPhase) this.store.isPaused = false;
+            if (!this.deployPhase && !this.entryPhase) this.store.isPaused = false;
         }
     }
 

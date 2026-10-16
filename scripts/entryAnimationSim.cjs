@@ -326,181 +326,309 @@ console.log('\n=== 10. 变异自检（改坏源码 ⇒ 断言必须能红） ===
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// 11) 真跑 Wiring：Battle3DOverlay.updateEntryFx（原文切片 + 去型 + 执行）
+// 11) ★v2 真跑 Wiring：Battle3DOverlay.stepEntryGate / finishEntryGate / updateEntryFx
+//     （原文切片 + 去型 + 执行）—— 一队一门 ⇒ 5 个共享裁剪面必须**真围出长方柱**
 // ════════════════════════════════════════════════════════════════════════════
-const UEF_START = 'private updateEntryFx(): void {';
-const UEF_END = 'this.entryGlow.instanceMatrix.needsUpdate = true;';
+const SEG_START = 'private stepEntryGate(g: FleetGate, now: number, on: boolean): boolean {';
+// ⚠ 末端锚点必须是**方法最后一句**（`return false;`）—— 若停在中间，切出来的函数会缺 return
+//   ⇒ 返回 undefined ⇒ "未结束/已结束"的判定全部失真（本项目踩过同类静默失真）。
+const SEG_END = 'return false;';
+const SEG_WRITE = 'entryGateWritePlanes(g.planes, g.fwd, g.right, g.up, g.cu, g.cv, g.halfSize, g.pos);';
 
-/** 编译 updateEntryFx 的**原文**（保留 `this.`，注入纯函数与常量）。 */
-function compileUpdateEntryFx(mutate) {
-  let body = extractUnique(overlay, UEF_START, UEF_END, UEF_END.length);
-  body = body.split(UEF_START).join('');
-  body += '\n}';   // 收掉 `if (this.entryGlow) {`（签名里的 `{` 已随签名一起被切掉，故只补 1 个）
+/**
+ * 编译 `stepEntryGate` 的**原文**（保留 `this.`，注入纯函数）。
+ * ⚠ 方法签名随切片一起被切掉 ⇒ 形参 `g / now / on` 必须在**内层函数**里补回
+ *   （v1 的 `updateEntryFx` 无参所以不需要这层；`stepEntryGate` 有参，不补会变成自由变量）。
+ */
+function compileStepEntryGate(mutate) {
+  let body = extractUnique(overlay, SEG_START, SEG_END, SEG_END.length);
+  body = body.split(SEG_START).join('');
   return compile(
-    `(function(ENTRY_GLOW_MAX, SLICE_HALF_SPAN_K, SLICE_GLOW_SPAN_K, entryShipProgress, stepEntrySlice, entryApplyClipping, entryWritePlanes, E) {\n${body}\n})`,
+    `(function(entryShipProgress, entryGateFront, entryGateWritePlanes, E) {\nreturn function(g, now, on) {\n${body}\n};\n})`,
     mutate,
   );
 }
 
-/** 造一个假的 overlay `this`（只提供被 updateEntryFx 消费的字段）。 */
-function makeFakeOverlay({ states, ships, on = true }) {
-  const glowCalls = [];
-  const fakeGlow = {
-    count: 0,
-    instanceMatrix: { needsUpdate: false },
-    setMatrixAt: (i, m) => { glowCalls.push({ i, pos: [m.px, m.py, m.pz], s: m.sx }); },
-  };
-  const dummy = {
-    position: { set: (x, y, z) => { dummy._x = x; dummy._y = y; dummy._z = z; } },
-    scale: { set: (x, y, z) => { dummy._sx = x; dummy._sy = y; dummy._sz = z; } },
-    updateMatrix: () => {
-      dummy.matrix = { px: dummy._x, py: dummy._y, pz: dummy._z, sx: dummy._sx };
-    },
-  };
-  return {
-    entryStates: states,
-    ships,
-    entryCfg: E.ENTRY_CFG_DEFAULT,
-    entryGlow: fakeGlow,
-    entryGlowDummy: dummy,
-    entryFxOn: () => on,
-    _glowCalls: glowCalls,
-  };
+/** 编译 `finishEntryGate` 的**原文**（同上：形参 `g` 在内层函数补回）。 */
+function compileFinishEntryGate(mutate) {
+  const START = 'private finishEntryGate(g: FleetGate): void {';
+  const END = 'g.done = true;';
+  let body = extractUnique(overlay, START, END, END.length);
+  body = body.split(START).join('');
+  return compile(
+    `(function(entryApplyClipping) {\nreturn function(g) {\n${body}\n};\n})`,
+    mutate,
+  );
 }
 
-const INJ = ['ENTRY_GLOW_MAX', 'SLICE_HALF_SPAN_K', 'SLICE_GLOW_SPAN_K', 'entryShipProgress', 'stepEntrySlice', 'entryApplyClipping', 'entryWritePlanes', 'E'];
+const UEF_START = 'private updateEntryFx(): void {';
+const UEF_END = 'for (const [fleet, g] of this.fleetGates) if (g.done) this.fleetGates.delete(fleet);';
 
-function runUpdateEntryFx(fn, self, nowSec) {
-  const realNow = performance.now;
-  performance.now = () => nowSec * 1000;
-  try {
-    fn.call(self, E.ENTRY_GLOW_MAX, E.SLICE_HALF_SPAN_K, E.SLICE_GLOW_SPAN_K,
-      E.entryShipProgress, E.stepEntrySlice, E.entryApplyClipping, E.entryWritePlanes, E);
-  } finally {
-    performance.now = realNow;
-  }
+/** 编译 `updateEntryFx` 的**原文**（无参 ⇒ 直接注入 `this` 上的依赖）。 */
+function compileUpdateEntryFx(mutate) {
+  let body = extractUnique(overlay, UEF_START, UEF_END, UEF_END.length);
+  body = body.split(UEF_START).join('');
+  return compile(`(function() {\n${body}\n})`, mutate);
 }
 
-console.log('\n=== 11. updateEntryFx 真跑：写平面常数 / 结束清裁剪 / 辉光同步 ===');
-{
-  const fn = compileUpdateEntryFx();
-  const mkShip = (y, len) => ({ group: { position: { x: 10, y, z: -20 } }, u: { shipLen: len } });
-  const half = 10 * E.SLICE_HALF_SPAN_K;
-  const yLo = 100 - half;
-  const yHi = 100 + half;
-
-  // 场景 A：p = 0（刚开场）
-  {
-    const planes = [{ constant: E.entryPlaneInitConstant(1) }];
-    const mats = [{ clippingPlanes: planes }];
-    const states = new Map([['k1', { t0: 50, delay: 0, done: false }]]);
-    const ships = new Map([['k1', { ...mkShip(100, 10), entryPlanes: planes, sliceMats: mats }]]);
-    const self = makeFakeOverlay({ states, ships });
-    runUpdateEntryFx(fn, self, 50);
-    check('p=0 ⇒ 平面常数被推进到 yLo（不再停在初始值）', () =>
-      Math.abs(planes[0].constant - yLo) < 1e-9);
-    check('p=0 ⇒ 舰体内部采样点全不可见（平面在包围盒之外）', () =>
-      SAMPLES.filter((y) => y > yLo + 1e-6 && y < yHi - 1e-6)
-        .every((y) => !(1 * y <= planes[0].constant + 1e-9)));
-    check('p=0 ⇒ 裁剪仍挂载（进场中，不误清）', () => mats[0].clippingPlanes === planes);
-    check('p=0 ⇒ 状态未置 done（仍在入场）', () => states.get('k1').done === false);
-    check('p=0 ⇒ 辉光计数 = 0（辉光包络两端为 0）', () => self.entryGlow.count === 0);
-  }
-
-  // 场景 B：中点（p ≈ 0.5）
-  {
-    const planes = [{ constant: 0 }];
-    const mats = [{ clippingPlanes: planes }];
-    const states = new Map([['k1', { t0: 50, delay: 0, done: false }]]);
-    const ships = new Map([['k1', { ...mkShip(100, 10), entryPlanes: planes, sliceMats: mats }]]);
-    const self = makeFakeOverlay({ states, ships });
-    runUpdateEntryFx(fn, self, 50 + E.SLICE_DUR_PER_SHIP / 2);
-    check('中点 ⇒ 平面常数 ≈ 包围盒中点', () =>
-      Math.abs(planes[0].constant - (yLo + yHi) / 2) < 1e-9);
-    check('中点 ⇒ 下半部可见 / 上半部不可见（真在"切"）', () =>
-      (1 * yLo <= planes[0].constant) && !(1 * yHi <= planes[0].constant));
-    check('中点 ⇒ 辉光生效（count = 1，位置 = 扫描平面）', () =>
-      self.entryGlow.count === 1 && Math.abs(self._glowCalls[0].pos[1] - planes[0].constant) < 1e-9);
-    check('中点 ⇒ 辉光盘半径 = 舰长 × SLICE_GLOW_SPAN_K', () =>
-      Math.abs(self._glowCalls[0].s - 10 * E.SLICE_GLOW_SPAN_K) < 1e-9);
-  }
-
-  // 场景 C：t = 总时长（必须清空 clippingPlanes）
-  {
-    const planes = [{ constant: 0 }];
-    const mats = [{ clippingPlanes: planes }];
-    const states = new Map([['k1', { t0: 50, delay: 0.3, done: false }]]);
-    const ships = new Map([['k1', { ...mkShip(100, 10), entryPlanes: planes, sliceMats: mats }]]);
-    const self = makeFakeOverlay({ states, ships });
-    runUpdateEntryFx(fn, self, 50 + 0.3 + E.SLICE_DUR_PER_SHIP + 1e-6);
-    check('t=总时长 ⇒ clippingPlanes **已清空**（否则舰体被永久切）', () =>
-      mats[0].clippingPlanes === null);
-    check('t=总时长 ⇒ 状态置 done（不再逐帧空转）', () => states.get('k1').done === true);
-    check('t=总时长 ⇒ 辉光计数归 0', () => self.entryGlow.count === 0);
-  }
-
-  // 场景 D：尚无实体 ⇒ 必须"保持等待"（绝不置 done，否则实体建好时错过入场）
-  {
-    const states = new Map([['k2', { t0: 50, delay: 0, done: false }]]);
-    const self = makeFakeOverlay({ states, ships: new Map() });
-    runUpdateEntryFx(fn, self, 50.1);
-    check('尚无实体（远景/被池挤出）⇒ 状态**不置 done**（P1 的反面陷阱）', () =>
-      states.get('k2').done === false);
-    check('尚无实体 ⇒ 不抛错、辉光计数 0', () => self.entryGlow.count === 0);
-    runUpdateEntryFx(fn, self, 50 + 99);
-    check('尚无实体但时间早已超窗 ⇒ 置 done（不会永久强制建实体）', () =>
-      states.get('k2').done === true);
-  }
-
-  // 场景 E：一键关闭（window.__entryFxEnabled = false / entryFxOn() = false）
-  {
-    const planes = [{ constant: 0 }];
-    const mats = [{ clippingPlanes: planes }];
-    const states = new Map([['k1', { t0: 50, delay: 0, done: false }]]);
-    const ships = new Map([['k1', { ...mkShip(100, 10), entryPlanes: planes, sliceMats: mats }]]);
-    const self = makeFakeOverlay({ states, ships, on: false });
-    runUpdateEntryFx(fn, self, 50.1);
-    check('一键关闭 ⇒ 立即清空 clippingPlanes（切换中途不残留）', () =>
-      mats[0].clippingPlanes === null && states.get('k1').done === true);
-  }
-}
-
-console.log('\n=== 12. updateEntryFx 变异自检（改坏 Wiring ⇒ 断言必须能红） ===');
-{
-  // 变异 F：结束分支被短路 ⇒ clippingPlanes 残留
-  const fnF = compileUpdateEntryFx((s) => s.split('if (!on || p >= 1) {').join('if (false) {'));
-  const planes = [{ constant: 0 }];
-  const mats = [{ clippingPlanes: planes }];
-  const states = new Map([['k1', { t0: 50, delay: 0, done: false }]]);
-  const ships = new Map([['k1', { group: { position: { x: 0, y: 100, z: 0 } }, u: { shipLen: 10 }, entryPlanes: planes, sliceMats: mats }]]);
-  const self = makeFakeOverlay({ states, ships });
-  runUpdateEntryFx(fnF, self, 50 + 99);
-  checkThrows('变异F（结束分支短路）已被"clippingPlanes 清空"断言检出', () => {
-    assert.equal(mats[0].clippingPlanes, null);
+/**
+ * 造一个假的 `FleetGate`：`fwd=+X / right=−Z / up=+Y`（右手基），
+ * 舰队沿朝向占 `[sLo, sHi]`，截面中心 `(cu, cv)`、半边长 `half`。
+ */
+function makeFakeGate(opt = {}) {
+  const sLo = opt.sLo ?? 90, sHi = opt.sHi ?? 110;
+  const cu = opt.cu ?? 0, cv = opt.cv ?? 100;
+  const half = opt.half ?? 20;
+  const margin = opt.margin ?? 2;
+  const planes = [0, 1, 2, 3, 4].map(() => {
+    const n = { x: 0, y: 1, z: 0 };
+    n.set = (x, y, z) => { n.x = x; n.y = y; n.z = z; return n; };
+    return { normal: n, constant: 0 };
   });
+  return {
+    fleet: {}, planes,
+    fwd: { x: 1, y: 0, z: 0 },
+    right: { x: 0, y: 0, z: -1 },
+    up: { x: 0, y: 1, z: 0 },
+    cu, cv, halfSize: half, margin,
+    box: { uLo: cu - half, uHi: cu + half, vLo: cv - half, vHi: cv + half, sLo, sHi },
+    t0: opt.t0 ?? 50, p: 0, pos: sHi + margin, done: false,
+    shipKeys: opt.shipKeys ?? [], frame: null, barrier: null,
+  };
+}
 
-  // 变异 G：常数不写 ⇒ 平面停在初始值（永远不可见）
-  const fnG = compileUpdateEntryFx((s) => s.split('if (entry.entryPlanes) entryWritePlanes(entry.entryPlanes, step.front);').join('if (false) {}'));
+/** three 的裁剪语义复刻：`distance(p) = normal·p + constant`，`distance < 0` 被裁。 */
+function gateVisible(g, x, y, z) {
+  return g.planes.every((pl) => pl.normal.x * x + pl.normal.y * y + pl.normal.z * z + pl.constant >= -1e-9);
+}
+
+/** 造一个只含 `stepEntryGate` 依赖的假 `this`。 */
+function makeStepSelf() {
+  return { entryCfg: E.ENTRY_CFG_DEFAULT };
+}
+
+/**
+ * 注入纯函数后跑一帧 `stepEntryGate`（直接用入参 `now`，不需要假 `performance.now`）。
+ * ⚠ 编译产物是"外层注入 + **内层参数**"两段式 ⇒ 内层**必须 `.call(self, …)`** 才带得上 `this`。
+ */
+function runStepEntryGate(fn, gate, nowSec, on = true) {
+  const self = makeStepSelf();
+  const inner = fn.call(self, E.entryShipProgress, E.entryGateFront, E.entryGateWritePlanes, E);
+  return inner.call(self, gate, nowSec, on);
+}
+
+console.log('\n=== 11. stepEntryGate 真跑：一队一门的 5 个裁剪面 = 无限长方柱（v2 核心 N5/N7） ===');
+{
+  const stepFn = compileStepEntryGate();
+  const T0 = 50;
+
+  // 场景 A：p = 0（推进面在**舰首之外** ⇒ 全隐）
   {
-    const planes = [{ constant: E.entryPlaneInitConstant(1) }];
-    const mats = [{ clippingPlanes: planes }];
-    const states = new Map([['k1', { t0: 50, delay: 0, done: false }]]);
-    const ships = new Map([['k1', { group: { position: { x: 0, y: 100, z: 0 } }, u: { shipLen: 10 }, entryPlanes: planes, sliceMats: mats }]]);
-    const self = makeFakeOverlay({ states, ships });
-    runUpdateEntryFx(fnG, self, 110);
-    checkThrows('变异G（不写平面常数）已被"中点 front"断言检出', () => {
-      assert.equal(Math.abs(planes[0].constant - 100) < 1, true);
-    });
+    const g = makeFakeGate({ t0: T0, sLo: 90, sHi: 110, cu: 0, cv: 100, half: 20, margin: 2 });
+    const fin = runStepEntryGate(stepFn, g, T0);
+    check('p=0 ⇒ 未结束（仍在入场）', () => fin === false && g.done === false);
+    check('N5：p=0 ⇒ 推进面在**舰首之外**（pos = sHi + margin = 112）', () => Math.abs(g.pos - 112) < 1e-9);
+    check('N5/N7：推进面法线 = 舰队朝向 fwd，constant = −gatePos', () =>
+      Math.abs(g.planes[0].normal.x - 1) < 1e-12 && Math.abs(g.planes[0].normal.y) < 1e-12
+      && Math.abs(g.planes[0].normal.z) < 1e-12 && Math.abs(g.planes[0].constant + 112) < 1e-9);
+    check('N7：p=0 ⇒ 舰体采样点（舰尾/舰中/舰首）**全部不可见**', () =>
+      [91, 100, 109].every((x) => !gateVisible(g, x, 100, 0)));
   }
 
-  // 变异 H：无实体也置 done ⇒ "实体建好时错过入场"
-  const fnH = compileUpdateEntryFx((s) => s.split('if (!entry) return;').join('if (!entry) { st.done = true; return; }'));
+  // 场景 B：p = 0.25（推进面已扫过舰首一段 ⇒ 舰首可见、舰尾仍隐）
   {
-    const states = new Map([['k2', { t0: 50, delay: 0, done: false }]]);
-    const self = makeFakeOverlay({ states, ships: new Map() });
-    runUpdateEntryFx(fnH, self, 50.1);
-    checkThrows('变异H（无实体即置 done）已被"保持等待"断言检出', () => {
-      assert.equal(states.get('k2').done, false);
+    const g = makeFakeGate({ t0: T0, sLo: 90, sHi: 110, cu: 0, cv: 100, half: 20, margin: 2 });
+    runStepEntryGate(stepFn, g, T0 + E.ENTRY_TOTAL_SEC * 0.25);
+    check('N5：p=0.25 ⇒ 推进面已向**舰尾**推（pos 从 112 递减）', () => g.pos < 112 && g.pos > 96);
+    check('N5：舰首侧可见 / 舰尾侧不可见（真在"切"）', () =>
+      gateVisible(g, 110, 100, 0) && !gateVisible(g, 91, 100, 0));
+  }
+
+  // 场景 C：★ **侧面 4 个面真的在围**（v1 只有 1 个无限平面 ⇒ 这一段必然 FAIL）
+  {
+    const g = makeFakeGate({ t0: T0, sLo: 90, sHi: 110, cu: 0, cv: 100, half: 20, margin: 2 });
+    runStepEntryGate(stepFn, g, T0 + E.ENTRY_TOTAL_SEC * 0.5);
+    // ⚠ 采样点必须取在**推进面之前**（x=200 ≫ gatePos）⇒ 唯一能裁它们的只有 4 个侧面；
+    //   若取在推进面之后，会被推进面"顺带"裁掉，侧面断言就失去隔离性（假通过）。
+    check('★N7：门**外**（横向 |u−cu| > half）被裁 —— 左右侧面生效', () =>
+      !gateVisible(g, 200, 100, 25) && !gateVisible(g, 200, 100, -25));
+    check('★N7：门**外**（竖直 |v−cv| > half）被裁 —— 上下侧面生效', () =>
+      !gateVisible(g, 200, 130, 0) && !gateVisible(g, 200, 70, 0));
+    check('★N7：门**内**（|u−cu| ≤ half 且 |v−cv| ≤ half）可见 —— 方柱内部不误裁', () =>
+      gateVisible(g, 200, 100, 0) && gateVisible(g, 200, 118, 18) && gateVisible(g, 200, 82, -18));
+    check('★N6：4 个侧面把横截面钉成**正方形**（同 halfSize、中心 = 投影包围盒中心）', () =>
+      Math.abs(g.planes[1].constant - (g.cu + g.halfSize)) < 1e-9
+      && Math.abs(g.planes[2].constant - (g.halfSize - g.cu)) < 1e-9
+      && Math.abs(g.planes[3].constant - (g.cv + g.halfSize)) < 1e-9
+      && Math.abs(g.planes[4].constant - (g.halfSize - g.cv)) < 1e-9);
+    check('★N7：裁剪面**恰好 5 个**（1 推进 + 4 侧面）', () => g.planes.length === 5);
+  }
+
+  // 场景 D：p ≥ 1（扫过舰尾 ⇒ 结束）与一键关闭
+  {
+    const g = makeFakeGate({ t0: T0 });
+    check('p=1 ⇒ 本帧结束（调用方据此 finishEntryGate 卸载裁剪）', () =>
+      runStepEntryGate(stepFn, g, T0 + E.ENTRY_TOTAL_SEC + 1e-6) === true && g.done === true);
+  }
+  {
+    const g = makeFakeGate({ t0: T0 });
+    check('一键关闭（on=false）⇒ 立即结束（不逐帧空转、不残留裁剪）', () =>
+      runStepEntryGate(stepFn, g, T0 + 1, false) === true && g.done === true);
+  }
+  {
+    const g = makeFakeGate({ t0: T0 });
+    g.done = true;
+    check('已结束的门再被推进 ⇒ 直接返回 true（幂等，不重复写平面）', () =>
+      runStepEntryGate(stepFn, g, T0 + 1) === true);
+  }
+}
+
+console.log('\n=== 11b. finishEntryGate 真跑：**结束必须卸载全队裁剪**（v1 的"永久切"红线） ===');
+{
+  const finFn = compileFinishEntryGate();
+  const runFinish = (fn, self, gate) => fn.call(self, E.entryApplyClipping).call(self, gate);
+  const g = makeFakeGate({ shipKeys: ['a', 'b', 'c'] });
+  const shared = g.planes;
+  const mkEntry = () => ({ sliceMats: [{ clippingPlanes: shared }, { clippingPlanes: shared }], entryPlanes: shared });
+  const ships = new Map([['a', mkEntry()], ['b', mkEntry()], ['c', mkEntry()]]);
+  const states = new Map([['a', { done: false }], ['b', { done: false }], ['c', { done: false }]]);
+  // ⚠ 先抓住材质**数组引用**：finishEntryGate 会把 `entry.sliceMats` 置空（置空是要求的一部分）
+  const mats = ships.get('a').sliceMats;
+  let disposed = 0;
+  const self = { entryStates: states, ships, disposeGateVisual: () => { disposed += 1; } };
+  runFinish(finFn, self, g);
+  check('★ 结束 ⇒ 全队材质的 clippingPlanes **全部归 null**（否则舰体被永久切）', () =>
+    mats.every((m) => m.clippingPlanes === null));
+  check('结束 ⇒ 实体上的 sliceMats / entryPlanes 引用被清空', () =>
+    ['a', 'b', 'c'].every((k) => ships.get(k).sliceMats === undefined && ships.get(k).entryPlanes === undefined));
+  check('结束 ⇒ 全队 entryStates 逐舰置 done（不再强制建实体/grow=1）', () =>
+    ['a', 'b', 'c'].every((k) => states.get(k).done === true));
+  check('结束 ⇒ 门本体被销毁一次（可见的门框/位面必须收掉）', () => disposed === 1);
+  check('结束 ⇒ gate.done = true', () => g.done === true);
+}
+
+console.log('\n=== 12. updateEntryFx 真跑 + 变异自检（改坏 Wiring ⇒ 断言必须能红） ===');
+{
+  const stepFn = compileStepEntryGate();
+  const finFn = compileFinishEntryGate();
+  const uefFn = compileUpdateEntryFx();
+
+  /** 端到端假 overlay：`updateEntryFx` → `stepEntryGate` / `finishEntryGate` 全部用**编译后的原文**。 */
+  function makeOverlay(gate, nowSec, on = true) {
+    const self = {
+      fleetGates: new Map([[gate.fleet, gate]]),
+      entryCfg: E.ENTRY_CFG_DEFAULT,
+      entryStates: new Map(),
+      ships: new Map(),
+      _disposed: 0,
+      _placed: 0,
+      _nowSec: nowSec,
+    };
+    const stepInner = stepFn.call(self, E.entryShipProgress, E.entryGateFront, E.entryGateWritePlanes, E);
+    const finInner = finFn.call(self, E.entryApplyClipping);
+    self.stepEntryGate = (g, now, on2) => stepInner.call(self, g, now, on2);
+    self.finishEntryGate = (g) => finInner.call(self, g);
+    self.disposeGateVisual = () => { self._disposed += 1; };
+    self.placeGateVisual = () => { self._placed += 1; };
+    self.entryFxOn = () => on;
+    for (const k of gate.shipKeys) {
+      self.entryStates.set(k, { done: false });
+      self.ships.set(k, { sliceMats: [{ clippingPlanes: gate.planes }], entryPlanes: gate.planes });
+    }
+    return self;
+  }
+
+  const runUef = (self) => {
+    const realNow = performance.now;
+    performance.now = () => self._nowSec * 1000;
+    try { uefFn.call(self); } finally { performance.now = realNow; }
+  };
+
+  // 场景 A：入场中（推进面已写、门未收、裁剪仍在）
+  {
+    const g = makeFakeGate({ t0: 50, shipKeys: ['a'] });
+    const self = makeOverlay(g, 50 + E.ENTRY_TOTAL_SEC * 0.5);
+    runUef(self);
+    check('入场中 ⇒ 门仍在表里（未误收）', () => self.fleetGates.size === 1 && g.done === false);
+    check('入场中 ⇒ 推进面已被写入（pos 随进度推进）', () => g.pos < 112 && g.pos > 90);
+    check('入场中 ⇒ 裁剪仍挂载（不误清）', () => self.ships.get('a').sliceMats[0].clippingPlanes === g.planes);
+    check('入场中 ⇒ 门本体被摆位一次（可见门随推进面移动）', () => self._placed === 1);
+  }
+
+  // 场景 B：到点 ⇒ 收门 + 卸载裁剪 + 逐舰 done + 从表里删除
+  {
+    const g = makeFakeGate({ t0: 50, shipKeys: ['a', 'b'] });
+    const self = makeOverlay(g, 50 + E.ENTRY_TOTAL_SEC + 5);
+    const matsB = self.ships.get('a').sliceMats;   // 先抓引用（收门后会被置空）
+    runUef(self);
+    check('★到点 ⇒ 门从 fleetGates **删除**（不再逐帧空转）', () => self.fleetGates.size === 0);
+    check('★到点 ⇒ 全队 clippingPlanes **归 null**（N7 红线：不得永久切）', () =>
+      matsB.every((m) => m.clippingPlanes === null));
+    check('到点 ⇒ 全队 entryStates 置 done', () =>
+      ['a', 'b'].every((k) => self.entryStates.get(k).done === true));
+    check('到点 ⇒ 门本体销毁一次', () => self._disposed === 1);
+  }
+
+  // 场景 C：一键关闭 ⇒ 立刻收门
+  {
+    const g = makeFakeGate({ t0: 50, shipKeys: ['a'] });
+    const self = makeOverlay(g, 50 + 0.1, false);
+    const matsC = self.ships.get('a').sliceMats;
+    runUef(self);
+    check('一键关闭 ⇒ 立刻收门并清裁剪（切换中途不残留）', () =>
+      self.fleetGates.size === 0 && matsC[0].clippingPlanes === null);
+  }
+
+  // 场景 D：没有门 ⇒ 提前返回、不抛错
+  {
+    const self = makeOverlay(makeFakeGate({ shipKeys: [] }), 60);
+    self.fleetGates.clear();
+    runUef(self);
+    check('无门 ⇒ 提前返回、不抛错', () => self.fleetGates.size === 0 && self._disposed === 0);
+  }
+
+  // ── 变异自检 ──
+  {
+    const T0Dummy = 50;
+    // 变异 F：`stepEntryGate` 不写任何平面 ⇒ "舰首可见/舰尾不可见"必须红
+    const stepF = compileStepEntryGate((s) => s.split(SEG_WRITE).join('void 0;'));
+    const gF = makeFakeGate({ t0: T0Dummy });
+    runStepEntryGate(stepF, gF, T0Dummy + E.ENTRY_TOTAL_SEC * 0.25);
+    checkThrows('变异F（stepEntryGate 不写平面）已被"舰首可见/舰尾不可见"断言检出', () => {
+      assert.equal(gateVisible(gF, 110, 100, 0) && !gateVisible(gF, 91, 100, 0), true);
+    });
+
+    // 变异 G：推进面方向反转（p=0 反而全可见）⇒ "p=0 全隐"必须红
+    const stepG = compileStepEntryGate((s) =>
+      s.split('entryGateFront(p, g.box.sLo, g.box.sHi, g.margin)').join('entryGateFront(1 - p, g.box.sLo, g.box.sHi, g.margin)'));
+    const gG = makeFakeGate({ t0: T0Dummy });
+    runStepEntryGate(stepG, gG, T0Dummy);
+    checkThrows('变异G（推进面反向）已被"p=0 舰体全部不可见"断言检出', () => {
+      assert.equal([91, 100, 109].every((x) => !gateVisible(gG, x, 100, 0)), true);
+    });
+
+    // 变异 H：到点不收门（去掉 finishEntryGate 调用）⇒ 门永远留在表里 + 裁剪残留
+    const uefH = compileUpdateEntryFx((s) =>
+      s.split('if (this.stepEntryGate(g, now, on)) { this.finishEntryGate(g); continue; }')
+        .join('if (this.stepEntryGate(g, now, on)) { continue; }'));
+    const gH = makeFakeGate({ t0: 50, shipKeys: ['a'] });
+    const selfH = makeOverlay(gH, 50 + E.ENTRY_TOTAL_SEC + 5);
+    const realNowH = performance.now;
+    performance.now = () => selfH._nowSec * 1000;
+    try { uefH.call(selfH); } finally { performance.now = realNowH; }
+    checkThrows('变异H（到点不收门）已被"门从表里删除 + clippingPlanes 归 null"断言检出', () => {
+      assert.equal(selfH.fleetGates.size === 0 && selfH.ships.get('a').sliceMats[0].clippingPlanes === null, true);
+    });
+
+    // 变异 I：finishEntryGate 不卸载裁剪 ⇒ "归 null"必须红
+    const finI = compileFinishEntryGate((s) =>
+      s.split('entryApplyClipping(entry.sliceMats, null, false);').join('void 0;'));
+    const gI = makeFakeGate({ shipKeys: ['a'] });
+    const shipsI = new Map([['a', { sliceMats: [{ clippingPlanes: gI.planes }], entryPlanes: gI.planes }]]);
+    const selfI = { entryStates: new Map([['a', { done: false }]]), ships: shipsI, disposeGateVisual: () => {} };
+    finI.call(selfI, E.entryApplyClipping).call(selfI, gI);
+    checkThrows('变异I（结束不卸载裁剪）已被"clippingPlanes 归 null"断言检出', () => {
+      assert.equal(shipsI.get('a').sliceMats.every((m) => m.clippingPlanes === null), true);
     });
   }
 }
@@ -646,7 +774,7 @@ check('登记**逐帧**尝试（调用在 `if (!vv)` 之外 ⇒ 部署期首见�
   const block = overlay.slice(overlay.indexOf('const vis = this.unitVis;'), overlay.indexOf('// ── [v75] 舰队级 LOD'));
   // 调用必须在 `vis.set(key, vv);`（`if (!vv)` 块内最后一句）**之后** ⇒ 不在首次出现分支内。
   const setIdx = block.indexOf('vis.set(key, vv);');
-  const callIdx = block.indexOf('this.registerEntryState(key, u, now);');
+  const callIdx = block.indexOf('this.registerEntryState(key, u, fleet, now);');
   return setIdx >= 0 && callIdx > setIdx;
 });
 check('第二遍实体池对入场中的舰**临时强制建实体**（P1：远景无体可切）', () => {
@@ -659,14 +787,13 @@ check('tick() 在 syncShips 之后推进入场特效', () => {
   const block = overlay.slice(overlay.indexOf('this.syncShips(dt);'), overlay.indexOf('this.updateBillboards();'));
   return block.includes('this.updateEntryFx();');
 });
-check('扫描辉光层在构建期建立并被加入场景', () => {
-  const block = overlay.slice(overlay.indexOf('private buildEntryGlow(): void {'), overlay.indexOf('private collectSliceMats('));
-  return block.includes('new THREE.InstancedMesh(') && block.includes('this.scene.add(inst);')
-    && block.includes('AdditiveBlending');
+check('v2：门本体由**按舰队懒建**（ensureFleetGate → buildGateVisual），不再有全局辉光层', () => {
+  const block = overlay.slice(overlay.indexOf('private ensureFleetGate('), overlay.indexOf('private attachEntryClippingTo('));
+  return block.includes('this.buildGateVisual(g);') && block.includes('this.placeGateVisual(g);');
 });
-check('destroy() 清空入场状态与辉光引用', () => {
+check('destroy() 清空入场状态与**门**（fleetGates 全量收掉）', () => {
   const block = overlay.slice(overlay.indexOf('destroy() {'), overlay.indexOf('this.renderer.domElement.removeEventListener'));
-  return block.includes('this.entryStates.clear()') && block.includes('this.entryGlow = null');
+  return block.includes('this.entryStates.clear()') && block.includes('this.finishAllEntryGates();');
 });
 check('一键关闭开关存在（window.__entryFxEnabled = false）', () =>
   overlay.includes('__entryFxEnabled === false') && entrySrc.includes('SLICE_ENTRY_ENABLED_DEFAULT'));
@@ -700,7 +827,7 @@ check('未新增 teleport 玩法（仅视觉）', () =>
 // ════════════════════════════════════════════════════════════════════════════
 console.log('\n=== 16. 入场时机：部署期不登记 / 开战显式启动纪元（真跑原文） ===');
 {
-  const RES_START = 'private registerEntryState(key: string, u: any, now: number): void {';
+  const RES_START = 'private registerEntryState(key: string, u: any, fleet: any, now: number): void {';
   const RES_END = 'this.attachEntryClippingTo(key);';
   const SEF_START = 'startEntryFx(): void {';
   const SEF_END = 'this.entryStarted = true;';
@@ -710,8 +837,8 @@ console.log('\n=== 16. 入场时机：部署期不登记 / 开战显式启动纪
   function compileRegisterEntryState(mutate) {
     let body = extractUnique(overlay, RES_START, RES_END, RES_END.length);
     body = body.split(RES_START).join('');
-    // 签名被切掉 ⇒ 形参在此补回：`(W, key, u, now)` 与调用侧 `reg.call(self, W, key, u, now)` 对齐。
-    return compile(`(function(ENTRY_REG_WINDOW_SEC, key, u, now) {\n${body}\n})`, mutate);
+    // 签名被切掉 ⇒ 形参在此补回：`(W, key, u, fleet, now)` 与调用侧对齐。
+    return compile(`(function(ENTRY_REG_WINDOW_SEC, key, u, fleet, now) {\n${body}\n})`, mutate);
   }
   /** 编译 startEntryFx 的**原文**（同上：无未闭合块 ⇒ 不补 `}`）。 */
   function compileStartEntryFx(mutate) {
@@ -721,9 +848,10 @@ console.log('\n=== 16. 入场时机：部署期不登记 / 开战显式启动纪
   }
 
   /** 造一个只含 registerEntryState 消费字段的假 `this`（attach 用 spy 记录，不真的碰 three）。 */
-  function makeRegSelf({ deployPhase, entryStarted, entryEpoch = 0, entryFxActive = true }) {
+  function makeRegSelf({ deployPhase, entryStarted, entryEpoch = 0, entryFxActive = true, gate = {} }) {
     const calls = [];
-    return {
+    const gates = [];
+    const self = {
       entryStates: new Map(),
       entryEpoch,
       entryStarted,
@@ -731,7 +859,19 @@ console.log('\n=== 16. 入场时机：部署期不登记 / 开战显式启动纪
       battleScene: { deployPhase },
       attachEntryClippingTo: (k) => { calls.push(k); },
       _attachCalls: calls,
+      // [v2] 一队一门：登记时懒建门。`gate = null` ⇒ 模拟"空队 ⇒ 不开门"。
+      //   ⚠ 压入的是**门对象本身**（不是 `{fleet, now}` 包装）⇒ 断言才能看到 `shipKeys` 的累积。
+      ensureFleetGate: (fleet, now) => {
+        if (!gate) { gates.push(null); return undefined; }
+        const g = { fleet, t0: now, shipKeys: [] };
+        gates.push(g);
+        return g;
+      },
+      _gates: gates,
+      _gatesCleared: false,
+      finishAllEntryGates: () => { self._gatesCleared = true; },
     };
+    return self;
   }
   const withNow = (sec, fn) => {
     const real = performance.now;
@@ -742,64 +882,89 @@ console.log('\n=== 16. 入场时机：部署期不登记 / 开战显式启动纪
   const reg = compileRegisterEntryState();
   const start = compileStartEntryFx();
   const W = E.ENTRY_REG_WINDOW_SEC;
+  const FLEET = { id: 7 };
 
   // (a) 部署期不得登记（即便 entryStarted 已为真 —— 证明部署守卫**独立**生效）
   {
     const self = makeRegSelf({ deployPhase: true, entryStarted: true, entryEpoch: 100 });
-    reg.call(self, W, 'k1', { _entryDelay: 0.4 }, 100.5);
+    reg.call(self, W, 'k1', { _entryDelay: 0.4 }, FLEET, 100.5);
     check('部署期（deployPhase=true）不得登记 ⇒ entryStates 保持空', () => self.entryStates.size === 0);
-    check('部署期不得登记 ⇒ 也不补挂裁剪（attachEntryClippingTo 未被调用）', () => self._attachCalls.length === 0);
+    check('部署期不得登记 ⇒ 也不补挂裁剪、不开门', () =>
+      self._attachCalls.length === 0 && self._gates.length === 0);
   }
 
   // (b) 开战前（entryStarted=false）不得登记 —— ★ 刻意给一个**窗口内**的 epoch，
   //     使唯一可能拦住登记的只有 entryStarted 门（否则窗口检查会"顺带"拦住，断言失去隔离性）
   {
     const self = makeRegSelf({ deployPhase: false, entryStarted: false, entryEpoch: 100 });
-    reg.call(self, W, 'k1', { _entryDelay: 0.4 }, 100.1);
+    reg.call(self, W, 'k1', { _entryDelay: 0.4 }, FLEET, 100.1);
     check('未 startEntryFx（entryStarted=false）⇒ 不登记（与窗口无关）', () => self.entryStates.size === 0);
   }
 
   // (c) startEntryFx 真跑：显式重置纪元 + 清空 + 置开战标记
   {
     const self = makeRegSelf({ deployPhase: false, entryStarted: false, entryEpoch: 0 });
+    self.finishAllEntryGates = () => { self._gatesCleared = true; };
     self.entryStates.set('old', { t0: 1, delay: 0, done: false });   // 部署期残留（防御性清）
     withNow(123.5, () => start.call(self));
     check('startEntryFx ⇒ entryEpoch 被**显式**重置为当前时刻', () =>
       Math.abs(self.entryEpoch - 123.5) < 1e-9);
     check('startEntryFx ⇒ entryStarted = true', () => self.entryStarted === true);
     check('startEntryFx ⇒ 清空部署期残留登记', () => self.entryStates.size === 0);
+    check('v2：startEntryFx ⇒ 先收掉可能残留的门（防御性，防永久切）', () => self._gatesCleared === true);
   }
 
-  // (d) 开战后首见单位被登记：t0 ≈ 当前时刻、delay 取自 _entryDelay、且补挂裁剪
+  // (d) 开战后首见单位被登记：t0 = 门起点、给门开户、且补挂裁剪
   {
     const self = makeRegSelf({ deployPhase: false, entryStarted: false });
     withNow(100, () => start.call(self));
-    reg.call(self, W, 'k1', { _entryDelay: 0.4 }, 100.01);
+    reg.call(self, W, 'k1', { _entryDelay: 0.4 }, FLEET, 100.01);
     check('开战后首见单位被登记（entryStates.size = 1）', () => self.entryStates.size === 1);
-    check('开战后首见单位 t0 ≈ 当前时刻', () =>
+    check('v2：登记时**懒建本队的门**（一次）', () => self._gates.length === 1 && self._gates[0].fleet === FLEET);
+    check('v2：本舰 t0 = 门的起点（同一队共享同一时间基准）', () =>
       !!self.entryStates.get('k1') && Math.abs(self.entryStates.get('k1').t0 - 100.01) < 1e-9);
-    check('登记时 delay 取自 2D 建舰期打的 `_entryDelay`', () =>
-      Math.abs(self.entryStates.get('k1').delay - 0.4) < 1e-12);
+    check('v2：本舰 key 被登记进门的 shipKeys（结束时要逐个卸载裁剪）', () =>
+      self._gates[0].shipKeys.includes('k1'));
     check('登记时给已建实体补挂裁剪（attachEntryClippingTo 被调用）', () => self._attachCalls.includes('k1'));
+  }
+
+  // (d2) ★ 同队两舰**复用同一扇门**（用户定案：「就一个舰队用一个门」）
+  {
+    const self = makeRegSelf({ deployPhase: false, entryStarted: true, entryEpoch: 100 });
+    reg.call(self, W, 'k1', {}, FLEET, 100.05);
+    reg.call(self, W, 'k2', {}, FLEET, 100.06);
+    check('★ 同队两舰 ⇒ 只开**一扇**门（ensureFleetGate 内部复用）', () => self._gates.length === 2);
+    // 台架里 ensureFleetGate 是 spy（每次都返回新对象）⇒ 这里只验证"两舰都调了同一个 fleet 键"；
+    // 真正的"共享同一数组实例"由源码契约断言（`entry.entryPlanes = gate.planes`）+ 11b 的共享面断言覆盖。
+    check('★ 同队两舰 ⇒ 传入的是**同一个 fleet 引用**（Map 键同一 ⇒ 生产实现只建一扇门）', () =>
+      self._gates.every((g) => g.fleet === FLEET));
+  }
+
+  // (d3) 空队（无有效投影包围盒）⇒ 不开门 + 不登记 ⇒ 不强制建实体
+  {
+    const self = makeRegSelf({ deployPhase: false, entryStarted: true, entryEpoch: 100, gate: null });
+    reg.call(self, W, 'k1', {}, FLEET, 100.05);
+    check('空队（ensureFleetGate 返回 undefined）⇒ 不登记（不强制建实体）', () => self.entryStates.size === 0);
   }
 
   // (e) 窗口语义保留：窗口外首见不登记（迷雾发现 / 战后增援不触发切片）
   {
     const wide = makeRegSelf({ deployPhase: false, entryStarted: true, entryEpoch: 100 });
-    reg.call(wide, W, 'k9', {}, 100 + W + 0.5);
+    reg.call(wide, W, 'k9', {}, FLEET, 100 + W + 0.5);
     check('入场窗口外（>ENTRY_REG_WINDOW_SEC）首见 ⇒ 不登记', () => wide.entryStates.size === 0);
     const inside = makeRegSelf({ deployPhase: false, entryStarted: true, entryEpoch: 100 });
-    reg.call(inside, W, 'k9', {}, 100 + W - 0.5);
+    reg.call(inside, W, 'k9', {}, FLEET, 100 + W - 0.5);
     check('入场窗口内（<ENTRY_REG_WINDOW_SEC）首见 ⇒ 登记', () => inside.entryStates.size === 1);
   }
 
   // (f) 已登记不重复（推拉镜头不重播：t0 不被刷新）
   {
     const self = makeRegSelf({ deployPhase: false, entryStarted: true, entryEpoch: 100 });
-    reg.call(self, W, 'k1', { _entryDelay: 0 }, 100.1);
-    reg.call(self, W, 'k1', { _entryDelay: 0.9 }, 100.2);
+    reg.call(self, W, 'k1', { _entryDelay: 0 }, FLEET, 100.1);
+    reg.call(self, W, 'k1', { _entryDelay: 0.9 }, FLEET, 100.2);
     check('已登记单位不重复登记（t0 保持 ⇒ 推拉镜头不重播）', () =>
       self.entryStates.size === 1 && Math.abs(self.entryStates.get('k1').t0 - 100.1) < 1e-9);
+    check('已登记单位不重复进门（shipKeys 不重复）', () => self._gates[0].shipKeys.length === 1);
   }
 
   // 变异自检 —— 改坏必须 FAIL（证明上面每条断言都"有牙齿"）
@@ -809,7 +974,7 @@ console.log('\n=== 16. 入场时机：部署期不登记 / 开战显式启动纪
       s.split('if ((this.battleScene as any)?.deployPhase) return;').join('if (false) return;'));
     checkThrows('变异J（删掉部署守卫）已被"部署期不得登记"断言检出', () => {
       const self = makeRegSelf({ deployPhase: true, entryStarted: true, entryEpoch: 100 });
-      regJ.call(self, W, 'k1', { _entryDelay: 0.4 }, 100.5);
+      regJ.call(self, W, 'k1', { _entryDelay: 0.4 }, FLEET, 100.5);
       assert.equal(self.entryStates.size, 0);
     });
 
@@ -818,7 +983,7 @@ console.log('\n=== 16. 入场时机：部署期不登记 / 开战显式启动纪
       s.split('if (!this.entryStarted) return;').join('if (false) return;'));
     checkThrows('变异K（删掉 entryStarted 门）已被"未 startEntryFx 不登记"断言检出', () => {
       const self = makeRegSelf({ deployPhase: false, entryStarted: false, entryEpoch: 100 });
-      regK.call(self, W, 'k1', { _entryDelay: 0.4 }, 100.1);
+      regK.call(self, W, 'k1', { _entryDelay: 0.4 }, FLEET, 100.1);
       assert.equal(self.entryStates.size, 0);
     });
 
@@ -827,17 +992,27 @@ console.log('\n=== 16. 入场时机：部署期不登记 / 开战显式启动纪
       s.split('this.entryEpoch = performance.now() / 1000;').join(''));
     checkThrows('变异L（startEntryFx 不显式重置纪元）已被"纪元被重置"断言检出', () => {
       const self = makeRegSelf({ deployPhase: false, entryStarted: false, entryEpoch: 0 });
+      self.finishAllEntryGates = () => {};
       withNow(123.5, () => startL.call(self));
       assert.equal(Math.abs(self.entryEpoch - 123.5) < 1e-9, true);
     });
 
-    // 变异 M：登记后不补挂裁剪 ⇒ 部署期建好的实体会整舰可见、看不到切片
+    // 变异 M：登记后不补挂裁剪 ⇒ 部署期建好的实体会整舰可见、看不到门切
     const regM = compileRegisterEntryState((s) =>
       s.split('this.attachEntryClippingTo(key);').join(''));
     checkThrows('变异M（登记后不补挂裁剪）已被"补挂裁剪"断言检出', () => {
       const self = makeRegSelf({ deployPhase: false, entryStarted: true, entryEpoch: 100 });
-      regM.call(self, W, 'k1', { _entryDelay: 0.4 }, 100.1);
+      regM.call(self, W, 'k1', { _entryDelay: 0.4 }, FLEET, 100.1);
       assert.equal(self._attachCalls.includes('k1'), true);
+    });
+
+    // 变异 N：本舰不登记进门的 shipKeys ⇒ 结束无法逐个卸载裁剪
+    const regN = compileRegisterEntryState((s) =>
+      s.split('g.shipKeys.push(key);').join(''));
+    checkThrows('变异N（不登记进门 shipKeys）已被"shipKeys 含 k1"断言检出', () => {
+      const self = makeRegSelf({ deployPhase: false, entryStarted: true, entryEpoch: 100 });
+      regN.call(self, W, 'k1', {}, FLEET, 100.05);
+      assert.equal(self._gates[0].shipKeys.includes('k1'), true);
     });
   }
 
@@ -848,9 +1023,10 @@ console.log('\n=== 16. 入场时机：部署期不登记 / 开战显式启动纪
     return blk.includes("e.kind === 'entry_start'") && blk.includes('this.startEntryFx()');
   });
   check('battle3dFx 的 kind 联合类型包含 entry_start', () => /kind:[\s\S]*?'entry_start'/.test(fxSrc));
-  // startBattleAfterDeploy 方法体切片（末端锚点 = 下一个方法前的唯一注释，避开同名早现文本）
+  // startBattleAfterDeploy 方法体切片（末端锚点 = **紧随其后**的 beginEntryPhase 声明，
+  //   不能用更后面的注释 —— 那会把 beginEntryPhase 一起框进来，`__b3dOverlay` 断言会误红）
   const sbad = scene.slice(scene.indexOf('private startBattleAfterDeploy() {'),
-    scene.indexOf('/** [V18-A · B-0] 为所有 AI 阵营生成战前计划'));
+    scene.indexOf('private beginEntryPhase() {'));
   check('startBattleAfterDeploy 推送 entry_start（Enter / 军议按钮 / deployAutoStart 三路共用入口）', () =>
     sbad.includes("pushFx3d({ kind: 'entry_start', color: 0 })"));
   check('无部署暂停分支也推送 entry_start（否则该分支切片永不播放）', () => {
@@ -860,6 +1036,251 @@ console.log('\n=== 16. 入场时机：部署期不登记 / 开战显式启动纪
   });
   check('未用 window.__b3dOverlay 全局取 3D 层启动入场（走 battle3dFx 正式总线）', () =>
     !sbad.includes('__b3dOverlay'));
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 17) ★v2 门几何纯函数（N4 时长 / N5 轴向 / N6 尺寸 / N7 五个面）+ 变异自检
+// ════════════════════════════════════════════════════════════════════════════
+console.log('\n=== 17. v2 门几何纯函数：N4 时长 / N5 轴向 / N6 尺寸 / N7 五个面 ===');
+{
+  // N4：时长 5.0s，且**刻意** > ASSEMBLE_MAX_MS(4s)
+  check('N4：ENTRY_TOTAL_SEC = 5.0（v1 的 2.5 → 5.0，用户要"再延长点"）', () => E.ENTRY_TOTAL_SEC === 5.0);
+  check('N4：ENTRY_TOTAL_SEC > ASSEMBLE_MAX_MS/1000（刻意超 4s ⇒ 必须重置集结计时）', () =>
+    E.ENTRY_TOTAL_SEC > ASSEMBLE_MAX_MS / 1000);
+  check('N4：ENTRY_NEEDS_ASSEMBLE_RESET 为真（守卫"必须重置 _assemblingSince"）', () =>
+    E.ENTRY_NEEDS_ASSEMBLE_RESET === true);
+  check('N4：0 < ENTRY_RESUME_GRACE_SEC < 1（暂停略长于动画，但不明显拖沓）', () =>
+    E.ENTRY_RESUME_GRACE_SEC > 0 && E.ENTRY_RESUME_GRACE_SEC < 1);
+
+  // N5：扫描轴 = 舰队朝向（水平），不再有世界 Y 切片
+  check('N5：ENTRY_GATE_AXIS = heading（v1 的 SLICE_AXIS 仍是世界 y，但 v2 不再消费它）', () =>
+    E.ENTRY_GATE_AXIS === 'heading');
+  {
+    const sLo = 90, sHi = 110, m = 2;
+    check('N5：p=0 ⇒ 推进面在**舰首之外**（sHi + margin = 112）', () => E.entryGateFront(0, sLo, sHi, m) === 112);
+    check('N5：p=1 ⇒ 推进面在**舰尾之外**（sLo − margin = 88）', () => E.entryGateFront(1, sLo, sHi, m) === 88);
+    check('N5：推进面随 p **单调递减**（舰首 → 舰尾）', () => {
+      let prev = Infinity;
+      for (let i = 0; i <= 40; i++) {
+        const f = E.entryGateFront(i / 40, sLo, sHi, m);
+        if (f > prev + 1e-12) return false;
+        prev = f;
+      }
+      return true;
+    });
+    check('N5：p 越界被钳位（p=−3 ⇒ 112；p=9 ⇒ 88）', () =>
+      E.entryGateFront(-3, sLo, sHi, m) === 112 && E.entryGateFront(9, sLo, sHi, m) === 88);
+    const mutRev = loadEntryModule(entrySrc.replace(
+      '  return hi + (lo - hi) * t;',
+      '  return lo + (hi - lo) * t;'));
+    checkThrows('变异R（推进方向反转 ⇒ 舰尾先出）已被"p=0 在舰首之外"断言检出', () => {
+      assert.equal(mutRev.entryGateFront(0, sLo, sHi, m), 112);
+    });
+  }
+
+  // N6：门尺寸 = 投影 max(宽, 高) × PAD
+  {
+    const box = { uLo: -30, uHi: 30, vLo: 95, vHi: 105, sLo: 90, sHi: 110 };
+    check('N6：门边长 = max(宽 60, 高 10) × PAD 1.25 = 75（取**最大值**）', () =>
+      Math.abs(E.entryGateSize(box, E.ENTRY_GATE_PAD) - 75) < 1e-9);
+    const tall = { uLo: 0, uHi: 4, vLo: 0, vHi: 40, sLo: 0, sHi: 1 };
+    check('N6：高 > 宽 时用高（4 vs 40 ⇒ 40）', () => Math.abs(E.entryGateSize(tall, 1) - 40) < 1e-9);
+    check('N6：「再往外扩一点」= 恰好 PAD 倍（PAD=1 ⇒ 60；PAD=1.25 ⇒ 75）', () =>
+      E.entryGateSize(box, 1) === 60 && E.entryGateSize(box, E.ENTRY_GATE_PAD) === 75);
+    check('N6：门截面中心 = 投影包围盒中心', () =>
+      E.entryGateCenterU(box) === 0 && E.entryGateCenterV(box) === 100);
+    check('N6：空包围盒 ⇒ 无效且尺寸 0（不会造出 NaN 门）', () => {
+      const e = E.entryGateEmptyBox();
+      return E.entryGateValid(e) === false && E.entryGateSize(e, 1.25) === 0;
+    });
+    check('N6：累加器把**半长**计入沿朝向跨度（覆盖舰首 ↔ 舰尾）', () => {
+      const b = E.entryGateEmptyBox();
+      E.entryGateAccumulate(b, 100, 0, 100, 5, 2, 1);
+      return b.sLo === 95 && b.sHi === 105 && b.uLo === -2 && b.uHi === 2 && b.vLo === 99 && b.vHi === 101;
+    });
+    const mutMin = loadEntryModule(entrySrc.replace(
+      'return Math.max(w, h) * Math.max(0, pad);',
+      'return Math.min(w, h) * Math.max(0, pad);'));
+    checkThrows('变异O（门尺寸取 min 而非 max）已被"= max×PAD"断言检出', () => {
+      assert.equal(Math.abs(mutMin.entryGateSize(box, 1.25) - 75) < 1e-9, true);
+    });
+    const mutNoPad = loadEntryModule(entrySrc.replace(
+      'return Math.max(w, h) * Math.max(0, pad);',
+      'return Math.max(w, h);'));
+    checkThrows('变异P（不乘 PAD ⇒ 不外扩）已被"恰好 PAD 倍"断言检出', () => {
+      assert.equal(mutNoPad.entryGateSize(box, 1.25) === 75, true);
+    });
+  }
+
+  // N7：纯函数写出的 5 个面必须**真围出长方柱**（门内可见 / 门外被裁）
+  {
+    const g0 = makeFakeGate({ cu: 0, cv: 100, half: 20 });
+    E.entryGateWritePlanes(g0.planes, g0.fwd, g0.right, g0.up, g0.cu, g0.cv, g0.halfSize, 50);
+    check('N7：写 5 个面（1 推进 + 4 侧面）', () => g0.planes.length === 5);
+    check('★N7：门内可见 / **门外的两个横向都**被裁（±u 两侧对称生效）', () =>
+      gateVisible(g0, 60, 100, 0) && !gateVisible(g0, 60, 100, 21) && !gateVisible(g0, 60, 100, -21));
+    check('★N7：**门外的两个竖直方向都**被裁（±v 两侧对称生效）', () =>
+      !gateVisible(g0, 60, 121, 0) && !gateVisible(g0, 60, 79, 0));
+    check('N7：平面数 < 5 时纯函数直接返回（不半写 ⇒ 不会围出畸形门）', () => {
+      const p4 = [0, 1, 2, 3].map(() => {
+        const n = { x: 0, y: 0, z: 0 };
+        n.set = (x, y, z) => { n.x = x; n.y = y; n.z = z; };
+        return { normal: n, constant: 9 };
+      });
+      E.entryGateWritePlanes(p4, g0.fwd, g0.right, g0.up, 0, 100, 20, 50);
+      return p4.every((p) => p.constant === 9);
+    });
+    const mutSide = loadEntryModule(entrySrc.replace(
+      'planes[1].normal.set(-right.x, -right.y, -right.z);',
+      'void 0;'));
+    const g1 = makeFakeGate({ cu: 0, cv: 100, half: 20 });
+    mutSide.entryGateWritePlanes(g1.planes, g1.fwd, g1.right, g1.up, g1.cu, g1.cv, g1.halfSize, 50);
+    checkThrows('★变异Q（左侧面失效）已被"门外 −u 侧被裁"断言检出', () => {
+      assert.equal(!gateVisible(g1, 60, 100, -21), true);
+    });
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 18) ★v2 源码契约（N1 聚焦 / N2 模型 / N3 暂停生命周期 / N7 共享实例 / N8 可见门）
+// ════════════════════════════════════════════════════════════════════════════
+console.log('\n=== 18. v2 源码契约：N1 聚焦 / N2 模型 / N3 暂停 / N7 共享 / N8 可见门 ===');
+{
+  const slice = (src, a, b) => { const i = src.indexOf(a), j = src.indexOf(b); return (i >= 0 && j > i) ? src.slice(i, j) : ''; };
+  const FOCUS_BLK = slice(overlay, 'private focusOnPlayerMainFleetForEntry(): boolean {', 'private computeFleetGateBox(');
+  const BUILDGATE = slice(overlay, 'private buildGateVisual(g: FleetGate): void {', 'private gateWorldCenter(');
+  const SAD = slice(scene, 'private startBattleAfterDeploy() {', 'private beginEntryPhase() {');
+  const BEGIN = slice(scene, 'private beginEntryPhase() {', '/** 把各舰队 `assembling` 计时重置到当前时刻');
+  const END = slice(scene, 'private endEntryPhase() {', 'private resetAssemblingClock()');
+
+  // ── N1：开场镜头对着我方主力舰队 ──
+  check('N1：开战（startEntryFx）即聚焦我方主力舰队（受 ENTRY_AUTO_FOCUS 控制）', () => {
+    const blk = slice(overlay, 'startEntryFx(): void {', 'private focusOnPlayerMainFleetForEntry(): boolean {');
+    return blk.includes('this.focusOnPlayerMainFleetForEntry()') && blk.includes('ENTRY_AUTO_FOCUS');
+  });
+  check('N1：复用**既有 API** focusOnPlayerMainFleet({ dist })（不新写取景算法）', () =>
+    FOCUS_BLK.includes('this.focusOnPlayerMainFleet({ dist'));
+  check('N2：聚焦距离反解自 ENTRY_FOCUS_CAMY_K × initCamY ⇒ 落在 LOD **近景档**（有模型）', () =>
+    FOCUS_BLK.includes('initCamY') && FOCUS_BLK.includes('ENTRY_FOCUS_CAMY_K') && FOCUS_BLK.includes('ENTRY_FOCUS_ELEV'));
+  check('N1：无玩家阵营 / 无舰队 ⇒ 退回"保持当前机位"（不抛错）', () =>
+    FOCUS_BLK.includes('if (!ok) return false') && FOCUS_BLK.includes('if (baseY <= 0) return false'));
+  check('N1：聚焦是**一次性**的（tick 里没有任何每帧聚焦/锁定跟随）', () => {
+    // ⚠ `this.controls.update()` 在建世界时就出现过 ⇒ 不能当锚点（会切出空串）；用 tick 内的唯一行。
+    const tk = slice(overlay, 'private tick() {', 'if (this.scene.fog instanceof THREE.Fog');
+    return tk.length > 0 && !tk.includes('focusOnPlayerMainFleet');
+  });
+
+  // ── N2：要看到模型（不是光点）──
+  check('N2：门尺寸读 `this.unitVis`（**全部存活单位**）⇒ 不受 MESH_ADD_PER_FRAME 分帧建实体的影响',
+    () => slice(overlay, 'private computeFleetGateBox(', 'private ensureFleetGate(').includes('this.unitVis.values()'));
+  check('N2：第二遍对入场中的舰**临时强制建实体**（P1：远景无体可切）', () => {
+    const blk = slice(overlay, '// ── 第二遍：实体池', '// ── 第三遍：实体位置');
+    return blk.includes('this.entryActiveOf(v.key)') && blk.includes('cand.push(v)');
+  });
+  check('N2：入场期强制 grow = 1（抑制"点 + 半切舰"共存）', () =>
+    overlay.includes('v.grow = this.entryActiveOf(v.key) ? 1 : sstep(this.lodLo, this.lodHi, v.fleetPx);'));
+
+  // ── N3：入场期间暂停 / 结束解除 / **绝不卡在暂停** ──
+  check('★N3：startBattleAfterDeploy 里**不再**直接 `isPaused = false`（改为入场阶段结束时解除）', () =>
+    SAD.length > 0 && !SAD.includes('this.store.isPaused = false'));
+  check('★N3：startBattleAfterDeploy 进入入场阶段（this.beginEntryPhase()）', () =>
+    SAD.includes('this.beginEntryPhase()'));
+  check('★N3：入场期间 `entryPhase = true` + `isPaused = true`，且**一定**有 Phaser 定时器解除', () =>
+    BEGIN.includes('this.entryPhase = true;') && BEGIN.includes('this.store.isPaused = true;')
+    && BEGIN.includes('this.time.delayedCall(') && BEGIN.includes('this.endEntryPhase()'));
+  check('★N3：时长真源 = ENTRY_TOTAL_SEC + ENTRY_RESUME_GRACE_SEC（不手抄数字）', () =>
+    BEGIN.includes('ENTRY_TOTAL_SEC + ENTRY_RESUME_GRACE_SEC'));
+  check('★N3：每条"提前返回"路径都**显式解除暂停**（关闭开关 / 无 3D 层）', () => {
+    const hits = BEGIN.match(/this\.store\.isPaused = false;/g) || [];
+    return hits.length >= 2;
+  });
+  check('★N3：endEntryPhase ⇒ `entryPhase = false` + `isPaused = false`', () =>
+    END.includes('this.entryPhase = false;') && END.includes('this.store.isPaused = false;'));
+  check('★N3/N4：endEntryPhase ⇒ **重置集结计时**（5s > ASSEMBLE_MAX_MS ⇒ 否则直接跳 exploring）', () =>
+    END.includes('ENTRY_NEEDS_ASSEMBLE_RESET') && END.includes('this.resetAssemblingClock()'));
+  check('★N3/N4：resetAssemblingClock 只动 `assembling` 舰队、写 `_assemblingSince = this.time.now`', () => {
+    const rc = slice(scene, 'private resetAssemblingClock() {', 'private planAiFactionsForDeploy()');
+    return rc.includes("state === 'assembling'") && rc.includes('_assemblingSince = this.time.now');
+  });
+  check('★N3：entryPhase 拦住**全部 3 处**其它 `isPaused = false` 写入（入场不被抢走暂停所有权）', () => {
+    const hits = scene.match(/if \(!this\.deployPhase && !this\.entryPhase\) this\.store\.isPaused = false;/g) || [];
+    return hits.length === 3;
+  });
+  check('★N3：entryPhase 拦住 openCommandPanel（面板会抢暂停所有权）', () =>
+    scene.includes('if (this.entryPhase) return;'));
+  check('★N3：重进战斗重置 entryPhase + 清定时器（防残留拦截解除）', () =>
+    slice(scene, 'private resetBattleRuntimeState() {', 'this.store = useGameStore();')
+      .includes('this.entryPhase = false;'));
+  check('★N3：endEntryPhase 经 battle3dFx 正式总线通知 3D 收门（不用 window 全局）', () =>
+    END.includes("pushFx3d({ kind: 'entry_end', color: 0 })") && !END.includes('__b3dOverlay'));
+  check('N3：3D 的 handleFx 处理 entry_end（→ finishAllEntryGates）', () => {
+    const blk = slice(overlay, 'private handleFx(e: Fx3dEvent) {', "if (e.kind === 'pointer_chevron'");
+    return blk.includes("e.kind === 'entry_end'") && blk.includes('this.finishAllEntryGates()');
+  });
+  check('N3：battle3dFx 的 kind 联合类型包含 entry_end', () => /kind:[\s\S]*?'entry_end'/.test(fxSrc));
+  check('N3：3D 自己也按进度收门（不依赖 BattleScene 的 entry_end ⇒ 双保险）', () =>
+    slice(overlay, 'private updateEntryFx(): void {', 'for (const [fleet, g] of this.fleetGates)')
+      .includes('this.finishEntryGate(g)'));
+
+  // ── N7：同队共享同一组 5 个 Plane 实例 ──
+  check('★N7：addMesh 把**本队门的同一数组实例**赋给本舰（不 new 新平面）', () => {
+    const blk = slice(overlay, 'private addMesh(v: UnitVis) {', 'private dropMesh(key: string) {');
+    return blk.includes('entryPlanes = gate!.planes;') && !blk.includes('new THREE.Plane(');
+  });
+  check('★N7：attachEntryClippingTo 同样复用门实例（不 new 新平面）', () => {
+    const blk = slice(overlay, 'private attachEntryClippingTo(key: string): void {', 'private registerEntryState(');
+    return blk.includes('entry.entryPlanes = g.planes;') && !blk.includes('new THREE.Plane(');
+  });
+  check('★N7：GLB 原地换装时复用门实例（不重开门、不指向已 dispose 的材质）', () => {
+    const blk = slice(overlay, 'if (entry.pendingModel && entry.pendingModel.geo', 'const g = entry.group;');
+    return blk.includes('this.fleetGates.get(entry.fleet)') && blk.includes('entry.entryPlanes = swapGate.planes;');
+  });
+  check('★N7：一队一门（fleetGates 以 fleet 为键；已存在则复用，不重复建）', () => {
+    const blk = slice(overlay, 'private ensureFleetGate(', 'private attachEntryClippingTo(');
+    return blk.includes('const found = this.fleetGates.get(fleet);') && blk.includes('this.fleetGates.set(fleet, g);');
+  });
+  check('★N7：门恰好 5 个平面（[0,1,2,3,4]）', () =>
+    overlay.includes('[0, 1, 2, 3, 4].map(() => new THREE.Plane('));
+  check('★N7：结束必需卸载全队裁剪（防"舰体被永久切"）', () =>
+    slice(overlay, 'private finishEntryGate(g: FleetGate): void {', 'private finishAllEntryGates(): void {')
+      .includes('entryApplyClipping(entry.sliceMats, null, false);'));
+  check('★N7：destroy() 也收门（防场景销毁后残留裁剪/线框）', () =>
+    slice(overlay, 'destroy() {', 'this.renderer.domElement.removeEventListener')
+      .includes('this.finishAllEntryGates();'));
+
+  // ── N8：必须画出「门」本体（v1 最大缺失）──
+  check('★N8：门本体真的被建（门框 LineSegments + 位面 Mesh + 加法混合 + 入场景）', () =>
+    BUILDGATE.includes('new THREE.LineSegments(') && BUILDGATE.includes('new THREE.Mesh(')
+    && BUILDGATE.includes('AdditiveBlending') && BUILDGATE.includes('this.scene.add(o)'));
+  check('★N8：门框含 4 条"柱棱"⇒ 读作**长方体通道**（用户要的"长方体或者正方体"）', () =>
+    BUILDGATE.includes('const RAIL =') && BUILDGATE.includes('pts.push(x0, y0, 0, x0, y0, -RAIL)'));
+  check('★N8：门框有**粗亮带**（方形环带 Mesh）—— 1px 线宽不可调，只有线用户仍看不出"门"', () =>
+    BUILDGATE.includes('const BAND_W') && BUILDGATE.includes('bandPts.push(') && BUILDGATE.includes('band.renderOrder'));
+  check('★N8：门本体的世界中心与 5 个裁剪面**同源**（fwd·pos + right·cu + up·cv）', () =>
+    slice(overlay, 'private gateWorldCenter(', 'private placeGateVisual(')
+      .includes('g.fwd.x * g.pos + g.right.x * g.cu + g.up.x * g.cv'));
+  check('★N8：门本体**自己不挂 clippingPlanes**（否则会被自己的门切掉）', () =>
+    BUILDGATE.length > 0 && !BUILDGATE.includes('clippingPlanes'));
+  check('★N8：可见门可一键关闭（ENTRY_GATE_VISIBLE 编译期开关）', () =>
+    entrySrc.includes('export const ENTRY_GATE_VISIBLE = true;') && overlay.includes('if (!ENTRY_GATE_VISIBLE) return;'));
+  check('★N8：入场中门随推进面**逐帧移动**（placeGateVisual 每帧调用）', () =>
+    slice(overlay, 'private updateEntryFx(): void {', 'for (const [fleet, g] of this.fleetGates)')
+      .includes('this.placeGateVisual(g)'));
+  check('★N8：入场结束门本体被销毁（几何/材质都 dispose，不留悬空线框）', () => {
+    const blk = slice(overlay, 'private disposeGateVisual(g: FleetGate): void {', 'private collectSliceMats(');
+    return blk.includes('this.scene.remove(o)') && blk.includes('.dispose()');
+  });
+  check('★N8：门姿态用**右手正交基**（right = (−sin, 0, −cos) ⇒ det=+1，门框不镜像）', () =>
+    overlay.includes('new THREE.Vector3(-Math.sin(a), 0, -Math.cos(a))'));
+
+  // ── 安全红线（沿用 v1）──
+  check('渲染器开了**局部**裁剪 localClippingEnabled = true', () =>
+    overlay.includes('this.renderer.localClippingEnabled = true;'));
+  check('**没有**用全局 renderer.clippingPlanes（会切掉星空/地形/后处理）', () =>
+    !/renderer\.clippingPlanes\s*=/.test(overlay) && !overlay.includes('this.renderer.clippingPlanes'));
+  check('ASSEMBLE_MAX_MS 仍未被改动（R8 关键常量）', () => /const ASSEMBLE_MAX_MS = 4000;/.test(scene));
+  check('未新增 teleport 玩法（仅视觉）', () =>
+    !scene.includes('teleport: true') && !overlay.includes('teleport'));
 }
 
 console.log(`\n[entryAnimationSim] passed=${passed} failed=${failed}`);

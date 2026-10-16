@@ -51,11 +51,52 @@ export const ENTRY_GLOW_MAX = 900;
 /** 一键关闭的**编译期**开关（默认 true）。运行时开关见 `window.__entryFxEnabled = false`。 */
 export const SLICE_ENTRY_ENABLED_DEFAULT = true;
 
+// ════════════════════════════════════════════════════════════════════════════
+// ★ v2 参数（一队一门「传送门」，用户 2026-10-16 真机反馈后重做；见文档 §7~§12）
+//   v1 的失败根因：开场远景无模型（裁剪切的是光点）+ 世界 Y 扫描轴 + 无门形体 + 无暂停窗。
+//   v2 八条：N1 聚焦我方主力 / N2 有模型 / N3 入场暂停 / N4 时长 5s /
+//            N5 从舰首沿舰队朝向往舰尾扫 / N6 门尺寸 = 投影 max(宽,高)×PAD /
+//            N7 5 个裁剪面围成无限长方柱 / N8 可见的门框+位面+扫描亮面。
+// ════════════════════════════════════════════════════════════════════════════
+
+/** [v2 · N4] 整队入场总时长（秒）。**刻意 > `ASSEMBLE_MAX_MS`(4s)** ⇒ 入场结束必须重置
+ *  `_assemblingSince`，否则解除暂停瞬间舰队直接跳进 `exploring`（见 `ENTRY_NEEDS_ASSEMBLE_RESET`）。 */
+export const ENTRY_TOTAL_SEC = 5.0;
+/** [v2 · N6] 门外扩系数：门截面尺寸 = 全队投影 `max(宽, 高)` × 本值（用户原话「比最大值再往外扩一点」）。 */
+export const ENTRY_GATE_PAD = 1.25;
+/** [v2] 扫描行程余量下限（世界单位）：保证 `p = 0` 时推进面落在**舰首之外**（全不可见）。 */
+export const ENTRY_GATE_MIN_MARGIN = 2.0;
+/** [v2] 扫描行程余量（= 舰队沿朝向跨度的该比例，与下限取大）。 */
+export const ENTRY_GATE_MARGIN_K = 0.08;
+/** [v2 · N8] 是否绘制**可见的门本体**（门框 + 位面 + 扫描亮面）。关掉只剩裁剪（≈ v1 的"看不出来"）。 */
+export const ENTRY_GATE_VISIBLE = true;
+/** [v2 · N1] 开战自动把镜头聚焦到我方主力舰队。 */
+export const ENTRY_AUTO_FOCUS = true;
+/** [v2 · N3] 入场期间保持游戏暂停。 */
+export const ENTRY_HOLD_PAUSE = true;
+/** [v2 · N1] 聚焦目标相机高度 = `ENTRY_FOCUS_CAMY_K × initCamY`（须 < LOD 近景档进入线 0.75）⇒ 保证有模型。 */
+export const ENTRY_FOCUS_CAMY_K = 0.36;
+/** [v2 · N1] 聚焦俯角（弧度）—— 与 `focusOnFleet` 内部一致，用于反解聚焦距离。 */
+export const ENTRY_FOCUS_ELEV = 0.55;
+/** [v2 · N3] 解除暂停相对 3D 动画的宽限（秒）：3D 在 `entry_start` 之后若干帧才起算，
+ *  暂停必须**略长于**动画 ⇒ 结束时舰体已完整（不会"边跑边被切"）。 */
+export const ENTRY_RESUME_GRACE_SEC = 0.35;
+/** [v2 · N3] 入场时长 > `ASSEMBLE_MAX_MS` ⇒ 入场结束**必须**重置 `_assemblingSince`（红队检查项）。 */
+export const ENTRY_NEEDS_ASSEMBLE_RESET = ENTRY_TOTAL_SEC > 4.0;
+/** [v2 · N5] 扫描轴 = **舰队朝向**（水平），不是世界 Y。 */
+export const ENTRY_GATE_AXIS = 'heading';
+/** [v2 · N5] 推进方向：+1 = 舰首 → 舰尾。 */
+export const ENTRY_GATE_DIR = 1;
+
 export interface EntryCfg {
   dir: number;
   durPerShip: number;
   spread: number;
   totalMax: number;
+  /** [v2] 整队「一门」的扫掠总时长（秒）—— 见 `ENTRY_TOTAL_SEC`。 */
+  total: number;
+  /** [v2] 门外扩系数 —— 见 `ENTRY_GATE_PAD`。 */
+  pad: number;
 }
 
 export const ENTRY_CFG_DEFAULT: EntryCfg = {
@@ -63,6 +104,8 @@ export const ENTRY_CFG_DEFAULT: EntryCfg = {
   durPerShip: SLICE_DUR_PER_SHIP,
   spread: SLICE_SPREAD,
   totalMax: SLICE_TOTAL_MAX,
+  total: ENTRY_TOTAL_SEC,
+  pad: ENTRY_GATE_PAD,
 };
 
 /** 单舰入场状态（3D 侧 `entryStates` 的值）。 */
@@ -205,4 +248,128 @@ export function entryWritePlanes(planes: SlicePlaneLike[] | undefined, front: nu
 /** 平面初始常数：置于舰队包围盒**之外** ⇒ 首帧（未推进前）全舰不可见。 */
 export function entryPlaneInitConstant(dir: number): number {
   return entryPlaneConstant(entryPlaneFront(0, -1e6, 1e6, dir), dir);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// ★ v2 · 「传送门」几何（一队一门，5 个裁剪平面围成无限长方柱）
+//
+// 坐标约定：`fwd / right / up` 为**世界正交基**，`s = p·fwd`（沿朝向）、
+// `u = p·right`（横向）、`v = p·up`（竖直）。门的可见域 = 
+//     { s ≥ gatePos } ∩ { |u − cu| ≤ half } ∩ { |v − cv| ≤ half }
+// 即"从舰首一侧推进的一个**无限长方柱**"：推进面沿 `fwd` 从舰首扫到舰尾，
+// 4 个侧面把方柱的横截面钉死在门框边界上 ⇒ 观感 = 舰队**从这个门里钻出来**。
+//
+// why 5 个面而不是 1 个：v1 只有 1 个无限平面 ⇒ 没有"门"的形体（用户实报"看不出来"）。
+// ⚠ 同队所有舰**共享这 5 个 Plane 实例**（一次 `entryGateWritePlanes` 全队生效）。
+// ════════════════════════════════════════════════════════════════════════════
+
+/** 只读三维向量（`THREE.Vector3` 天然满足）。 */
+export interface Vec3Like { x: number; y: number; z: number; }
+
+/** `THREE.Plane` 的**结构**契约（台架可用普通对象真跑；three 的 Plane 天然满足）。 */
+export interface GatePlaneLike {
+  normal: { set(x: number, y: number, z: number): void };
+  constant: number;
+}
+
+/** 舰队在「垂直于朝向」平面上的投影包围盒 + 沿朝向的行程（全部为**世界坐标**的投影标量）。 */
+export interface EntryGateBox {
+  /** 横向投影范围 `p·right` */
+  uLo: number; uHi: number;
+  /** 竖直投影范围 `p·up` */
+  vLo: number; vHi: number;
+  /** 沿朝向范围 `p·fwd`（已含各舰半长 ⇒ 覆盖舰首/舰尾） */
+  sLo: number; sHi: number;
+}
+
+/** 空包围盒（累加起点）。 */
+export function entryGateEmptyBox(): EntryGateBox {
+  return { uLo: Infinity, uHi: -Infinity, vLo: Infinity, vHi: -Infinity, sLo: Infinity, sHi: -Infinity };
+}
+
+/**
+ * 把一艘舰的**包围盒**累加进门包围盒。
+ * @param box  累加目标（原地修改并返回）
+ * @param s    舰心沿朝向的坐标（`p·fwd`）；舰首 = `s + halfLen`
+ * @param u    舰心横向坐标（`p·right`）
+ * @param v    舰心竖直坐标（`p·up`）
+ * @param halfLen/halfW/halfH 舰体半长 / 半宽 / 半高（**必须给半值**，否则门会少一截）
+ */
+export function entryGateAccumulate(
+  box: EntryGateBox, s: number, u: number, v: number,
+  halfLen: number, halfW: number, halfH: number,
+): EntryGateBox {
+  const hl = Math.max(0, halfLen), hw = Math.max(0, halfW), hh = Math.max(0, halfH);
+  if (s - hl < box.sLo) box.sLo = s - hl;
+  if (s + hl > box.sHi) box.sHi = s + hl;
+  if (u - hw < box.uLo) box.uLo = u - hw;
+  if (u + hw > box.uHi) box.uHi = u + hw;
+  if (v - hh < box.vLo) box.vLo = v - hh;
+  if (v + hh > box.vHi) box.vHi = v + hh;
+  return box;
+}
+
+/** 包围盒是否有效（至少有一艘舰被累加过，且沿朝向跨度非负）。 */
+export function entryGateValid(box: EntryGateBox): boolean {
+  return Number.isFinite(box.sLo) && Number.isFinite(box.sHi)
+    && Number.isFinite(box.uLo) && Number.isFinite(box.vLo)
+    && box.sHi >= box.sLo && box.uHi >= box.uLo && box.vHi >= box.vLo;
+}
+
+/**
+ * [v2 · N6] 门截面**边长**（世界单位）= 全队投影 `max(宽, 高)` × `pad`。
+ * 用户原话「你可以看**模型的投影切面，找个最大值，然后比最大值再往外扩一点**」
+ * —— 取 `max(宽, 高)` 而非分别取宽高 ⇒ 门截面是**正方形**（正方体/长方体）。
+ */
+export function entryGateSize(box: EntryGateBox, pad: number): number {
+  const w = Math.max(0, box.uHi - box.uLo);
+  const h = Math.max(0, box.vHi - box.vLo);
+  return Math.max(w, h) * Math.max(0, pad);
+}
+
+/** 门截面横向中心 = 投影包围盒中心（`p·right`）。 */
+export function entryGateCenterU(box: EntryGateBox): number { return (box.uLo + box.uHi) / 2; }
+/** 门截面竖直中心 = 投影包围盒中心（`p·up`）。 */
+export function entryGateCenterV(box: EntryGateBox): number { return (box.vLo + box.vHi) / 2; }
+
+/** 扫描行程余量：保证 `p = 0` 时推进面在**舰首之外**（全不可见）。 */
+export function entryGateMargin(box: EntryGateBox): number {
+  const span = Math.max(0, box.sHi - box.sLo);
+  return Math.max(ENTRY_GATE_MIN_MARGIN, span * ENTRY_GATE_MARGIN_K);
+}
+
+/**
+ * [v2 · N5] 门推进面的**沿朝向坐标**：`p = 0` ⇒ `sHi + margin`（舰首之外 ⇒ 全隐）；
+ * `p = 1` ⇒ `sLo − margin`（舰尾之外 ⇒ 全显）；随 `p` **单调递减** ⇒ 从舰首扫向舰尾。
+ */
+export function entryGateFront(p: number, sLo: number, sHi: number, margin: number): number {
+  const t = p <= 0 ? 0 : (p >= 1 ? 1 : p);
+  const lo = sLo - margin, hi = sHi + margin;
+  return hi + (lo - hi) * t;
+}
+
+/**
+ * [v2 · N7] 写出门的 **5 个裁剪平面**（法线 + 常数）—— 同队共享同一组实例 ⇒ 一次调用全队生效。
+ * three 语义：`distance(p) = normal·p + constant`，**`distance ≥ 0` 可见**。
+ *   `planes[0]` 推进面：法线 = `fwd`，`constant = −gatePos` ⇒ 可见域 `s ≥ gatePos`
+ *   `planes[1..2]` 左右侧面：法线 = `∓right` ⇒ 可见域 `|u − cu| ≤ half`
+ *   `planes[3..4]` 上下侧面：法线 = `∓up`   ⇒ 可见域 `|v − cv| ≤ half`
+ * ⚠ 逐帧**只改 `constant`/`normal`**（数量恒为 5）⇒ 不触发 program 重编译。
+ */
+export function entryGateWritePlanes(
+  planes: GatePlaneLike[] | undefined,
+  fwd: Vec3Like, right: Vec3Like, up: Vec3Like,
+  cu: number, cv: number, half: number, gatePos: number,
+): void {
+  if (!planes || planes.length < 5) return;
+  planes[0].normal.set(fwd.x, fwd.y, fwd.z);
+  planes[0].constant = -gatePos;
+  planes[1].normal.set(-right.x, -right.y, -right.z);
+  planes[1].constant = cu + half;
+  planes[2].normal.set(right.x, right.y, right.z);
+  planes[2].constant = half - cu;
+  planes[3].normal.set(-up.x, -up.y, -up.z);
+  planes[3].constant = cv + half;
+  planes[4].normal.set(up.x, up.y, up.z);
+  planes[4].constant = half - cv;
 }
