@@ -1325,10 +1325,10 @@ console.log('\n=== 18. v2 源码契约：N1 聚焦 / N2 模型 / N3 暂停 / N7 
   // ── N9：v3/v4 外观常量（**真跑**纯数据层 ⇒ 有牙齿：位面必须够淡、方案齐备）──
   check('★v4：`GATE_STYLE` 缺省为 `D`（传送门能量块；运行时真源 = 设置项 entryFxStyle，本值仅兜底）', () =>
     E.GATE_STYLE === 'D');
-  check('★N9：五套方案 A/B/C/S/D 参数齐备（S = 球体 / D = 传送门能量块）', () => {
+  check('★N9：五套方案 A/B/C/S/D 参数齐备（S = 球体 / D = 传送门连续光带门框）', () => {
     const P = E.GATE_STYLE_PARAMS;
     return !!P && !!P.A && !!P.B && !!P.C && !!P.S && !!P.D && typeof P.A.edge === 'number'
-      && typeof P.D.blockCount === 'number';
+      && typeof P.D.ribbonSamples === 'number';
   });
   check('★N9（不遮挡舰队红线）：三方案**位面不透明度都 ≤ 0.10**（透过门要能看清舰船）', () =>
     ['A', 'B', 'C'].every((k) => E.GATE_STYLE_PARAMS[k].barrierOpacity <= 0.10

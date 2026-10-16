@@ -1,23 +1,32 @@
 /**
- * [传送门·能量块组装/消散入场 · v4 `GATE_STYLE = 'D'` + 开场动画设置项] 离线台架。
+ * [传送门·**连续光带门框**（生长 / 收回）· v5 `GATE_STYLE = 'D'` + 开场动画设置项] 离线台架。
+ *
+ * ── v5 重做背景（用户 2026-10-16 五次反馈，语气强烈）──────────────────────────
+ * 「**这个边框是什么鬼，一根虚线吗！！这个也太丑了**……可以**再长方形的边框上下功夫**，
+ *   比如有**流动的光线**，或者把**边框变成微微的随机曲线，让边框流动起来**，
+ *   都比现在这个**上面一格一格的什么玩意**强……但**边框中间的部分效果还是可以的**」。
+ * ⇒ v4 的"72 个离散能量块"读作**虚线 / 珠子串**（块是"小段"，球体瓦片是"面片"）；方向性错误。
+ * ⇒ v5 门框 = **一条连续的发光带** + **微随机平滑曲线** + **沿周长流动的光**；门内位面**保留**。
  *
  * ── 为什么这样写（沿用本项目 R1 教训）────────────────────────────────────────
  * `block.includes('...')` 式断言**没有牙齿**。本台架因此：
  *   ① **真跑纯逻辑层** —— `require('../frontend/src/game/three/entryDoor.ts')`，
- *      并**变异模块源码**后重跑（改坏常量/分支/算法必须 FAIL ⇒ 证明断言有牙齿）；
+ *      并**变异模块源码**后重跑（改坏常量/算法必须 FAIL ⇒ 证明断言有牙齿）；
  *   ② **真跑 Wiring** —— 把 `Battle3DOverlay.entryFxOn` / `startEntryFx` 的**原文**切出来
  *      （`stripTypeScriptTypes` + `new Function`）真跑，断言 `'off'` 时**不建对象 / 不聚焦**；
  *   ③ 源码契约层（少量，只用于防"整段删除"与"接线丢失"；行为由上面的真跑保证）。
  *
- * ── 被验证的关键命题 ───────────────────────────────────────────────────────
- *   · 门框能量块：数量（60~80）/ 均匀沿框分布 / 全部落在框上（max(|su|,|sv|)=1）/ 确定性
- *   · 三阶段时序：`t=0` 全部在**框外** → `t=组装末` 全部**精确就位**（u=su,v=sv,不透明）
- *     → `t=消散末` 全部**飞散到框外**且透明
- *   · 门"开启"：`doorApertureK` 0 → 1（组装前 60%）
- *   · 总时长：门 / 球 / `ENTRY_TOTAL_SEC` **三者同为 6.5**（用户"速度可以慢一点"）
+ * ── 被验证的关键命题（v5）───────────────────────────────────────────────────
+ *   · 门框 = **连续光带**：采样 ≥ 100 点；相邻点**间距有上界且均匀**（不是"一格一格"）；
+ *     UV / 索引**闭合连通**（一条带，不是一堆点）；带宽 ∈ [1%,2%] 门尺寸
+ *   · **曲线平滑**：轮廓**圆角**（法线沿周长夹角有上界 ⇒ 不是折角）；噪声函数**Lipschitz + 二阶差分**有上界
+ *     （改白噪声 ⇒ 必红 ⇒ 证明"不是锯齿"）；噪声幅度 ∈ [1.5%,3%] 半尺寸（**不是 0，也不是大扭曲**）
+ *   · **确定性**：同 seed 两次采样逐位一致；噪声对 `t` **严格周期**（闭合无缝）
+ *   · 组装 = 沿周长**生长**（growth 单调不减、中期在半程 ⇒ 不是"一步到位"）；
+ *     消散 = 沿周长**反向收回**（growth 单调不增、消散末 0）；流动 offset **单调增**（亮波只朝一个方向流）
+ *   · 三阶段时序 2.6 / 1.6 / 2.0 / 0.3 = **6.5** = `ENTRY_TOTAL_SEC` = 球（三者同源）
  *   · 设置项 `entryFxStyle`：`'door'→'D'` / `'sphere'→'S'` / `'off'→null`；未设置 ⇒ 回退 `GATE_STYLE`
- *   · ★`'off'`：`entryFxOn()` 返回 false（不建任何特效对象）；`startEntryFx` **不聚焦**
- *   · ★`'off'` 不暂停：`BattleScene.beginEntryPhase` 有 `'off'` 提前返回且**显式 `isPaused=false`**
+ *   · ★`'off'`：`entryFxOn()` 返回 false（不建任何特效对象）；`startEntryFx` **不聚焦**；**不暂停**
  */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -95,82 +104,282 @@ function compile(wrappedJs, mutate) {
   return new Function(`return ${stripTypeScriptTypes(js)};`)();
 }
 
-/** 真跑一次门块布局；`mutate` 非空时先把源码改坏（用于反例自检）。 */
-function build(mutate, opts = {}) {
-  const M = mutate ? loadDoorModule(mutate(doorSrcLF)) : D;
-  return {
-    M,
-    set: M.buildDoorBlocks({
-      ...(opts.count !== undefined ? { count: opts.count } : {}),
-    }),
-  };
-}
-/** 逐位指纹（槽位 + 全部动画随机量）—— 用于"确定性"断言。 */
-function fingerprint(set) {
-  return set.blocks.map((b) => [
-    b.index, b.su, b.sv, b.edge, b.dv, b.du, b.sz, b.delay, b.ddu, b.ddv, b.ddz, b.dispDelay,
-    b.spinA, b.spinB, Array.from(b.axis).join('/'),
-  ].join(',')).join('|');
+// ════════════════════════════════════════════════════════════════════════════
+// 通用：光带几何统计 / 命题（**section 1/2 与 section 7 变异自检共用同一份谓词**）
+// ════════════════════════════════════════════════════════════════════════════
+const PROBE_TIMES = [0, 1.3, 2.9, 4.7, 6.1];
+
+/** 对 `time` 求中心线采样统计：最大/最小步长、法线夹角上界、二阶差分上界。 */
+function ribbonStats(M, time) {
+  const N = Math.floor(M.DOOR_RIBBON_SAMPLES);
+  const s = M.doorRibbonSamples(time, N);
+  const pts = [], nrm = [];
+  for (let i = 0; i < N; i++) { pts.push([s[i * 4], s[i * 4 + 1]]); nrm.push([s[i * 4 + 2], s[i * 4 + 3]]); }
+  let maxStep = 0, minStep = Infinity, maxAng = 0, maxSecond = 0;
+  for (let i = 0; i < N; i++) {
+    const j = (i + 1) % N;
+    const step = Math.hypot(pts[j][0] - pts[i][0], pts[j][1] - pts[i][1]);
+    maxStep = Math.max(maxStep, step); minStep = Math.min(minStep, step);
+    const a0 = Math.atan2(nrm[i][1], nrm[i][0]);
+    const a1 = Math.atan2(nrm[j][1], nrm[j][0]);
+    let da = Math.abs(a1 - a0); if (da > Math.PI) da = 2 * Math.PI - da;
+    maxAng = Math.max(maxAng, da);
+  }
+  for (let i = 0; i < N; i++) {
+    const a = pts[(i - 1 + N) % N], b = pts[i], c = pts[(i + 1) % N];
+    maxSecond = Math.max(maxSecond, Math.hypot(a[0] - 2 * b[0] + c[0], a[1] - 2 * b[1] + c[1]));
+  }
+  return { N, pts, nrm, maxStep, minStep, maxAng, maxSecond, ratio: maxStep / Math.max(1e-12, minStep) };
 }
 
+/** 噪声函数在 `t` 上的 Lipschitz / 二阶差分上界（密集网格；**直接测噪声本身** ⇒ 与幅度解耦，有牙齿）。 */
+function noiseStats(M, time = 0.7, N = 1024) {
+  const h = 1 / N;
+  let maxD = 0, maxDD = 0, maxAbs = 0;
+  for (let i = 0; i < N; i++) {
+    const t = i * h;
+    const a = M.doorRibbonNoise(t - h, time);
+    const b = M.doorRibbonNoise(t, time);
+    const c = M.doorRibbonNoise(t + h, time);
+    maxD = Math.max(maxD, Math.abs(b - a));
+    maxDD = Math.max(maxDD, Math.abs(a - 2 * b + c));
+    maxAbs = Math.max(maxAbs, Math.abs(b));
+  }
+  return { maxD, maxDD, maxAbs };
+}
+
+/** 全部"必须成立"的几何 / 运动学命题（**section 1/2 正向断言 + section 7 变异反例共用**）。 */
+const Pred = {
+  // ── 连续（不是"一格一格"）──
+  samplesEnough: (M) => M.DOOR_RIBBON_SAMPLES >= 100,
+  continuous: (M) => PROBE_TIMES.every((t) => ribbonStats(M, t).maxStep <= 0.09),
+  uniform: (M) => PROBE_TIMES.every((t) => ribbonStats(M, t).ratio <= 1.8),
+  // ── 平滑（不是折角 / 不是锯齿）──
+  smoothNormal: (M) => PROBE_TIMES.every((t) => ribbonStats(M, t).maxAng <= 0.6),
+  smoothCurve: (M) => PROBE_TIMES.every((t) => ribbonStats(M, t).maxSecond <= 0.05),
+  noiseSmooth: (M) => { const s = noiseStats(M); return s.maxD <= 0.06 && s.maxDD <= 0.01; },
+  noiseBounded: (M) => noiseStats(M).maxAbs <= 1 + 1e-9,
+  noisePeriodic: (M) => [0, 0.9, 2.3].every((tm) =>
+    Math.abs(M.doorRibbonNoise(1, tm) - M.doorRibbonNoise(0, tm)) < 1e-9),
+  outlineClosed: (M) => Math.hypot(
+    M.doorRibbonOutline(1 - 1e-9).x - M.doorRibbonOutline(0).x,
+    M.doorRibbonOutline(1 - 1e-9).y - M.doorRibbonOutline(0).y) < 1e-6,
+  cornerSmooth: (M) => M.DOOR_CORNER_R > 0.02,
+  // ── 微随机曲线：幅度在 [1.5%, 3%] 半尺寸（不是 0，也不是大扭曲）──
+  noiseAmpOk: (M) => M.DOOR_NOISE_AMP >= 0.015 && M.DOOR_NOISE_AMP <= 0.03,
+  curveDeviationBounded: (M) => {
+    let maxDev = 0;
+    for (let i = 0; i <= 1000; i++) {
+      const t = i / 1000;
+      const o = M.doorRibbonOutline(t);
+      const p = M.doorRibbonPoint(t, 1.234);
+      maxDev = Math.max(maxDev, Math.hypot(p.x - o.x, p.y - o.y));
+    }
+    return maxDev <= M.DOOR_NOISE_AMP + 1e-6 && maxDev > M.DOOR_NOISE_AMP * 0.1;
+  },
+  curveTimeVarying: (M) => {
+    // 随时间**缓慢**演变：同一点两时刻有差异，但差异 ≤ 2×幅度（不是"抖动"）
+    let changed = 0;
+    for (let i = 0; i < 200; i++) {
+      const t = i / 200;
+      const a = M.doorRibbonPoint(t, 0), b = M.doorRibbonPoint(t, 1.7);
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      if (d > 1e-4) changed += 1;
+      if (d > 2 * M.DOOR_NOISE_AMP + 1e-9) return false;
+    }
+    return changed > 100;
+  },
+  // ── 一个**连通**的带（UV / 索引完备；不是一堆离散点）──
+  bandConnected: (M) => {
+    const N = Math.floor(M.DOOR_RIBBON_SAMPLES);
+    const idx = M.doorRibbonBandIndices(N);
+    if (idx.length !== N * 6) return false;
+    const seen = new Set();
+    for (const v of idx) seen.add(v);
+    if (seen.size !== N * 2) return false;                       // 每个顶点都被用到
+    for (let i = 0; i < N; i++) {                                 // 段段相接（含首尾回环）
+      const j = (i + 1) % N;
+      if (idx[i * 6] !== i * 2 || idx[i * 6 + 3] !== i * 2) return false;
+      if (idx[i * 6 + 2] !== j * 2 + 1) return false;
+    }
+    return true;
+  },
+  bandWidthUniform: (M) => {
+    const N = Math.floor(M.DOOR_RIBBON_SAMPLES);
+    const bv = M.doorRibbonBandVertices(0.5, N);
+    const expect = 2 * M.DOOR_RIBBON_HALF_W;
+    for (let i = 0; i < N; i++) {
+      const w = Math.hypot(bv[i * 6 + 3] - bv[i * 6], bv[i * 6 + 4] - bv[i * 6 + 1]);
+      if (Math.abs(w - expect) > 1e-5) return false;
+    }
+    return true;
+  },
+  bandWidthInRange: (M) => {
+    const w = 2 * M.DOOR_RIBBON_HALF_W;       // 局部：门尺寸 = 2
+    const frac = w / 2;
+    return frac >= 0.01 && frac <= 0.02;
+  },
+  /** 带宽在**世界空间处处相等**（矩形门用轴向补偿 `kx/ky` ⇒ 左右两条不会比上下两条粗）。 */
+  bandWidthWorldUniform: (M) => {
+    const N = Math.floor(M.DOOR_RIBBON_SAMPLES);
+    const hU = 3, hV = 1.5;
+    const [kx, ky] = M.doorRibbonAspectK(hU, hV);
+    const bv = M.doorRibbonBandVertices(0.5, N, M.DOOR_RIBBON_HALF_W, undefined, kx, ky);
+    const expect = 2 * M.DOOR_RIBBON_HALF_W * 0.5 * (hU + hV);
+    for (let i = 0; i < N; i++) {
+      const dx = (bv[i * 6 + 3] - bv[i * 6]) * hU;
+      const dy = (bv[i * 6 + 4] - bv[i * 6 + 1]) * hV;
+      if (Math.abs(Math.hypot(dx, dy) - expect) > 1e-4) return false;
+    }
+    return true;
+  },
+  /** 方形门（halfU = halfV）⇒ 补偿系数恒为 1（不引入无谓的各向异性）。 */
+  aspectKIdentity: (M) => {
+    const [a, b] = M.doorRibbonAspectK(2, 2);
+    return Math.abs(a - 1) < 1e-12 && Math.abs(b - 1) < 1e-12;
+  },
+  /** ★补偿确实**必要**（不补偿时横竖世界宽度差 > 1.4×）⇒ 证明上一条断言不是"恒真"。 */
+  bandWidthNeedsAspectK: (M) => {
+    const N = Math.floor(M.DOOR_RIBBON_SAMPLES);
+    const hU = 3, hV = 1.5;
+    const bv = M.doorRibbonBandVertices(0.5, N);   // kx = ky = 1（不补偿）
+    let minW = 1e9, maxW = -1e9;
+    for (let i = 0; i < N; i++) {
+      const w = Math.hypot((bv[i * 6 + 3] - bv[i * 6]) * hU, (bv[i * 6 + 4] - bv[i * 6 + 1]) * hV);
+      minW = Math.min(minW, w); maxW = Math.max(maxW, w);
+    }
+    return maxW / minW > 1.4;
+  },
+  uvMonotone: (M) => {
+    const N = Math.floor(M.DOOR_RIBBON_SAMPLES);
+    const uv = M.doorRibbonBandUvs(N);
+    if (uv.length !== N * 4) return false;
+    for (let i = 0; i < N; i++) {
+      if (Math.abs(uv[i * 4] - i / N) > 1e-6) return false;
+      if (uv[i * 4 + 1] !== 0 || uv[i * 4 + 3] !== 1) return false;
+    }
+    return true;
+  },
+  // ── 确定性 ──
+  deterministic: (M) => {
+    const fp = (x) => Array.from(x).join(',');
+    return PROBE_TIMES.every((t) => fp(M.doorRibbonSamples(t, M.DOOR_RIBBON_SAMPLES))
+      === fp(M.doorRibbonSamples(t, M.DOOR_RIBBON_SAMPLES)));
+  },
+  // ── 生长 / 收回 / 流动 ──
+  growthStartsZero: (M) => M.doorRibbonGrowthK(0, M.DOOR_MOTION_DEFAULT) === 0,
+  growthMid: (M) => {
+    const cfg = M.DOOR_MOTION_DEFAULT;
+    const g = M.doorRibbonGrowthK(cfg.assembleSec * 0.5, cfg);
+    return g > 0.05 && g < 0.95;
+  },
+  growthMonotoneUp: (M) => {
+    const cfg = M.DOOR_MOTION_DEFAULT;
+    let prev = -1;
+    for (let i = 0; i <= 200; i++) {
+      const g = M.doorRibbonGrowthK((cfg.assembleSec * i) / 200, cfg);
+      if (g < prev - 1e-12) return false;
+      prev = g;
+    }
+    return true;
+  },
+  growthFullOnHold: (M) => {
+    const cfg = M.DOOR_MOTION_DEFAULT;
+    return M.doorRibbonGrowthK(cfg.assembleSec, cfg) === 1
+      && M.doorRibbonGrowthK(M.doorDisperseStart(cfg), cfg) === 1;
+  },
+  growthMonotoneDown: (M) => {
+    const cfg = M.DOOR_MOTION_DEFAULT;
+    const a = M.doorDisperseStart(cfg), b = M.doorDisperseEnd(cfg);
+    let prev = Infinity;
+    for (let i = 0; i <= 200; i++) {
+      const g = M.doorRibbonGrowthK(a + ((b - a) * i) / 200, cfg);
+      if (g > prev + 1e-12) return false;
+      prev = g;
+    }
+    return true;
+  },
+  growthRetractMid: (M) => {
+    const cfg = M.DOOR_MOTION_DEFAULT;
+    const g = M.doorRibbonGrowthK(M.doorDisperseStart(cfg) + cfg.disperseSec * 0.5, cfg);
+    return g > 0.05 && g < 0.95;
+  },
+  growthEndsZero: (M) => {
+    const cfg = M.DOOR_MOTION_DEFAULT;
+    return M.doorRibbonGrowthK(M.doorDisperseEnd(cfg), cfg) === 0
+      && M.doorRibbonGrowthK(M.doorTotalSec(cfg), cfg) === 0
+      && M.doorRibbonGrowthK(99, cfg) === 0;
+  },
+  // ── 「生长优先」：陪衬元素（rim / 位面 / 外辉光 / 轮廓线）必须**等光带长过半**才跟上 ──
+  lateFollowGated: (M) => M.doorLateFollowK(0) === 0 && M.doorLateFollowK(0.25) === 0
+    && M.doorLateFollowK(0.5) === 0 && M.doorLateFollowK(0.6) < 0.25
+    && M.doorLateFollowK(0.85) > 0.5 && M.doorLateFollowK(1) === 1,
+  lateFollowMonotone: (M) => {
+    let prev = -1;
+    for (let i = 0; i <= 100; i++) {
+      const v = M.doorLateFollowK(i / 100);
+      if (v < prev - 1e-12 || v < 0 || v > 1) return false;
+      prev = v;
+    }
+    return true;
+  },
+  flowIncreases: (M) => (M.doorRibbonFlowOffset(3) - M.doorRibbonFlowOffset(1)) > 0.05,
+  flowMonotone: (M) => {
+    let prev = -1;
+    for (let i = 0; i <= 200; i++) {
+      const f = M.doorRibbonFlowOffset((6.5 * i) / 200);
+      if (f < prev - 1e-12) return false;
+      prev = f;
+    }
+    return true;
+  },
+};
+
 // ════════════════════════════════════════════════════════════════════════════
-// 1) 门框块布局（真跑）：数量 / 沿框分布 / 在框上 / 确定性
+// 1) 门框光带几何（真跑）：连续 / 均匀 / 平滑 / 微随机 / 带宽 / 闭合 / 确定性
 // ════════════════════════════════════════════════════════════════════════════
-console.log('\n=== 1. 门框能量块：数量 / 沿框均匀分布 / 全在框上 / 确定性 ===');
+console.log('\n=== 1. 门框**连续光带**几何：连续 · 平滑 · 微随机 · 带宽 · 确定性 ===');
 {
-  const { set } = build();
-  const onFrame = set.blocks.every((b) => Math.abs(Math.max(Math.abs(b.su), Math.abs(b.sv)) - 1) < 1e-9);
-  const hist = set.edgeHist;
-  const minEdge = Math.min(...hist);
-
-  check('块数 = DOOR_BLOCK_COUNT，且在用户给的 60~80 区间内', () =>
-    set.blocks.length === D.DOOR_BLOCK_COUNT && D.DOOR_BLOCK_COUNT >= 60 && D.DOOR_BLOCK_COUNT <= 80);
-  check('★每块都落在**矩形门框**上（max(|su|,|sv|) = 1）', () => onFrame === true);
-  check('★四条边都有块（沿框均匀分布，任一边 ≥ 10 块）', () => minEdge >= 10);
-  check('四边块数接近均匀（最大/最小 < 1.5 ⇒ 弧长均匀）', () =>
-    Math.max(...hist) / minEdge < 1.5);
-  check('槽位坐标在 [-1,1] 内（不会溢出到门框外）', () =>
-    set.blocks.every((b) => Math.abs(b.su) <= 1 + 1e-9 && Math.abs(b.sv) <= 1 + 1e-9));
-  check('块序号连续 0..count-1（无跳号）', () =>
-    set.blocks.every((b, i) => b.index === i));
-  check('★同 seed 两次生成：槽位 + 全部动画随机量**逐位一致**', () =>
-    fingerprint(build().set) === fingerprint(build().set));
-  check('不同 seed ⇒ 布局不同（证明 seed 真的参与生成）', () => {
-    const a = build().set;
-    const b = D.buildDoorBlocks({ count: D.DOOR_BLOCK_COUNT, seed: 0x1234 });
-    return fingerprint(a) !== fingerprint(b);
+  const st = ribbonStats(D, 2.9);
+  check('★采样点 ≥ 100（连续采样；不是"一格一格"的离散块）', () => Pred.samplesEnough(D));
+  check('★光带**连续**：相邻采样点间距有上界（无跳变）', () => Pred.continuous(D));
+  check('★光带**均匀**：最大/最小间距 < 1.8（无"忽密忽疏"）', () => Pred.uniform(D));
+  check('★曲线**平滑**（法线夹角）：相邻法线夹角 ≤ 0.6 rad（圆角 ⇒ 无折角）', () => Pred.smoothNormal(D));
+  check('★曲线**平滑**（位置二阶差分）：≤ 0.05（证明不是锯齿）', () => Pred.smoothCurve(D));
+  check('★四角做**圆角过渡**（DOOR_CORNER_R > 2%）⇒ 法线处处连续', () => Pred.cornerSmooth(D));
+  check('★噪声函数**平滑**（Lipschitz ≤ 0.06 且二阶差分 ≤ 0.01 ⇒ 不是白噪声/锯齿）', () => Pred.noiseSmooth(D));
+  check('噪声**有界** |noise| ≤ 1', () => Pred.noiseBounded(D));
+  check('★噪声对 t **严格周期**（闭合无接缝：noise(1)=noise(0)）', () => Pred.noisePeriodic(D));
+  check('轮廓**闭合**（outline(1) = outline(0)）', () => Pred.outlineClosed(D));
+  check('★噪声幅度在 **[1.5%, 3%]** 门半尺寸区间（不是 0，也不是大扭曲）', () => Pred.noiseAmpOk(D));
+  check('曲线位移**有界**（≤ 噪声幅度，且确实非零 ⇒ 真的"微微"弯了）', () => Pred.curveDeviationBounded(D));
+  check('曲线**随时间缓慢演变**（不是静止，也不是抖动）', () => Pred.curveTimeVarying(D));
+  check('★光带是**一条连通带**：索引闭合连通（每个顶点被用到、段段相接）', () => Pred.bandConnected(D));
+  check('★带宽**恒定**（每采样点 = 2×halfW ⇒ 不出现"粗细不均"）', () => Pred.bandWidthUniform(D));
+  check('★带宽 ∈ **[1%, 2%]** 门尺寸（细带，不是粗棒）', () => Pred.bandWidthInRange(D));
+  check('★带宽在**世界空间处处相等**（矩形门轴向补偿 ⇒ 左右两条不比上下两条粗）', () =>
+    Pred.bandWidthWorldUniform(D) && Pred.aspectKIdentity(D));
+  check('★该补偿确实**必要**（不补偿时横竖世界宽度差 > 1.4× ⇒ 断言非"恒真"）', () =>
+    Pred.bandWidthNeedsAspectK(D));
+  check('UV：u 沿周长为 i/N，v = 0/1（供沿 u 滚动 ⇒ 流动光）', () => Pred.uvMonotone(D));
+  check('★同 seed 两次采样**逐位一致**（确定性）', () => Pred.deterministic(D));
+  check('★确定性**跨模块加载**也成立（相位由 seed 导出 ⇒ 两次加载逐位一致）', () => {
+    const fp = (src) => Array.from(loadDoorModule(src).doorRibbonSamples(0.7, 32)).join(',');
+    return fp(doorSrcLF) === fp(doorSrcLF);
   });
-  check('count = 80 也成立（区间上限）', () => {
-    const big = D.buildDoorBlocks({ count: 80 });
-    return big.blocks.length === 80
-      && big.blocks.every((b) => Math.abs(Math.max(Math.abs(b.su), Math.abs(b.sv)) - 1) < 1e-9);
-  });
-  check('组装起点径向偏移 = START_DRIFT_MIN..MAX（向外 ⇒ 供"t=0 在框外"）', () =>
-    set.blocks.every((b) => {
-      const m = Math.hypot(b.du, b.dv);
-      return m >= D.DOOR_START_DRIFT_MIN - 1e-9 && m <= D.DOOR_START_DRIFT_MAX + 1e-9;
-    }));
-  check('消散终点径向偏移 = DISP_DRIFT_MIN..MAX（向外 ⇒ 供"消散末在框外"）', () =>
-    set.blocks.every((b) => {
-      const m = Math.hypot(b.ddu, b.ddv);
-      return m >= D.DOOR_DISP_DRIFT_MIN - 1e-9 && m <= D.DOOR_DISP_DRIFT_MAX + 1e-9;
-    }));
-  check('★逐块**随机延迟不同**（不是齐刷刷一起到位；> 80% 唯一）', () =>
-    new Set(set.blocks.map((b) => b.delay.toFixed(6))).size > set.blocks.length * 0.8);
-  check('逐块翻滚角不全相同（有"各自旋转对齐"的观感）', () =>
-    new Set(set.blocks.map((b) => b.spinA.toFixed(6))).size > set.blocks.length * 0.8);
-  process.stdout.write(`  [info] 四边块数 [下,右,上,左] = ${JSON.stringify(hist)} / count=${set.blocks.length}\n`);
+  check('不同 time ⇒ 曲线不同（证明噪声真的随时间演进）', () =>
+    Array.from(D.doorRibbonSamples(0, 64)).join(',') !== Array.from(D.doorRibbonSamples(1.7, 64)).join(','));
+  process.stdout.write(`  [info] N=${st.N} 步长∈[${st.minStep.toFixed(4)},${st.maxStep.toFixed(4)}] `
+    + `法线夹角上界=${st.maxAng.toFixed(4)} 二阶差分上界=${st.maxSecond.toFixed(4)} `
+    + `噪声Amp=${D.DOOR_NOISE_AMP} 半宽=${D.DOOR_RIBBON_HALF_W}\n`);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// 2) 三阶段时序（真跑纯函数）：t=0 框外 / 组装末就位 / 消散末飞散
+// 2) 组装 = 生长 / 消散 = 反向收回 / 流动（真跑纯函数）
 // ════════════════════════════════════════════════════════════════════════════
-console.log('\n=== 2. 组装 / 完整 / 消散三阶段时序（真跑） ===');
+console.log('\n=== 2. 组装（生长）/ 完整 / 消散（反向收回）+ 流动（真跑） ===');
 {
-  const { set } = build();
   const cfg = D.DOOR_MOTION_DEFAULT;
-  const motionsAt = (t) => set.blocks.map((x) => D.doorBlockMotion(x, t, cfg));
-  const outside = (m) => Math.abs(m.u) > 1 + 1e-9 || Math.abs(m.v) > 1 + 1e-9;
   const holdStart = D.doorHoldStart(cfg);
   const dispStart = D.doorDisperseStart(cfg);
   const dispEnd = D.doorDisperseEnd(cfg);
@@ -179,75 +388,33 @@ console.log('\n=== 2. 组装 / 完整 / 消散三阶段时序（真跑） ===');
     Math.abs(holdStart - 2.6) < 1e-9 && Math.abs(dispStart - 4.2) < 1e-9
     && Math.abs(dispEnd - 6.2) < 1e-9 && Math.abs(D.doorTotalSec(cfg) - 6.5) < 1e-9);
 
-  const m0 = motionsAt(0);
-  check('★t=0 ⇒ 全部块在**门框之外**（|u|>1 或 |v|>1）—— 复刻"从框外飞入"', () =>
-    m0.every((m) => outside(m)));
-  check('t=0 ⇒ 全部块**透明**（从零开始拼）', () => m0.every((m) => m.opacity === 0));
-  check('t=0 ⇒ 阶段码 = 1（组装中）', () => m0.every((m) => m.phase === 1));
-  check('t=0 ⇒ 全部在门前方（z > 0 ⇒ 从舰首侧飞入）', () => m0.every((m) => m.z > 0));
+  check('★t=0 ⇒ 生长系数 0（光带从"一点"开始，不是一上来就完整框）', () => Pred.growthStartsZero(D));
+  check('★组装期生长**单调不减**（沿周长一点点画出来）', () => Pred.growthMonotoneUp(D));
+  check('★组装中期（50%）生长系数在半程（0.05~0.95 ⇒ 真的在"生长"，不是"一步到位"）', () => Pred.growthMid(D));
+  check('★完整期生长系数恒 1（完整门框）', () => Pred.growthFullOnHold(D));
+  check('★消散期生长系数**单调不增**（沿周长反向收回）', () => Pred.growthMonotoneDown(D));
+  check('★消散中期（50%）生长系数在半程（真的在"收回"，不是恒亮/一步消失）', () => Pred.growthRetractMid(D));
+  check('★消散末 / 余晖末 / 超时 ⇒ 生长系数恒 0（收回干净，不"复活"）', () => Pred.growthEndsZero(D));
+  check('★**生长优先**：光带长过半之前，陪衬（rim/位面/外辉光/轮廓线）**完全不可见**',
+    () => Pred.lateFollowGated(D) && Pred.lateFollowMonotone(D));
+  check('★流动 offset **单调不减**（亮波只朝一个方向流，不回摆）', () => Pred.flowMonotone(D));
+  check('★流动 offset **确实在流动**（1s → 3s 增量 > 0.05）', () => Pred.flowIncreases(D));
+  check('流动速度为正且"慢"（0 < DOOR_FLOW_SPEED ≤ 1 ⇒ 缓慢流动）', () =>
+    D.DOOR_FLOW_SPEED > 0 && D.DOOR_FLOW_SPEED <= 1);
+  check('移动亮点数 ≥ 1（能量脉冲沿门框跑）', () => D.DOOR_PULSE_COUNT >= 1);
 
-  const m1 = motionsAt(holdStart);
-  check('★t=组装末(2.6) ⇒ 全部**精确就位**（u=su / v=sv / z=0）', () =>
-    m1.every((m, i) => Math.abs(m.u - set.blocks[i].su) < 1e-9
-      && Math.abs(m.v - set.blocks[i].sv) < 1e-9 && Math.abs(m.z) < 1e-9));
-  check('t=组装末 ⇒ 全部不透明（拼合成完整门框）', () => m1.every((m) => m.opacity === 1));
-  check('t=组装末 ⇒ 阶段码 = 2（完整）', () => m1.every((m) => m.phase === 2));
-  check('组装过程**到槽位距离单调内收**（不"飞出去又回来"）', () =>
-    set.blocks.every((b) => {
-      let prev = Infinity;
-      for (let i = 0; i <= 40; i++) {
-        const m = D.doorBlockMotion(b, (holdStart * i) / 40, cfg);
-        const d = Math.hypot(m.u - b.su, m.v - b.sv);
-        if (d > prev + 1e-12) return false;
-        prev = d;
-      }
-      return true;
-    }));
-  check('组装过程**透明度单调不减**（0 → 1，不闪）', () =>
-    set.blocks.every((b) => {
-      let prev = -1;
-      for (let i = 0; i <= 40; i++) {
-        const o = D.doorBlockMotion(b, (holdStart * i) / 40, cfg).opacity;
-        if (o < prev - 1e-12) return false;
-        prev = o;
-      }
-      return true;
-    }));
-
-  const mHold = motionsAt(dispStart - 1e-6);
-  check('完整期(2.6~4.2) ⇒ 全部就位且不透明（门框"完整态"）', () =>
-    mHold.every((m) => m.opacity === 1 && m.phase === 2));
-  check('完整期 ⇒ 全部朝向已归位（spin = 0 ⇒ 不再翻滚）', () => mHold.every((m) => m.spin === 0));
-
-  const m3 = motionsAt(dispEnd);
-  check('★t=消散末(6.2) ⇒ 全部**飞散到框外**（|u|>1 或 |v|>1）', () =>
-    m3.every((m) => outside(m)));
-  check('t=消散末 ⇒ 全部透明（块全部收掉）', () => m3.every((m) => m.opacity === 0));
-  check('t=消散末 ⇒ 全部在翻滚（spin ≠ 0）', () => m3.every((m) => m.spin !== 0));
-  const m5 = motionsAt(D.doorTotalSec(cfg));
-  check('t=6.5（余晖末）⇒ 仍全部飞散且透明（不"复活"）', () =>
-    m5.every((m) => m.phase === 4 && m.opacity === 0));
-  const m99 = motionsAt(99);
-  check('t 远超总时长 ⇒ 状态与 6.5 相同（不会"复活"）', () =>
-    m99.every((m, i) => m.phase === m5[i].phase && m.opacity === m5[i].opacity && m.u === m5[i].u));
-  check('消散过程**透明度单调不增**（1 → 0）', () =>
-    set.blocks.every((b) => {
-      let prev = Infinity;
-      for (let i = 0; i <= 40; i++) {
-        const o = D.doorBlockMotion(b, dispStart + ((dispEnd - dispStart) * i) / 40, cfg).opacity;
-        if (o > prev + 1e-12) return false;
-        prev = o;
-      }
-      return true;
-    }));
-  check('延迟上界受阶段时长约束（stagger < 组装时长 ⇒ 全部能在组装末前就位）', () =>
-    D.DOOR_BLOCK_STAGGER < D.DOOR_ASSEMBLE_SEC && D.DOOR_DISP_STAGGER < D.DOOR_DISPERSE_SEC);
+  // 生长系数是"收回"而不是"凭空消失"：消散中每一时刻的已画出比例 = 组装中某时刻的比例
+  check('★消散期是**反向收回**：给定比例 r，组装到达 r 的时刻与消散回到 r 的时刻都唯一且有限', () => {
+    const findUp = (r) => { for (let i = 0; i <= 400; i++) { if (D.doorRibbonGrowthK((holdStart * i) / 400, cfg) >= r) return true; } return false; };
+    const findDown = (r) => { for (let i = 0; i <= 400; i++) { const t = dispStart + ((dispEnd - dispStart) * i) / 400; if (D.doorRibbonGrowthK(t, cfg) <= r) return true; } return false; };
+    return [0.25, 0.5, 0.75].every((r) => findUp(r) && findDown(r));
+  });
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// 3) 门的"开启"动作 + 位面/飞散/扫描包络
+// 3) 门的"开启"动作 + 位面 / 扫描前沿包络（**保留项**）
 // ════════════════════════════════════════════════════════════════════════════
-console.log('\n=== 3. 门"开启"动作 + 位面 / 扫描前沿包络 ===');
+console.log('\n=== 3. 门"开启"动作 + 位面 / 扫描前沿包络（保留） ===');
 {
   const cfg = D.DOOR_MOTION_DEFAULT;
   check('★doorApertureK：t=0 ⇒ 0（门塌成一条线）；组装前 60% 末 ⇒ 1（展开成完整矩形）', () =>
@@ -297,20 +464,21 @@ console.log('\n=== 4. 参数一致性 + 门/球/ENTRY_TOTAL_SEC 总时长同源 
     && Math.abs(S.sphereTotalSec() - D.doorTotalSec()) < 1e-9);
   check('★ENTRY_NEEDS_ASSEMBLE_RESET 仍为 true（6.5 > 4 ⇒ 必须重置集结计时；表达式未被改动）', () =>
     E.ENTRY_NEEDS_ASSEMBLE_RESET === true && E.ENTRY_TOTAL_SEC > 4.0);
-  check('★外观常量与几何模块**一致**（防两处漂移）：blockCount / dispersion', () =>
-    P.blockCount === D.DOOR_BLOCK_COUNT
+  check('★外观常量与几何模块**一致**（防两处漂移）：ribbonSamples / dispersion', () =>
+    P.ribbonSamples === D.DOOR_RIBBON_SAMPLES
     && Math.abs(P.dispersion - D.DOOR_DISPERSION_K) < 1e-12);
-  check('D 方案门框有**三层质感颜色**（能量块 / 亮心 / 外辉光）', () =>
-    typeof P.blockColor === 'number' && typeof P.core === 'number' && typeof P.halo === 'number');
+  check('D 方案门框有**三层质感颜色**（光带 / 亮心 / 外辉光）', () =>
+    typeof P.bandColor === 'number' && typeof P.core === 'number' && typeof P.halo === 'number');
   check('★色散镶边**红/青两端不同**、且都不等于主色（轮廓微色散）', () =>
     typeof P.dispA === 'number' && typeof P.dispB === 'number'
-    && P.dispA !== P.dispB && P.dispA !== P.blockColor && P.dispB !== P.blockColor);
+    && P.dispA !== P.dispB && P.dispA !== P.bandColor && P.dispB !== P.bandColor);
   check('色散偏移是**微妙值**（0 < dispersion ≤ 0.02 ⇒ 窄丝带，不整圈粗红箍）', () =>
     P.dispersion > 0 && P.dispersion <= 0.02);
   check('扫描光带颜色存在（门"前缘"有明确色）', () => typeof P.scanColor === 'number');
   check('位面不透明度极小（≤ 0.12 ⇒ 透过门能看清舰队）', () =>
     P.barrierOpacity > 0 && P.barrierOpacity <= 0.12);
-  check('块数在 60~80（用户给的数量级）', () => D.DOOR_BLOCK_COUNT >= 60 && D.DOOR_BLOCK_COUNT <= 80);
+  check('门框光带方案**不再有 blockCount**（v4 的离散块已废弃）', () =>
+    P.blockCount === undefined && P.blockColor === undefined);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -320,7 +488,7 @@ console.log('\n=== 5. 设置项 entryFxStyle → 内部门风格（三取值 + �
 {
   check('★ENTRY_FX_STYLE_DEFAULT = \'door\'（默认传送门 —— 用户认可门观感更好）', () =>
     E.ENTRY_FX_STYLE_DEFAULT === 'door');
-  check('★\'door\' → \'D\'（传送门能量块）', () => E.gateStyleForEntryFx('door') === 'D');
+  check('★\'door\' → \'D\'（传送门·连续光带门框）', () => E.gateStyleForEntryFx('door') === 'D');
   check('★\'sphere\' → \'S\'（六边形球体，**保留**）', () => E.gateStyleForEntryFx('sphere') === 'S');
   check('★\'off\' → null（完全跳过入场特效）', () => E.gateStyleForEntryFx('off') === null);
   check('未设置 / undefined / 非法值 ⇒ 回退编译期默认 GATE_STYLE', () =>
@@ -351,9 +519,9 @@ console.log('\n=== 5. 设置项 entryFxStyle → 内部门风格（三取值 + �
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// 6) ★'off' 的**完整行为**：不建对象 / 不聚焦 / **不暂停**（真跑原文 + 契约）
+// 6) ★'off' 的**完整行为** + 光带接线契约（真跑原文 + 契约）
 // ════════════════════════════════════════════════════════════════════════════
-console.log('\n=== 6. ★设置项 \'off\'：不建特效对象 / 不聚焦 / 不暂停 ===');
+console.log('\n=== 6. ★设置项 \'off\'：不建特效对象 / 不聚焦 / 不暂停 + 光带接线 ===');
 {
   // ── 真跑 entryFxOn 的**原文**（注入编译期开关；window 在 Node 为 undefined）──
   const FXON_START = 'private entryFxOn(): boolean {';
@@ -436,6 +604,27 @@ console.log('\n=== 6. ★设置项 \'off\'：不建特效对象 / 不聚焦 / �
     return blk.includes('this.scene.remove(d.root)') && blk.includes('disposeTree(') && blk.includes('g.door = null');
   });
 
+  // ── ★v5 光带接线（**门框不再是离散块**；逐帧就地更新 + drawRange 生长 + 贴图流动）──
+  const doorBlk = slice(overlay, 'private buildDoorVisual(g: FleetGate): void {', 'private disposeDoorVisual(g: FleetGate): void {');
+  check('★v5：门框几何来自**纯逻辑层**的连续光带（doorRibbonBandVertices / UV / 索引）', () =>
+    doorBlk.includes('doorRibbonBandVertices(') && doorBlk.includes('doorRibbonBandUvs(')
+    && doorBlk.includes('doorRibbonBandIndices(') && doorBlk.includes('DOOR_RIBBON_SAMPLES'));
+  check('★v5：光带 3 层 Mesh **共享同一份几何**（disposeTree 去重 ⇒ 零残留）', () =>
+    doorBlk.includes('ribbonMats.push(') && doorBlk.includes('ribbonMeshes.push(')
+    && doorBlk.includes('new THREE.Mesh(ribbonGeo, mat)'));
+  check('★v5：组装/消散走 `drawRange`（**同一段索引区间 0..count** ⇒ 生长 / 反向收回）', () =>
+    doorBlk.includes('setDrawRange(0, 0)')
+    && doorBlk.includes('setDrawRange(0, idxCount)') && doorBlk.includes('doorRibbonGrowthK('));
+  check('★v5：流动光 = 贴图沿 u 滚动（`tex.offset.x = doorRibbonFlowOffset(...)`）+ 逐帧**就地**更新顶点', () =>
+    doorBlk.includes('rb.tex.offset.x') && doorBlk.includes('doorRibbonFlowOffset(')
+    && doorBlk.includes('rb.pos.needsUpdate = true'));
+  check('★v5：**离散能量块彻底移除**（无 buildDoorBlocks / PlaneGeometry(1,1) 逐块网格）', () =>
+    !overlay.includes('buildDoorBlocks') && !overlay.includes('doorBlockMotion')
+    && !overlay.includes('blocks.push(') && !doorSrc.includes('buildDoorBlocks'));
+  check('★v5：门内位面 / 锐利内缘 rim / 外辉光 / 扫描光带 **仍在**（保留项未丢）', () =>
+    doorBlk.includes('makeDoorPlaneTexture(') && doorBlk.includes('rimMat')
+    && doorBlk.includes('makeGateHaloTexture(') && doorBlk.includes('makeDoorScanTexture('));
+
   // ── ★'off' 不暂停：BattleScene.beginEntryPhase 有 off 提前返回 + 显式解除暂停 ──
   check('★BattleScene.beginEntryPhase：off ⇒ 提前返回且**显式 `isPaused = false`**（绝不卡在暂停）', () =>
     scene.includes('if (this.entryFxDisabledBySetting()) { this.store.isPaused = false; return; }'));
@@ -462,87 +651,124 @@ console.log('\n=== 6. ★设置项 \'off\'：不建特效对象 / 不聚焦 / �
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// 7) 变异自检：改坏 entryDoor.ts ⇒ 对应断言必须 FAIL（证明断言"有牙齿"）
+// 7) 变异自检：改坏 entryDoor.ts ⇒ 对应断言必须 FAIL（**每条正向断言都配一个反例**）
 // ════════════════════════════════════════════════════════════════════════════
 console.log('\n=== 7. 变异自检（改坏 entryDoor.ts ⇒ 断言必须能红） ===');
 {
-  // 变异 A：组装起点径向偏移变小（< 1 ⇒ t=0 反而在框内）⇒ "t=0 在框外"必须红
-  checkThrows('变异A（组装起点偏移过小 ⇒ t=0 不在框外）已被"t=0 框外"断言检出', () => {
-    const M = loadDoorModule(doorSrcLF.replace(
-      'const startMag = randRange(rand, DOOR_START_DRIFT_MIN, DOOR_START_DRIFT_MAX);',
-      'const startMag = randRange(rand, 0, 0.2);'));
-    const set = M.buildDoorBlocks({ count: 72 });
-    const ok = set.blocks.map((b) => M.doorBlockMotion(b, 0, M.DOOR_MOTION_DEFAULT))
-      .every((m) => Math.abs(m.u) > 1 + 1e-9 || Math.abs(m.v) > 1 + 1e-9);
-    assert.equal(ok, true);
+  const mut = (from, to) => {
+    const s = doorSrcLF.split(from).join(to);
+    assert.notEqual(s, doorSrcLF, `变异未生效（锚点未匹配）: ${from.slice(0, 60)}…`);
+    return loadDoorModule(s);
+  };
+
+  // A：四角**不做圆角**（R=0 ⇒ 直角处法线突变）⇒ "法线夹角有上界 / 圆角" 必须红
+  checkThrows('★变异A（R=0 ⇒ 直角折角）已被"法线夹角 ≤ 0.6 / 圆角 > 2%"断言检出', () => {
+    const M = mut('export const DOOR_CORNER_R = 0.10;', 'export const DOOR_CORNER_R = 0;');
+    assert.equal(Pred.smoothNormal(M) && Pred.cornerSmooth(M) && Pred.smoothCurve(M), true);
   });
 
-  // 变异 B：不收缩（openK 恒 1 ⇒ 组装起点不再"从线展开"）⇒ "t=0 位置 = 槽位×START_OPEN_K + 径向偏移"必须红
-  checkThrows('变异B（openK 恒 1 ⇒ 无"从线展开"）已被"t=0 槽位项被压缩"断言检出', () => {
-    const M = loadDoorModule(doorSrcLF.replace(
-      'const openK = DOOR_START_OPEN_K + (1 - DOOR_START_OPEN_K) * e;',
-      'const openK = 1;'));
-    const set = M.buildDoorBlocks({ count: 72 });
-    const b = set.blocks.find((x) => Math.abs(x.su) > 0.9) || set.blocks[0];
-    const m = M.doorBlockMotion(b, 0, M.DOOR_MOTION_DEFAULT);
-    const expectedU = b.su * M.DOOR_START_OPEN_K + b.du;
-    assert.equal(Math.abs(m.u - expectedU) < 1e-9, true);
+  // B：采样点太少（又变成"离散的点"）⇒ "连续/采样够密" 必须红
+  checkThrows('★变异B（N=40 ⇒ 又成离散点）已被"采样 ≥ 100 / 间距 ≤ 0.09"断言检出', () => {
+    const M = mut('export const DOOR_RIBBON_SAMPLES = 200;', 'export const DOOR_RIBBON_SAMPLES = 40;');
+    assert.equal(Pred.samplesEnough(M) && Pred.continuous(M) && Pred.uniform(M), true);
   });
 
-  // 变异 C：消散方向**朝内**（残余块缩向门心）⇒ "消散末在框外"必须红
-  checkThrows('变异C（消散方向朝内 ⇒ 消散末仍在框内）已被"消散末框外"断言检出', () => {
-    const M = loadDoorModule(doorSrcLF.replace(
-      'const ddu = nx * dispMag, ddv = ny * dispMag;',
-      'const ddu = -nx * dispMag, ddv = -ny * dispMag;'));
-    const set = M.buildDoorBlocks({ count: 72 });
-    const end = M.doorDisperseEnd(M.DOOR_MOTION_DEFAULT);
-    const ok = set.blocks.map((b) => M.doorBlockMotion(b, end, M.DOOR_MOTION_DEFAULT))
-      .every((m) => Math.abs(m.u) > 1 + 1e-9 || Math.abs(m.v) > 1 + 1e-9);
-    assert.equal(ok, true);
+  // C：平滑噪声改成**白噪声**（锯齿）⇒ "噪声平滑（Lipschitz/二阶差分）" 必须红
+  checkThrows('★变异C（噪声改白噪声 ⇒ 锯齿）已被"噪声 Lipschitz / 二阶差分有上界"断言检出', () => {
+    const M = mut(
+      `    n += DOOR_NOISE_WEIGHTS[i]
+      * Math.sin(TWO_PI * DOOR_NOISE_FREQS[i] * t + NOISE_PHASES[i] + DOOR_NOISE_OMEGA[i] * time);`,
+      `    n = (Math.sin(t * 9973.0 + i * 1.7) > 0 ? 1 : -1) * 0.5;`);
+    assert.equal(Pred.noiseSmooth(M), true);
   });
 
-  // 变异 D：组装延迟全部置 0（齐刷刷）⇒ "延迟不全相同"必须红
-  checkThrows('变异D（组装延迟全 0 ⇒ 齐刷刷）已被"延迟不同"断言检出', () => {
-    const M = loadDoorModule(doorSrcLF.replace('const delay = rand() * DOOR_BLOCK_STAGGER;', 'const delay = 0;'));
-    const set = M.buildDoorBlocks({ count: 72 });
-    const uniq = new Set(set.blocks.map((b) => b.delay.toFixed(6)));
-    assert.equal(uniq.size > set.blocks.length * 0.8, true);
+  // D：噪声幅度为 0（边框变"笔直的光带"⇒ 丢掉用户点名的"随机曲线"）⇒ "幅度 ∈ [1.5%,3%]" 必须红
+  checkThrows('★变异D（噪声幅度 = 0 ⇒ 没有"微微的随机曲线"）已被"幅度 ∈ [1.5%,3%]"断言检出', () => {
+    const M = mut('export const DOOR_NOISE_AMP = 0.018;', 'export const DOOR_NOISE_AMP = 0;');
+    assert.equal(Pred.noiseAmpOk(M) && Pred.curveDeviationBounded(M), true);
   });
 
-  // 变异 E：总时长漏掉余晖（6.2 ≠ 6.5）⇒ "三者同源"必须红
-  checkThrows('变异E（总时长漏算余晖）已被"= ENTRY_TOTAL_SEC"断言检出', () => {
-    const M = loadDoorModule(doorSrcLF.replace(
-      'return cfg.assembleSec + cfg.holdSec + cfg.disperseSec + cfg.afterglowSec;',
-      'return cfg.assembleSec + cfg.holdSec + cfg.disperseSec;'));
+  // E：噪声幅度过大（大扭曲）⇒ "幅度 ∈ [1.5%,3%]" 必须红
+  checkThrows('★变异E（噪声幅度 = 0.4 ⇒ 大扭曲）已被"幅度 ≤ 3% / 位移有界"断言检出', () => {
+    const M = mut('export const DOOR_NOISE_AMP = 0.018;', 'export const DOOR_NOISE_AMP = 0.4;');
+    assert.equal(Pred.noiseAmpOk(M) && Pred.curveDeviationBounded(M), true);
+  });
+
+  // F：带宽过粗（18% 门尺寸 ⇒ 粗棒）⇒ "带宽 ∈ [1%,2%]" 必须红
+  checkThrows('★变异F（半宽 0.09 ⇒ 粗棒）已被"带宽 ∈ [1%,2%] 门尺寸"断言检出', () => {
+    const M = mut('export const DOOR_RIBBON_HALF_W = 0.016;', 'export const DOOR_RIBBON_HALF_W = 0.09;');
+    assert.equal(Pred.bandWidthInRange(M) && Pred.bandWidthUniform(M), true);
+  });
+
+  // F2：丢掉带宽的**轴向补偿**（横竖世界宽度不等）⇒ "世界等宽" 必须红
+  checkThrows('★变异F2（去掉 kx/ky 补偿 ⇒ 左右两条比上下两条粗）已被"世界等宽"断言检出', () => {
+    const M = mut('    dst[b] = cx - nx * wx; dst[b + 1] = cy - ny * wy; dst[b + 2] = 0;\n'
+      + '    dst[b + 3] = cx + nx * wx; dst[b + 4] = cy + ny * wy; dst[b + 5] = 0;',
+    '    dst[b] = cx - nx * halfW; dst[b + 1] = cy - ny * halfW; dst[b + 2] = 0;\n'
+      + '    dst[b + 3] = cx + nx * halfW; dst[b + 4] = cy + ny * halfW; dst[b + 5] = 0;');
+    assert.equal(Pred.bandWidthWorldUniform(M), true);
+  });
+
+  // F3：补偿系数恒 1（等于不补偿）⇒ "世界等宽" 必须红
+  checkThrows('★变异F3（doorRibbonAspectK 恒返回 1 ⇒ 等于不补偿）已被"世界等宽"断言检出', () => {
+    const M = mut('  return [ref / hu, ref / hv];', '  return [1, 1];');
+    assert.equal(Pred.bandWidthWorldUniform(M), true);
+  });
+
+  // G：组装"不生长"（一上来就是完整框）⇒ "生长中期在半程" 必须红
+  checkThrows('★变异G（组装期 growth 恒 1 ⇒ 不生长）已被"组装中期在半程"断言检出', () => {
+    const M = mut('  if (t < holdStart) return smooth01(t / Math.max(1e-6, holdStart));',
+      '  if (t < holdStart) return 1;');
+    assert.equal(Pred.growthMid(M) && Pred.growthStartsZero(M), true);
+  });
+
+  // H：消散"不收回"（growth 恒 1）⇒ "消散末 = 0" 必须红
+  checkThrows('★变异H（消散期 growth 恒 1 ⇒ 不收回）已被"消散中期在半程 / 单调不增"断言检出', () => {
+    const M = mut('  if (t < dispEnd) return 1 - smooth01((t - dispStart) / Math.max(1e-6, cfg.disperseSec));',
+      '  if (t < dispEnd) return 1;');
+    assert.equal(Pred.growthEndsZero(M) && Pred.growthMonotoneDown(M) && Pred.growthRetractMid(M), true);
+  });
+
+  // H2：「生长优先」失效（陪衬恒 1 ⇒ 光带才长一半就已是个完整白框）⇒ 断言必须红
+  checkThrows('★变异H2（doorLateFollowK 恒 1 ⇒ 组装期就已是完整白框）已被"生长优先"断言检出', () => {
+    const M = mut('  return smooth01((growthK - 0.5) * 2);', '  return 1;');
+    assert.equal(Pred.lateFollowGated(M), true);
+  });
+
+  // I：流动停滞（offset 恒 0）⇒ "确实在流动" 必须红
+  checkThrows('★变异I（流动 offset 恒 0 ⇒ 不流动）已被"流动增量 > 0.05"断言检出', () => {
+    const M = mut('  return t * DOOR_FLOW_SPEED;', '  return 0;');
+    assert.equal(Pred.flowIncreases(M) && Pred.flowMonotone(M), true);
+  });
+
+  // J：噪声不再对 t 周期（闭合处出现接缝）⇒ "严格周期" 必须红
+  checkThrows('★变异J（噪声加非整数频率 ⇒ 闭合接缝）已被"noise(1)=noise(0)"断言检出', () => {
+    const M = mut('export const DOOR_NOISE_FREQS: number[] = [2, 3, 5, 8, 13];',
+      'export const DOOR_NOISE_FREQS: number[] = [2.5, 3.1, 5.3, 8.7, 13.4];');
+    assert.equal(Pred.noisePeriodic(M) && Pred.outlineClosed(M), true);
+  });
+
+  // K：总时长漏掉余晖（6.2 ≠ 6.5）⇒ "三者同源" 必须红
+  checkThrows('★变异K（总时长漏算余晖）已被"= ENTRY_TOTAL_SEC"断言检出', () => {
+    const M = mut('  return cfg.assembleSec + cfg.holdSec + cfg.disperseSec + cfg.afterglowSec;',
+      '  return cfg.assembleSec + cfg.holdSec + cfg.disperseSec;');
     assert.equal(Math.abs(M.doorTotalSec(M.DOOR_MOTION_DEFAULT) - E.ENTRY_TOTAL_SEC) < 1e-9, true);
   });
 
-  // 变异 F：顶点不"按弧长均匀"（全部塞到角点）⇒ "四边都有块"必须红
-  checkThrows('变异F（块全塞到同一角）已被"四边都有块"断言检出', () => {
-    const M = loadDoorModule(doorSrcLF.replace(
-      'const s = (i + 0.5) * per;',
-      'const s = 0;'));
-    const set = M.buildDoorBlocks({ count: 72 });
-    assert.equal(Math.min(...set.edgeHist) >= 10, true);
-  });
-
-  // 变异 G：几何改用 Math.random（不确定性）⇒ "逐位一致"必须红
-  checkThrows('变异G（起点偏移改用 Math.random ⇒ 不确定）已被"确定性"断言检出', () => {
-    const M = loadDoorModule(doorSrcLF.replace(
-      'const startMag = randRange(rand, DOOR_START_DRIFT_MIN, DOOR_START_DRIFT_MAX);',
-      'const startMag = DOOR_START_DRIFT_MIN + Math.random() * (DOOR_START_DRIFT_MAX - DOOR_START_DRIFT_MIN);'));
-    const a = M.buildDoorBlocks({ count: 72 });
-    const b = M.buildDoorBlocks({ count: 72 });
-    const fp = (x) => x.blocks.map((t) => `${t.du},${t.delay}`).join('|');
-    assert.equal(fp(a) === fp(b), true);
-  });
-
-  // 变异 H：开启动作恒 1（一上来就是完整矩形，无"开启"感）⇒ "doorApertureK(0)=0"必须红
-  checkThrows('变异H（开启动作失效 ⇒ 一上来就是完整框）已被"t=0 aperture=0"断言检出', () => {
-    const M = loadDoorModule(doorSrcLF.replace(
-      'return smooth01(clamp01(elapsed / dur));',
-      'return 1;'));
+  // L：开启动作恒 1（一上来就是完整矩形，无"开启"感）⇒ "doorApertureK(0)=0" 必须红
+  checkThrows('★变异L（开启动作失效 ⇒ 一上来就是完整框）已被"t=0 aperture=0"断言检出', () => {
+    const M = mut('  return smooth01(clamp01(elapsed / dur));', '  return 1;');
     assert.equal(M.doorApertureK(0, M.DOOR_MOTION_DEFAULT) === 0, true);
+  });
+
+  // M：噪声相位改用 Math.random（非确定性）⇒ "跨模块加载确定性" 必须红
+  checkThrows('★变异M（噪声相位改 Math.random ⇒ 不确定）已被"跨加载确定性"断言检出', () => {
+    const from = '  return DOOR_NOISE_FREQS.map(() => rand() * Math.PI * 2);';
+    const to = '  return DOOR_NOISE_FREQS.map(() => Math.random() * Math.PI * 2);';
+    const s = doorSrcLF.split(from).join(to);
+    assert.notEqual(s, doorSrcLF, '变异未生效（锚点未匹配）');
+    const fp = (src) => Array.from(loadDoorModule(src).doorRibbonSamples(0.7, 32)).join(',');
+    assert.equal(fp(s) === fp(s), true);
   });
 }
 

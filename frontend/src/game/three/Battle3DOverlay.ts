@@ -54,10 +54,12 @@ import {
   type DisposableNode, type SphereFit, type SphereFitItem, type SphereMotionCfg,
   type SphereTile, type SphereTileSet,
 } from './entrySphere';
-// [v4 · D] **传送门（能量块组装 / 消散）**入场的几何 / 运动学纯逻辑层（零 three 依赖 ⇒ 离线台架可真跑）
+// [v5 · D] **传送门（连续光带门框 · 生长 / 收回）**入场的几何 / 运动学纯逻辑层
+//   （零 three 依赖 ⇒ 离线台架可真跑）。v5 把门框从"离散能量块"重做为"连续发光带 + 微随机曲线 + 流动光"。
 import {
-  buildDoorBlocks, doorBlockMotion, doorApertureK, doorBarrierAmt, doorScanAmt,
-  DOOR_MOTION_DEFAULT, type DoorBlock, type DoorBlockMotion,
+  doorRibbonBandVertices, doorRibbonBandUvs, doorRibbonBandIndices, doorRibbonAspectK,
+  doorRibbonGrowthK, doorRibbonFlowOffset, doorLateFollowK, doorApertureK, doorBarrierAmt, doorScanAmt,
+  DOOR_RIBBON_SAMPLES, DOOR_DISPERSION_K, DOOR_PULSE_COUNT, DOOR_MOTION_DEFAULT,
 } from './entryDoor';
 import {
   SHIP_CLASS_ALIAS, FLAGSHIP_MODEL_ALIAS,
@@ -333,30 +335,39 @@ interface FleetGate {
    */
   sphere: SphereVis | null;
   /**
-   * [v4 · D] **传送门能量块**方案的可视对象（`gateStyle !== 'D'` ⇒ null）。
+   * [v5 · D] **传送门·连续光带门框**方案的可视对象（`gateStyle !== 'D'` ⇒ null）。
    * ⚠ 与 A/B/C 不同：D 的根组**存这里**（`g.vis` 保持 null）⇒ `disposeGateVisual` 不会误碰它，
-   *   D 走 `disposeDoorVisual`（`disposeTree` 去重释放 —— 全部块**共享同一份单位方片几何**）。
+   *   D 走 `disposeDoorVisual`（`disposeTree` 去重释放 —— 光带 3 层**共享同一份带状几何**）。
    * D **保留裁剪**（门框 = 5 个裁剪面围成的方柱；舰队"从门里钻出来"）—— 与 A/B/C 同构。
    */
   door: DoorVis | null;
 }
 
-/** [v4 · D] 单块门框能量块的可视句柄：3 层 Mesh（主色 / 色散红 / 色散青）共享 **1 份几何**，挂在 1 个 Group 下。 */
-interface DoorBlockVis {
-  block: DoorBlock;
-  group: THREE.Group;
+/** [v5 · D] 门框**连续光带**的可视句柄：3 层 Mesh（主色 / 色散红 / 色散青）共享 **1 份带状几何**。 */
+interface DoorRibbonVis {
+  /** 带状几何（3 层共享；逐帧就地更新 `position` + 用 `drawRange` 表现"生长 / 收回"）。 */
+  geo: THREE.BufferGeometry;
+  /** 主顶点属性（逐帧就地写入 ⇒ 零分配）。 */
+  pos: THREE.BufferAttribute;
   /** 三层材质：[0] 主色 / [1] 色散 A（红端）/ [2] 色散 B（青端）。 */
   mats: THREE.MeshBasicMaterial[];
-  /** 三层各自的**基础**不透明度（逐帧 = 基础 × 阶段包络）。 */
-  baseOpacity: number[];
+  /** 三层 Mesh（`drawRange` 在共享 geometry 上设 ⇒ 三层同步生长）。 */
+  meshes: THREE.Mesh[];
+  /** **流动光**贴图（沿 u = 周长方向滚动 ⇒ 亮波 + 亮点沿门框流动）。 */
+  tex: THREE.CanvasTexture;
+  /** 主层**基础**不透明度（逐帧 = 基础 × 生长包络）。 */
+  base: number;
+  /** 带宽的**轴向补偿系数**（`root.scale = (halfU, halfV, 1)` 会拉成横竖不等宽 ⇒ 用它让世界等宽）。 */
+  kx: number;
+  ky: number;
 }
 
-/** [v4 · D] **扇传送门**（门心 = 舰队投影包围盒中心；局部 X/Y/Z = 横向/竖向/朝向）。 */
+/** [v5 · D] **扇传送门**（门心 = 舰队投影包围盒中心；局部 X/Y/Z = 横向/竖向/朝向）。 */
 interface DoorVis {
   /** 根组（门心为原点；`scale = (halfU, halfV, 1)` ⇒ 局部 [-1,1] 映射到门框）。 */
   root: THREE.Group;
-  /** 逐块可视句柄。 */
-  blocks: DoorBlockVis[];
+  /** 门框**连续光带**（v5 重做：不再是离散块）。 */
+  ribbon: DoorRibbonVis;
   /** 门框轮廓（LineLoop）：组装前半段竖向从 0 → 1 展开 ⇒ "开启"动作。 */
   aperture: THREE.LineLoop;
   /** 门内**位面**（竖直能量流细纹 + 边缘亮中心透）+ 其材质/贴图（逐帧滚动 + 呼吸）。 */
@@ -367,6 +378,7 @@ interface DoorVis {
   halo: THREE.Mesh;
   haloMat: THREE.MeshBasicMaterial;
   /** 门框**锐利内缘**（加法混合的细环带，沿门框矩形）—— 保证任意视角下都读得出"门"的边框。 */
+  rim: THREE.Mesh;
   rimMat: THREE.MeshBasicMaterial;
   /** **扫描前沿**光带（门沿舰队纵轴推进时的明亮前缘）。 */
   scan: THREE.Mesh;
@@ -374,8 +386,6 @@ interface DoorVis {
   /** 门局部尺寸（供扫描光带/位面尺寸计算；= 建门时 `g.halfU/halfV`）。 */
   halfU: number;
   halfV: number;
-  /** 块沿门法线（z）的飞入/飞散偏移 → 世界单位的换算因子（局部归一单位 × 本值）。 */
-  zScale: number;
 }
 
 /** [v3.1 · S] 单块瓦片的可视句柄：3 层网格共享 **1 份几何**，挂在 **1 个 Group** 下（Group 承载位姿）。 */
@@ -1391,8 +1401,6 @@ export class Battle3DOverlay {
   private sphereTmpColor = new THREE.Color();
   /** [v3.2] 球心亮核用的**纯白**目标色（正对相机的瓦片向它提亮 ⇒ 中心过曝）。 */
   private sphereTmpWhite = new THREE.Color(1, 1, 1);
-  /** [v4 · D] 逐块翻滚轴的复用向量（避免每帧 new）。 */
-  private doorTmpAxis = new THREE.Vector3();
   /** [v3.1 · S] "最近 N 支舰队"的按帧缓存（键 = `now`；见 `spherePrimaryFleets`）。 */
   private spherePrimaryAt = -1;
   private spherePrimaryCache: any[] = [];
@@ -4934,11 +4942,20 @@ export class Battle3DOverlay {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // [v4 · D] **传送门·能量块组装 / 消散**入场（`gateStyle === 'D'`）
+  // [v5 · D] **传送门·连续光带门框**入场（`gateStyle === 'D'`）
   //
-  //   用户需求（四次反馈）：「之前的门效果更好，但可以再科幻点、不要像之前一样很普通；速度慢一点；
-  //     球状体做的挺好」。做法 = 把球体已**成功**的元素（离散块组装/消散、色散镶边、自发光、外圈辉光）
-  //     移植到门框，并让门"活"起来（组装前半段从一条线**展开**成矩形；位面竖直能量流细纹；扫描前沿光带）。
+  //   用户需求（五次反馈，语气强烈）：「**这个边框是什么鬼，一根虚线吗！！这个也太丑了**，
+  //     可以再长方形的边框上下功夫，比如有**流动的光线**，或者把**边框变成微微的随机曲线**，
+  //     让边框流动起来；但**边框中间的部分效果还是可以的**」。
+  //
+  //   诊断：v4 的"72 个离散能量块"读作**虚线 / 珠子串**（块是"小段"，而球体瓦片是"面片"）。
+  //   做法（**只换门框，门内位面保留**）：
+  //     ① 门框 = 一条**连续发光带**（ribbon）：沿**圆角矩形**周长连续采样 200 点，逐点沿法线
+  //        两侧各偏 `DOOR_RIBBON_HALF_W` ⇒ 闭合带状网格（细带，不是粗棒）；圆角 ⇒ 法线处处连续；
+  //     ② ＋**微微的随机曲线**：中心线 = 轮廓 + 法线 × 平滑噪声（多整数频率 `sin` 叠加）× 微小幅度，
+  //        随时间缓变 ⇒ "本来笔直的光带有一丝生命感"（绝非波浪锯齿）；
+  //     ③ ＋**流动的光线**：贴图沿 `u`（周长）滚动（多频亮纹 + 移动亮点）⇒ 亮波沿门框流动；
+  //     ④ 组装 = 光带沿周长**生长**（`drawRange`），消散 = 沿周长**反向收回** + 淡出。
   //
   //   几何 / 运动学真源在 `./entryDoor`（纯函数、零 three 依赖 ⇒ 台架真跑）。
   //   局部系：X = 横向（`halfU` 缩放）/ Y = 竖向（`halfV` 缩放）/ Z = 门法线（= 舰队朝向）。
@@ -5010,7 +5027,65 @@ export class Battle3DOverlay {
     return tex;
   }
 
-  /** [v4 · D] 建**可见传送门**：能量块（3 层/块，共享 1 份几何）+ 门框轮廓（展开）+ 位面 + 外辉光 + 扫描光带。 */
+  /**
+   * [v5 · D] 门框**流动光**贴图（沿 `u` = 周长方向滚动）：
+   *   ① **基础亮带**（多处不同频率 / 相位的 `sin` 叠加 ⇒ 不是等距"刻度尺"）；
+   *   ② `DOOR_PULSE_COUNT` 个**移动亮点**（缠绕高斯；沿 u 滚动时读作"能量脉冲沿门框跑"）；
+   *   ③ 横向（v）**柔边** —— 带宽两侧渐隐 ⇒ 光带边缘不硬。
+   * `wrapS = RepeatWrapping` ⇒ `offset.x` 滚动无缝（多频项用整数频率 + 亮点用缠绕距离 ⇒ 首尾接缝连续）。
+   */
+  private makeDoorRibbonTexture(): THREE.CanvasTexture {
+    const W = 512, H = 16;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+    if (ctx) {
+      ctx.clearRect(0, 0, W, H);
+      const TWO_PI = Math.PI * 2;
+      // 逐列求亮度（含移动亮点）；再逐行按 v 柔边落一像素
+      const bright: number[] = new Array(W).fill(0);
+      for (let x = 0; x < W; x++) {
+        const u = x / W;
+        let b = 0.34;
+        b += 0.20 * Math.sin(TWO_PI * 3 * u + 0.0);
+        b += 0.15 * Math.sin(TWO_PI * 5 * u + 1.7);
+        b += 0.10 * Math.sin(TWO_PI * 8 * u + 4.1);
+        b += 0.06 * Math.sin(TWO_PI * 13 * u + 2.3);
+        for (let p = 0; p < DOOR_PULSE_COUNT; p++) {
+          const c = (p + 0.5) / DOOR_PULSE_COUNT;
+          let d = Math.abs(u - c);
+          if (d > 0.5) d = 1 - d;                       // 缠绕距离 ⇒ 亮点跨接缝连续
+          b += 0.95 * Math.exp(-(d * d) / (2 * 0.045 * 0.045));
+        }
+        bright[x] = Math.max(0, Math.min(1, b));
+      }
+      for (let y = 0; y < H; y++) {
+        const v = H > 1 ? y / (H - 1) : 0.5;
+        const across = 1 - Math.pow(Math.abs(2 * v - 1), 1.6);   // 中心最亮、两侧渐隐（软边）
+        for (let x = 0; x < W; x++) {
+          const a = bright[x] * across;
+          if (a <= 0.003) continue;
+          ctx.globalAlpha = a;
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(x, y, 1, 1);
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+    const tex = new THREE.CanvasTexture(cv);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.generateMipmaps = false;
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  /**
+   * [v5 · D] 建**可见传送门**：门框**连续光带**（3 层共享 1 份带状几何）+ 门框轮廓（展开）+ 位面 + 外辉光 + 扫描光带。
+   * ⚠ v5 相对 v4 的唯一结构改动：**离散能量块 ⇒ 连续发光带**（带微随机曲线 + 沿周长流动的光）。
+   */
   private buildDoorVisual(g: FleetGate): void {
     if (!ENTRY_GATE_VISIBLE) return;
     const P = GATE_STYLE_PARAMS.D;
@@ -5023,43 +5098,47 @@ export class Battle3DOverlay {
     root.frustumCulled = false;
     root.renderOrder = 8;
 
-    const blockColor = P.blockColor ?? 0x8fe9ff;
+    const bandColor = P.bandColor ?? 0x8fe9ff;
     const dispA = P.dispA ?? 0xff5a78;
     const dispB = P.dispB ?? 0x5ad6ff;
-    const dispOff = Math.max(0, P.dispersion ?? 0.006);
-    const set = buildDoorBlocks({ count: P.blockCount });
-    const geo = new THREE.PlaneGeometry(1, 1);   // 全部块**共享**（dispose 走 disposeTree 去重）
-    // 世界方块边长 ≈ 沿周长块间距（块间留缝 ⇒ "离散能量块"观感）
-    const worldSize = (1.0 * 4 * (g.halfU + g.halfV)) / Math.max(1, set.count);
-    const sx = worldSize / Math.max(1e-6, g.halfU);
-    const sy = worldSize / Math.max(1e-6, g.halfV);
-    // 三层基础不透明度（**主色为主，色散层很弱**；加法混合下 3 层叠满会过曝）
-    const baseOpacity = [0.70, 0.12, 0.18];
-    const blocks: DoorBlockVis[] = [];
-    for (const block of set.blocks) {
-      const grp = new THREE.Group();
-      const addLayer = (color: number, opacity: number, off: number): THREE.MeshBasicMaterial => {
-        const m = new THREE.MeshBasicMaterial({
-          color, transparent: true, opacity,
-          blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
-        });
-        const mesh = new THREE.Mesh(geo, m);
-        // 色散层沿块**法线（z）**微偏移 + 沿径向微偏移 ⇒ 门框轮廓处分离出红/青镶边（球体同款做法）
-        const r = Math.hypot(block.su, block.sv) || 1;
-        mesh.position.set((block.su / r) * off * 0.5, (block.sv / r) * off * 0.5, off);
-        mesh.frustumCulled = false;
-        mesh.renderOrder = 9;
-        grp.add(mesh);
-        return m;
-      };
-      const mats = [
-        addLayer(blockColor, baseOpacity[0], 0),
-        addLayer(dispA, baseOpacity[1], +dispOff),
-        addLayer(dispB, baseOpacity[2], -dispOff),
-      ];
-      grp.scale.set(sx, sy, 1);
-      root.add(grp);
-      blocks.push({ block, group: grp, mats, baseOpacity });
+    const dispOff = Math.max(0, P.dispersion ?? DOOR_DISPERSION_K);
+
+    // ── 门框光带几何（**一份**，3 层 Mesh 共享）──
+    const N = DOOR_RIBBON_SAMPLES;
+    const ribbonGeo = new THREE.BufferGeometry();
+    const posAttr = new THREE.BufferAttribute(doorRibbonBandVertices(0, N), 3);
+    posAttr.setUsage(THREE.DynamicDrawUsage);
+    ribbonGeo.setAttribute('position', posAttr);
+    ribbonGeo.setAttribute('uv', new THREE.BufferAttribute(doorRibbonBandUvs(N), 2));
+    ribbonGeo.setIndex(new THREE.BufferAttribute(doorRibbonBandIndices(N), 1));   // 1200 索引（Uint16 够）
+    ribbonGeo.setDrawRange(0, 0);   // 初始不画（逐帧由 doorRibbonGrowthK 生长）
+    const ribbonTex = this.makeDoorRibbonTexture();
+    const ribbonBase = 0.74;
+    // 三层基础不透明度（主色为主，色散层**很弱**；加法混合下 3 层叠满会过曝 ⇒ 光带发白）
+    const ribbonLayerOpacity = [ribbonBase, ribbonBase * 0.10, ribbonBase * 0.15];
+    const ribbonMats: THREE.MeshBasicMaterial[] = [];
+    const ribbonMeshes: THREE.Mesh[] = [];
+    const ribbonColors = [bandColor, dispA, dispB];
+    // v5 色散：红层**外扩**、青层**内缩**（绕门心的均匀缩放 ⇒ 轮廓处红/青微镶边，不加在"块"上）。
+    //   ⚠ 系数刻意小（0.6×）—— 光带很细，取满会读成"整圈红箍"（旧教训）。
+    const dispScale = dispOff * 0.6;
+    const ribbonScales = [1, 1 + dispScale, 1 - dispScale];
+    // 带宽的**世界等宽**补偿（矩形门 ⇒ 否则左右两条会比上下两条粗）
+    const [aspectKx, aspectKy] = doorRibbonAspectK(g.halfU, g.halfV);
+    for (let li = 0; li < 3; li++) {
+      const mat = new THREE.MeshBasicMaterial({
+        map: li === 0 ? ribbonTex : null, color: ribbonColors[li], transparent: true,
+        opacity: ribbonLayerOpacity[li], blending: THREE.AdditiveBlending,
+        depthWrite: false, side: THREE.DoubleSide,
+      });
+      const mesh = new THREE.Mesh(ribbonGeo, mat);
+      mesh.position.z = li === 0 ? 0 : (li === 1 ? +dispOff * 2 : -dispOff * 2);
+      mesh.scale.set(ribbonScales[li], ribbonScales[li], 1);
+      mesh.frustumCulled = false;
+      mesh.renderOrder = li === 0 ? 10 : 9;
+      root.add(mesh);
+      ribbonMats.push(mat);
+      ribbonMeshes.push(mesh);
     }
 
     // 门框**轮廓**（组装前半段竖向从 0 → 1 展开 ⇒ "开启"动作）
@@ -5115,16 +5194,20 @@ export class Battle3DOverlay {
 
     this.scene.add(root);
     g.door = {
-      root, blocks, aperture, barrier, barrierMat, barrierTex, halo, haloMat, rimMat, scan, scanMat,
+      root,
+      ribbon: {
+        geo: ribbonGeo, pos: posAttr, mats: ribbonMats, meshes: ribbonMeshes, tex: ribbonTex,
+        base: ribbonBase, kx: aspectKx, ky: aspectKy,
+      },
+      aperture, barrier, barrierMat, barrierTex, halo, haloMat, rim, rimMat, scan, scanMat,
       halfU: g.halfU, halfV: g.halfV,
-      // 块沿门法线（z）的飞入/飞散偏移换算到世界（纯逻辑层用"×门半尺寸"归一单位）
-      zScale: 0.35 * (g.halfU + g.halfV),
     };
   }
 
   /**
-   * [v4 · D] 逐帧把**全部能量块**摆到 `elapsed`（秒，相对入场起点）对应的位姿 —— 只改
-   * `position / quaternion / opacity / scale / visible`（几何与材质对象都不重建）。
+   * [v5 · D] 逐帧把门框**连续光带**推进到 `elapsed`（秒，相对入场起点）—— 只改
+   * `position`（就地写）/ `drawRange`（生长/收回）/ `offset`（流动）/ `opacity`（包络）。
+   * 几何与材质对象都**不重建**（同一份 ribbon Geo 被 3 层共享）。
    */
   private placeDoorVisual(g: FleetGate, elapsed: number): void {
     const d = g.door;
@@ -5134,36 +5217,46 @@ export class Battle3DOverlay {
     const barrierAmt = doorBarrierAmt(elapsed, cfg);
     // 呼吸脉冲（轻微起伏 ⇒ 门"活"起来）
     const breathe = 0.85 + 0.15 * Math.sin(elapsed * Math.PI * 1.6);
-    d.barrierMat.opacity = 0.30 * barrierAmt * breathe;
+    // ★v5「生长优先」：rim / 位面 / 外辉光 / 轮廓线**都要让光带先长出来**再跟上 ——
+    //   否则光带才画到一半，画面上已经是一个"完整的白框"（组装期读不出"生长"）。
+    const gkEarly = doorRibbonGrowthK(elapsed, cfg);
+    const lateEase = doorLateFollowK(gkEarly);           // 纯函数（台架可断言）：生长 < 50% ⇒ 恒 0
+    d.barrierMat.opacity = 0.30 * barrierAmt * breathe * lateEase;
     d.barrierTex.offset.set(0, (-elapsed * 0.22) % 1);   // 位面纹路纵向滚动 ⇒ "流动"
-    d.haloMat.opacity = 0.42 * barrierAmt * breathe;
-    // 门框**锐利内缘**：组装后半段即亮起、完整期满亮、消散段收掉 ⇒ 门始终读得出"边框"
-    d.rimMat.opacity = (0.30 + 0.40 * barrierAmt) * breathe;
+    // 外辉光**克制**（v5 的"边框"由光带承担；辉光过强会把门框冲成粉紫）
+    d.haloMat.opacity = 0.28 * barrierAmt * breathe * lateEase;
+
+    // ── 门框光带：① 曲线（就地写顶点：轮廓 + 法线×平滑噪声×时间）② 生长 / 收回 ③ 流动 ④ 强度包络 ──
+    const rb = d.ribbon;
+    doorRibbonBandVertices(
+      elapsed, DOOR_RIBBON_SAMPLES, undefined, rb.pos.array as Float32Array, rb.kx, rb.ky);
+    rb.pos.needsUpdate = true;
+    // ② 生长：drawRange 沿周长单调铺开（组装）/ 反向收回（消散）。索引按"每段 6 个"对齐。
+    const gk = gkEarly;
+    const idxTotal = DOOR_RIBBON_SAMPLES * 6;
+    const idxCount = Math.max(0, Math.min(idxTotal, Math.round((idxTotal * gk) / 6) * 6));
+    rb.geo.setDrawRange(0, idxCount);
+    const show = idxCount > 0;
+    for (const m of rb.meshes) m.visible = show;
+    // ③ 流动：UV 沿周长（u）滚动 ⇒ 亮波 + 亮点在门框里跑（单调不回摆）
+    rb.tex.offset.x = doorRibbonFlowOffset(elapsed) % 1;
+    // ④ 强度包络：随生长系数渐入（组装）/ 渐出（消散）—— 收回末段整条淡掉
+    const bandAmt = Math.min(1, gk * 1.8);
+    rb.mats[0].opacity = rb.base * bandAmt;
+    rb.mats[1].opacity = rb.base * 0.10 * bandAmt;
+    rb.mats[2].opacity = rb.base * 0.15 * bandAmt;
+
+    // 门框**锐利内缘**：**克制且跟在光带之后**（v5 里主观感由光带承担；rim 只做"内缘"的锐利提示）
+    d.rimMat.opacity = (0.10 + 0.22 * barrierAmt) * breathe * lateEase;
     // 扫描前沿光带：亮度由门进度 p 驱动（两端 0、中段满亮）
     d.scanMat.opacity = 0.55 * doorScanAmt(g.p);
-    // 门"开启"：轮廓竖向展开 0 → 1（组装前半段）
+    // 门"开启"：轮廓竖向展开 0 → 1（组装前半段）—— **让位给"生长"**：亮度压低并跟生长一起出现
     const ap = doorApertureK(elapsed, cfg);
     d.aperture.scale.set(1, ap, 1);
-    (d.aperture.material as THREE.LineBasicMaterial).opacity = 0.55 * Math.min(1, ap * 3);
-    // 逐块：位置 / 旋转 / 不透明度（3 层各自 = 基础 × 阶段包络）
-    const ax = this.doorTmpAxis;
-    for (let i = 0; i < d.blocks.length; i++) {
-      const bv = d.blocks[i];
-      const m: DoorBlockMotion = doorBlockMotion(bv.block, elapsed, cfg);
-      bv.group.position.set(m.u, m.v, m.z * d.zScale);
-      bv.group.quaternion.setFromAxisAngle(
-        ax.set(bv.block.axis[0], bv.block.axis[1], bv.block.axis[2]), m.spin,
-      );
-      if (m.phase === 4) { bv.group.visible = false; continue; }
-      bv.group.visible = true;
-      const o = m.opacity;
-      bv.mats[0].opacity = bv.baseOpacity[0] * o;
-      bv.mats[1].opacity = bv.baseOpacity[1] * o;
-      bv.mats[2].opacity = bv.baseOpacity[2] * o;
-    }
+    (d.aperture.material as THREE.LineBasicMaterial).opacity = 0.18 * Math.min(1, ap * 3) * lateEase;
   }
 
-  /** [v4 · D] 销毁传送门（**必须完整 dispose**：几何 + 材质 + 贴图；`disposeTree` 内部按对象去重共享几何）。 */
+  /** [v5 · D] 销毁传送门（**必须完整 dispose**：几何 + 材质 + 贴图；`disposeTree` 内部按对象去重共享几何）。 */
   private disposeDoorVisual(g: FleetGate): void {
     const d = g.door;
     if (!d) return;

@@ -107,9 +107,9 @@ export const ENTRY_GATE_DIR = 1;
 
 /** [v3] 门框视觉方案：`A` 能量环门（家园2 式）/ `B` 光栅门 / `C` 量子碎门 /
  *  `S` **六边形球体组装·消散**（用户 2026-10-16 三次反馈后重做，见 `entrySphere.ts`）/
- *  `D` **[v4] 传送门·能量块组装·消散**（科幻化重做，见 `entryDoor.ts`；用户反馈"门的观感更好"⇒ 默认）。 */
+ *  `D` **[v5] 传送门·连续光带门框**（见 `entryDoor.ts`；用户反馈"门的观感更好"⇒ 默认）。 */
 export type GateStyleId = 'A' | 'B' | 'C' | 'S' | 'D';
-/** [v4] **默认 / 回退**风格 —— `D`（传送门能量块）。
+/** [v5] **默认 / 回退**风格 —— `D`（传送门·连续光带门框）。
  *  ⚠ 运行时真源是**设置项** `entryFxStyle`：3D 层创建时经 `gateStyleForEntryFx` 映射到内部风格
  *  （`'door'→D` / `'sphere'→S` / `'off'→null` 完全跳过）；本常量只在设置不可得时兜底。
  *  A/B/C 的代码与参数**完整保留**（Q/A 回退），`GATE_STYLE_PARAMS` 覆盖全部 5 套。 */
@@ -176,13 +176,13 @@ export interface GateStyleParams {
   dispersion?: number;
   /** [S] 瓦片顶点朝质心收缩比例（留缝 ⇒ 参考图 1 的"有间隙"）。 */
   gapRatio?: number;
-  // ── [v4 · D] **传送门能量块**方案专属旋钮（其余方案不填 ⇒ undefined，不参与其渲染路径）──
+  // ── [v5 · D] **传送门连续光带门框**方案专属旋钮（其余方案不填 ⇒ undefined，不参与其渲染路径）──
   //   ⚠ 时序真源在 `three/entryDoor.ts`（`DOOR_*_SEC`），此处只放**外观**旋钮；
-  //     台架断言 "本处 blockCount == entryDoor.DOOR_BLOCK_COUNT 且 dispersion == DOOR_DISPERSION_K" ⇒ 防漂移。
-  /** [D] 门框能量块数（= `entryDoor.DOOR_BLOCK_COUNT`，60~80）。 */
-  blockCount?: number;
-  /** [D] 能量块**主色**（亮青白 ⇒ 自发光能量块）。 */
-  blockColor?: number;
+  //     台架断言 "本处 ribbonSamples == entryDoor.DOOR_RIBBON_SAMPLES 且 dispersion == DOOR_DISPERSION_K" ⇒ 防漂移。
+  /** [D] 门框光带**沿周长的采样点数**（= `entryDoor.DOOR_RIBBON_SAMPLES`）。 */
+  ribbonSamples?: number;
+  /** [D] 光带**主色**（亮青白 ⇒ 自发光光带）。 */
+  bandColor?: number;
   /** [D] 位面**扫描光带**颜色（门沿舰队纵轴推进时的明亮前缘）。 */
   scanColor?: number;
 }
@@ -227,18 +227,18 @@ export const GATE_STYLE_PARAMS: Record<GateStyleId, GateStyleParams> = {
     dispersion: 0.005,
     gapRatio: 0.08,
   },
-  // D · **[v4] 传送门·能量块组装**（用户反馈「之前那个门的效果更好，但可以再科幻点」⇒ 把球体已成功的
-  //   离散块组装/消散、色散镶边、自发光、外圈辉光**移植到门框**，并让门"活"起来）。
-  //   观感三层（同球体优先级）：色散镶边（红/青，沿块法线微偏移）> 亮青白能量块 > 青/紫外辉光。
-  //   `blockCount` 与 `entryDoor.DOOR_BLOCK_COUNT` 同源（台架断言防漂移）。
+  // D · **[v5] 传送门·连续光带门框**（用户五次反馈「这个边框是什么鬼，一根虚线吗！！」⇒ 放弃"离散能量块"，
+  //   改为**一条连续的发光带**：圆角矩形轮廓 + 微随机平滑曲线 + 沿周长流动的光；保留门内位面）。
+  //   观感三层（同球体优先级）：色散镶边（红/青，光带沿法线微偏移）> 亮青白连续光带 > 青/紫外辉光。
+  //   `ribbonSamples` 与 `entryDoor.DOOR_RIBBON_SAMPLES` 同源（台架断言防漂移）。
   D: {
     // 门框"边缘 / 亮心 / 外辉光"三层色 —— 亮青白为主，外辉光取紫（与球体一致的冷色层次）
     edge: 0x63c4ff, core: 0xffffff, halo: 0x8f7bff,
     // A/B/C 的旧旋钮 D 不使用（位面走自绘 flowing 纹理；脉冲由 `doorBarrierAmt` 驱动）
     chamfer: 0, edgeWidth: 0, feather: 0,
     barrierOpacity: 0.085, flow: 0, density: 0, pulse: 0, shard: false,
-    blockCount: 72,
-    blockColor: 0x8fe9ff,
+    ribbonSamples: 200,
+    bandColor: 0x8fe9ff,
     scanColor: 0xdaf6ff,
     dispA: 0xff5a78,
     dispB: 0x5ad6ff,
