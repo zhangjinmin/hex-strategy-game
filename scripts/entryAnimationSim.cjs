@@ -512,11 +512,14 @@ console.log('\n=== 11b. finishEntryGate 真跑：**结束必须卸载全队裁�
   const mats = ships.get('a').sliceMats;
   let disposed = 0;
   let sphereDisposed = 0;
+  let doorDisposed = 0;
   const self = {
     entryStates: states, ships,
     disposeGateVisual: () => { disposed += 1; },
     // [v3.1 · S] `finishEntryGate` 现在还会 `disposeSphereVisual`（球体零残留红线）⇒ 假 self 必须提供
     disposeSphereVisual: () => { sphereDisposed += 1; },
+    // [v4 · D] 同理 `disposeDoorVisual`（传送门零残留红线）⇒ 假 self 必须提供
+    disposeDoorVisual: () => { doorDisposed += 1; },
   };
   runFinish(finFn, self, g);
   check('★ 结束 ⇒ 全队材质的 clippingPlanes **全部归 null**（否则舰体被永久切）', () =>
@@ -527,6 +530,7 @@ console.log('\n=== 11b. finishEntryGate 真跑：**结束必须卸载全队裁�
     ['a', 'b', 'c'].every((k) => states.get(k).done === true));
   check('结束 ⇒ 门本体被销毁一次（可见的门框/位面必须收掉）', () => disposed === 1);
   check('★v3.1：结束 ⇒ **球体也被销毁一次**（S 方案"入场结束后零残留"红线）', () => sphereDisposed === 1);
+  check('★v4：结束 ⇒ **传送门也被销毁一次**（D 方案"入场结束后零残留"红线）', () => doorDisposed === 1);
   check('结束 ⇒ gate.done = true', () => g.done === true);
 }
 
@@ -554,6 +558,8 @@ console.log('\n=== 12. updateEntryFx 真跑 + 变异自检（改坏 Wiring ⇒ �
     self.disposeGateVisual = () => { self._disposed += 1; };
     // [v3.1 · S] `finishEntryGate` 还会 `disposeSphereVisual` ⇒ 假 self 必须提供（否则取门时抛错）
     self.disposeSphereVisual = () => { self._sphereDisposed = (self._sphereDisposed || 0) + 1; };
+    // [v4 · D] 同理 `disposeDoorVisual`
+    self.disposeDoorVisual = () => { self._doorDisposed = (self._doorDisposed || 0) + 1; };
     self.placeGateVisual = () => { self._placed += 1; };
     self.entryFxOn = () => on;
     for (const k of gate.shipKeys) {
@@ -650,7 +656,7 @@ console.log('\n=== 12. updateEntryFx 真跑 + 变异自检（改坏 Wiring ⇒ �
       s.split('entryApplyClipping(entry.sliceMats, null, false);').join('void 0;'));
     const gI = makeFakeGate({ shipKeys: ['a'] });
     const shipsI = new Map([['a', { sliceMats: [{ clippingPlanes: gI.planes }], entryPlanes: gI.planes }]]);
-    const selfI = { entryStates: new Map([['a', { done: false }]]), ships: shipsI, disposeGateVisual: () => {}, disposeSphereVisual: () => {} };
+    const selfI = { entryStates: new Map([['a', { done: false }]]), ships: shipsI, disposeGateVisual: () => {}, disposeSphereVisual: () => {}, disposeDoorVisual: () => {} };
     finI.call(selfI, E.entryApplyClipping).call(selfI, gI);
     checkThrows('变异I（结束不卸载裁剪）已被"clippingPlanes 归 null"断言检出', () => {
       assert.equal(shipsI.get('a').sliceMats.every((m) => m.clippingPlanes === null), true);
@@ -1068,8 +1074,8 @@ console.log('\n=== 16. 入场时机：部署期不登记 / 开战显式启动纪
 // ════════════════════════════════════════════════════════════════════════════
 console.log('\n=== 17. v2 门几何纯函数：N4 时长 / N5 轴向 / N6 尺寸 / N7 五个面 ===');
 {
-  // N4：时长 5.0s，且**刻意** > ASSEMBLE_MAX_MS(4s)
-  check('N4：ENTRY_TOTAL_SEC = 5.0（v1 的 2.5 → 5.0，用户要"再延长点"）', () => E.ENTRY_TOTAL_SEC === 5.0);
+  // N4：[v4] 时长 6.5s（5.0 → 6.5，用户"速度可以慢一点"），且**刻意** > ASSEMBLE_MAX_MS(4s)
+  check('N4：ENTRY_TOTAL_SEC = 6.5（[v4] 5.0 → 6.5，用户"速度可以慢一点"）', () => E.ENTRY_TOTAL_SEC === 6.5);
   check('N4：ENTRY_TOTAL_SEC > ASSEMBLE_MAX_MS/1000（刻意超 4s ⇒ 必须重置集结计时）', () =>
     E.ENTRY_TOTAL_SEC > ASSEMBLE_MAX_MS / 1000);
   check('N4：ENTRY_NEEDS_ASSEMBLE_RESET 为真（守卫"必须重置 _assemblingSince"）', () =>
@@ -1289,8 +1295,8 @@ console.log('\n=== 18. v2 源码契约：N1 聚焦 / N2 模型 / N3 暂停 / N7 
     && BUILDGATE.includes('this.scene.add(root)'));
   check('★N8/v3：门框按**矩形**分轴缩放（`root.scale.set(g.halfU, g.halfV, 1)` ⇒ 紧贴舰队轮廓）', () =>
     BUILDGATE.includes('root.scale.set(g.halfU, g.halfV, 1)'));
-  check('★N8/v3：三方案由 `GATE_STYLE_PARAMS[GATE_STYLE]` 驱动，且 A/B/C 三条分支都在（shard / feather / 双线）', () =>
-    BUILDGATE.includes('GATE_STYLE_PARAMS[GATE_STYLE]') && BUILDGATE.includes('P.shard')
+  check('★N8/v3：三方案由 `GATE_STYLE_PARAMS[this.gateStyle]` 驱动，且 A/B/C 三条分支都在（shard / feather / 双线）', () =>
+    BUILDGATE.includes('GATE_STYLE_PARAMS[this.gateStyle]') && BUILDGATE.includes('P.shard')
     && BUILDGATE.includes('P.feather > 0') && BUILDGATE.includes('gateBandGeometry'));
   check('★N8/v3：外辉光走**柔边贴图面片**（makeGateHaloTexture + 加法混合 ⇒ 边缘不硬直）', () =>
     BUILDGATE.includes('makeGateHaloTexture(') && BUILDGATE.includes('halo.renderOrder')
@@ -1316,12 +1322,13 @@ console.log('\n=== 18. v2 源码契约：N1 聚焦 / N2 模型 / N3 暂停 / N7 
   check('★N8：门姿态用**右手正交基**（right = (−sin, 0, −cos) ⇒ det=+1，门框不镜像）', () =>
     overlay.includes('new THREE.Vector3(-Math.sin(a), 0, -Math.cos(a))'));
 
-  // ── N9：v3 外观常量（**真跑**纯数据层 ⇒ 有牙齿：位面必须够淡、三方案齐备）──
-  check('★v3.1：`GATE_STYLE` 缺省为 `S`（六边形球体入场；A/B/C 代码与参数**保留**，改此值即可回退）', () =>
-    E.GATE_STYLE === 'S');
-  check('★N9：四套方案 A/B/C/S 参数齐备（S = 球体）', () => {
+  // ── N9：v3/v4 外观常量（**真跑**纯数据层 ⇒ 有牙齿：位面必须够淡、方案齐备）──
+  check('★v4：`GATE_STYLE` 缺省为 `D`（传送门能量块；运行时真源 = 设置项 entryFxStyle，本值仅兜底）', () =>
+    E.GATE_STYLE === 'D');
+  check('★N9：五套方案 A/B/C/S/D 参数齐备（S = 球体 / D = 传送门能量块）', () => {
     const P = E.GATE_STYLE_PARAMS;
-    return !!P && !!P.A && !!P.B && !!P.C && !!P.S && typeof P.A.edge === 'number';
+    return !!P && !!P.A && !!P.B && !!P.C && !!P.S && !!P.D && typeof P.A.edge === 'number'
+      && typeof P.D.blockCount === 'number';
   });
   check('★N9（不遮挡舰队红线）：三方案**位面不透明度都 ≤ 0.10**（透过门要能看清舰船）', () =>
     ['A', 'B', 'C'].every((k) => E.GATE_STYLE_PARAMS[k].barrierOpacity <= 0.10

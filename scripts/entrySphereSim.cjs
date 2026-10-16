@@ -196,11 +196,11 @@ console.log('\n=== 3. 组装 / 完整 / 消散三阶段时序（真跑） ===');
   const dispStart = S.sphereDisperseStart(cfg);
   const dispEnd = S.sphereDisperseEnd(cfg);
 
-  check('★总时长 = 组装 + 完整 + 消散 + 余晖 = ENTRY_TOTAL_SEC（5.0，**不得改那个常量**）', () =>
+  check('★总时长 = 组装 + 完整 + 消散 + 余晖 = ENTRY_TOTAL_SEC（[v4] 6.5，与门**同源**）', () =>
     Math.abs(S.sphereTotalSec(cfg) - E.ENTRY_TOTAL_SEC) < 1e-9);
-  check('阶段边界：组装 [0,1.8) / 完整 [1.8,3.0) / 消散 [3.0,4.5) / 余晖 [4.5,5.0]', () =>
-    Math.abs(holdStart - 1.8) < 1e-9 && Math.abs(dispStart - 3.0) < 1e-9
-    && Math.abs(dispEnd - 4.5) < 1e-9 && Math.abs(S.sphereTotalSec(cfg) - 5.0) < 1e-9);
+  check('阶段边界（[v4]）：组装 [0,2.6) / 完整 [2.6,4.2) / 消散 [4.2,6.2) / 余晖 [6.2,6.5]', () =>
+    Math.abs(holdStart - 2.6) < 1e-9 && Math.abs(dispStart - 4.2) < 1e-9
+    && Math.abs(dispEnd - 6.2) < 1e-9 && Math.abs(S.sphereTotalSec(cfg) - 6.5) < 1e-9);
 
   const m0 = motionsAt(0);
   check('★t=0 ⇒ 全部瓦片在**球外**（|pos| = R×k > R）', () => {
@@ -583,8 +583,9 @@ console.log('\n=== 7. 变异自检（改坏 entrySphere.ts ⇒ 断言必须能�
 console.log('\n=== 8. 参数一致性 + 接线契约 ===');
 {
   const P = E.GATE_STYLE_PARAMS.S;
-  check('★`GATE_STYLE` 默认 = `S`（球体）；A/B/C 代码与参数完整保留', () =>
-    E.GATE_STYLE === 'S' && !!E.GATE_STYLE_PARAMS.A && !!E.GATE_STYLE_PARAMS.B && !!E.GATE_STYLE_PARAMS.C);
+  check('★`GATE_STYLE` 默认 = `D`（传送门）；A/B/C/S 代码与参数完整保留（S = 球体）', () =>
+    E.GATE_STYLE === 'D' && !!E.GATE_STYLE_PARAMS.A && !!E.GATE_STYLE_PARAMS.B && !!E.GATE_STYLE_PARAMS.C
+    && !!E.GATE_STYLE_PARAMS.S);
   check('★外观常量与几何模块常量**一致**（防两处漂移）', () =>
     P.tileCount === S.SPHERE_TILE_COUNT
     && Math.abs(P.gapRatio - S.SPHERE_GAP_RATIO) < 1e-12
@@ -610,9 +611,10 @@ console.log('\n=== 8. 参数一致性 + 接线契约 ===');
   const FIN = slice(overlay, 'private finishEntryGate(g: FleetGate): void {', 'private finishAllEntryGates(): void {');
   const ATTACH = slice(overlay, 'private attachEntryClippingTo(key: string): void {', 'private registerEntryState(');
 
-  check('★ensureFleetGate：S 方案走球体（buildSphereVisual + placeSphereVisual），A/B/C 分支保留', () =>
-    ENSURE.includes("if (GATE_STYLE === 'S')") && ENSURE.includes('this.buildSphereVisual(g);')
-    && ENSURE.includes('this.placeSphereVisual(g, 0);') && ENSURE.includes('this.buildGateVisual(g);'));
+  check('★ensureFleetGate：S 方案走球体（buildSphereVisual + placeSphereVisual），A/B/C/D 分支保留', () =>
+    ENSURE.includes("if (this.gateStyle === 'S')") && ENSURE.includes('this.buildSphereVisual(g);')
+    && ENSURE.includes('this.placeSphereVisual(g, 0);') && ENSURE.includes('this.buildGateVisual(g);')
+    && ENSURE.includes('this.buildDoorVisual(g);'));
   check('★ensureFleetGate：球体数量上限（上限外返回 undefined ⇒ 不建门、不强制建实体）', () =>
     ENSURE.includes('this.spherePrimaryFleets(now).includes(fleet)') && ENSURE.includes('return undefined;'));
   check('★buildSphereVisual：真跑几何生成 + 三层瓦片 Mesh + 亮心 + 辉光 + 入场景', () =>
@@ -635,15 +637,15 @@ console.log('\n=== 8. 参数一致性 + 接线契约 ===');
   check('★finishEntryGate：结束**必须**同时卸裁剪 + dispose 球体（零残留红线）', () =>
     FIN.includes('entryApplyClipping(entry.sliceMats, null, false);') && FIN.includes('this.disposeSphereVisual(g);'));
   check('★attachEntryClippingTo：S 方案**不挂裁剪**（舰队不被切；显现靠缩放淡入）', () =>
-    ATTACH.includes("if (GATE_STYLE === 'S') return;") && ATTACH.includes('entryApplyClipping(entry.sliceMats, entry.entryPlanes, true);'));
+    ATTACH.includes("if (this.gateStyle === 'S') return;") && ATTACH.includes('entryApplyClipping(entry.sliceMats, entry.entryPlanes, true);'));
   check('★第三遍：按 `entryRevealScale` 做**缩放淡入**（"舰队在球里出现"）', () =>
     overlay.includes('this.entryRevealScale(v.key, now)')
     && overlay.includes('g.scale.setScalar(entry.baseScale * (0.25 + 0.75 * ge) * _minK * revealK)'));
   check('★addMesh / GLB 换装：S 方案不补挂裁剪（不指向已 dispose 的材质）', () => {
     const addMeshBlk = slice(overlay, 'private addMesh(v: UnitVis) {', 'private dropMesh(key: string) {');
     const swapBlk = slice(overlay, 'if (entry.pendingModel && entry.pendingModel.geo', 'const g = entry.group;');
-    return addMeshBlk.includes("if (entryActive && GATE_STYLE !== 'S')")
-      && swapBlk.includes("if (swapGate && !swapGate.done && GATE_STYLE !== 'S')");
+    return addMeshBlk.includes("if (entryActive && this.gateStyle !== 'S')")
+      && swapBlk.includes("if (swapGate && !swapGate.done && this.gateStyle !== 'S')");
   });
   check('★renderer 仍开**局部**裁剪、且未改用全局裁剪（A/B/C 回退路径不受影响）', () =>
     overlay.includes('this.renderer.localClippingEnabled = true;')

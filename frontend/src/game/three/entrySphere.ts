@@ -52,14 +52,16 @@ export const SPHERE_SEED = 0x5eed51a1;
 /** 切平面上初始裁剪方块的半边长（单位球切平面坐标，弧度量级）。瓦片典型半径 ≈ 0.31 rad。 */
 export const SPHERE_TANGENT_SPAN = 0.80;
 
-/** 组装阶段时长（秒，0 → 1.8）—— 瓦片从球外飞入并拼合。 */
-export const SPHERE_ASSEMBLE_SEC = 1.8;
-/** 完整阶段时长（秒，1.8 → 3.0）—— 球体完整发光，**舰队在此窗口内显现**。 */
-export const SPHERE_HOLD_SEC = 1.2;
-/** 消散阶段时长（秒，3.0 → 4.5）—— 瓦片沿径向飞散 + 翻滚 + 淡出。 */
-export const SPHERE_DISPERSE_SEC = 1.5;
-/** 余晖阶段时长（秒，4.5 → 5.0）—— 亮心/紫辉光残余淡出。 */
-export const SPHERE_AFTERGLOW_SEC = 0.5;
+/** 组装阶段时长（秒，0 → 2.6）—— 瓦片从球外飞入并拼合。
+ *  [v4] 1.8 → **2.6**（用户「速度可以慢一点」）；须与门同源（`sphereTotalSec === ENTRY_TOTAL_SEC === 6.5`）。 */
+export const SPHERE_ASSEMBLE_SEC = 2.6;
+/** 完整阶段时长（秒，2.6 → 4.2）—— 球体完整发光，**舰队在此窗口内显现**。[v4] 1.2 → 1.6。 */
+export const SPHERE_HOLD_SEC = 1.6;
+/** 消散阶段时长（秒，4.2 → 6.2）—— 瓦片沿径向飞散 + 翻滚 + 淡出。[v4] 1.5 → 2.0。 */
+export const SPHERE_DISPERSE_SEC = 2.0;
+/** 余晖阶段时长（秒，6.2 → 6.5）—— 亮心/紫辉光残余淡出。
+ *  ⚠ [v4] 0.5 → **0.3**：组装/完整/消散（2.6+1.6+2.0=6.2）已定，余晖取 0.3 ⇒ 总时长恰 **6.5**（= 门）。 */
+export const SPHERE_AFTERGLOW_SEC = 0.3;
 /** 组装逐瓦片**随机延迟**跨度（秒）—— 复刻"随机拼起来"（不是齐刷刷一起到位）。 */
 export const SPHERE_TILE_STAGGER = 0.6;
 /** 消散逐瓦片**随机延迟**跨度（秒）—— 复刻"随机飞散"。 */
@@ -127,8 +129,10 @@ export const SPHERE_DISP_FADE_START = 0.55;
 
 /** 舰队显现：吸收段（秒）—— 开战瞬间舰队被"吸进"球里（1 → 0）。 */
 export const SPHERE_ABSORB_SEC = 0.35;
-/** 舰队显现：显现起始时刻（秒，相对入场起点）—— 略早于组装结束，让"拼合"与"显现"衔接。 */
-export const SPHERE_REVEAL_START = 1.40;
+/** 舰队显现：显现起始时刻（秒，相对入场起点）—— 略早于组装结束，让"拼合"与"显现"衔接。
+ *  [v4] 1.40 → **1.90**：组装延到 2.6s 后，显现起点仍须 ≥ `assembleSec × 0.6`（台架断言）且
+ *  满足「最晚一舰在消散开始(4.2s)前完全显现」（`revealStart + spread + revealDur ≤ dispStart`）。 */
+export const SPHERE_REVEAL_START = 1.90;
 /** 舰队显现：单舰从 0 → 1 的时长（秒）。 */
 export const SPHERE_REVEAL_DUR = 0.75;
 /** 舰队显现：逐舰随机/径向错开跨度（秒）⇒ 不是所有舰同时浮现。 */
@@ -476,7 +480,7 @@ export const SPHERE_MOTION_DEFAULT: SphereMotionCfg = {
   dispStagger: SPHERE_DISP_STAGGER,
 };
 
-/** 入场总时长（秒）= 组装 + 完整 + 消散 + 余晖。默认 **5.0**，必须 = `ENTRY_TOTAL_SEC`。 */
+/** 入场总时长（秒）= 组装 + 完整 + 消散 + 余晖。默认 **6.5**，必须 = `ENTRY_TOTAL_SEC`。 */
 export function sphereTotalSec(cfg: SphereMotionCfg = SPHERE_MOTION_DEFAULT): number {
   return cfg.assembleSec + cfg.holdSec + cfg.disperseSec + cfg.afterglowSec;
 }
@@ -586,7 +590,7 @@ export const SPHERE_REVEAL_DEFAULT: SphereRevealCfg = {
  *   · `[absorbSec, revealStart + delay]` ⇒ 0（藏在球里）
  *   · `[revealStart + delay, +revealDur]` ⇒ 0 → 1（在球里显现）
  *   · 之后 ⇒ 1（完全显现）
- * ⚠ `delay = 0` 时 `revealStart + revealDur = 2.15s < 3.0s`（消散开始）⇒ **显现必在球体内完成**。
+ * ⚠ `delay = 0` 时 `revealStart + revealDur = 2.65s < 4.2s`（消散开始）⇒ **显现必在球体内完成**。
  */
 export function sphereRevealAmt(
   elapsed: number, delay: number, cfg: SphereRevealCfg = SPHERE_REVEAL_DEFAULT,

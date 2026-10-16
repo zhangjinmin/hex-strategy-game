@@ -60,8 +60,10 @@ export const SLICE_ENTRY_ENABLED_DEFAULT = true;
 // ════════════════════════════════════════════════════════════════════════════
 
 /** [v2 · N4] 整队入场总时长（秒）。**刻意 > `ASSEMBLE_MAX_MS`(4s)** ⇒ 入场结束必须重置
- *  `_assemblingSince`，否则解除暂停瞬间舰队直接跳进 `exploring`（见 `ENTRY_NEEDS_ASSEMBLE_RESET`）。 */
-export const ENTRY_TOTAL_SEC = 5.0;
+ *  `_assemblingSince`，否则解除暂停瞬间舰队直接跳进 `exploring`（见 `ENTRY_NEEDS_ASSEMBLE_RESET`）。
+ *  [v4] 5.0 → **6.5**（用户「速度可以慢一点」）—— 门与球**同源**（`doorTotalSec` / `sphereTotalSec`
+ *  都必须等于本值，台架断言）。 */
+export const ENTRY_TOTAL_SEC = 6.5;
 /** [v2 · N6] 门外扩系数：门截面尺寸 = 全队投影 `max(宽, 高)` × 本值（用户原话「比最大值再往外扩一点」）。 */
 export const ENTRY_GATE_PAD = 1.25;
 /** [v2] 扫描行程余量下限（世界单位）：保证 `p = 0` 时推进面落在**舰首之外**（全不可见）。 */
@@ -104,10 +106,30 @@ export const ENTRY_GATE_DIR = 1;
 // ════════════════════════════════════════════════════════════════════════════
 
 /** [v3] 门框视觉方案：`A` 能量环门（家园2 式）/ `B` 光栅门 / `C` 量子碎门 /
- *  `S` **六边形球体组装·消散**（用户 2026-10-16 三次反馈后重做，见 `entrySphere.ts`）。 */
-export type GateStyleId = 'A' | 'B' | 'C' | 'S';
-/** [v3.1] 当前生效方案 —— 默认切到 **`S`（球体）**；A/B/C 的代码与参数**完整保留**，改此值即可回退。 */
-export const GATE_STYLE: GateStyleId = 'S';
+ *  `S` **六边形球体组装·消散**（用户 2026-10-16 三次反馈后重做，见 `entrySphere.ts`）/
+ *  `D` **[v4] 传送门·能量块组装·消散**（科幻化重做，见 `entryDoor.ts`；用户反馈"门的观感更好"⇒ 默认）。 */
+export type GateStyleId = 'A' | 'B' | 'C' | 'S' | 'D';
+/** [v4] **默认 / 回退**风格 —— `D`（传送门能量块）。
+ *  ⚠ 运行时真源是**设置项** `entryFxStyle`：3D 层创建时经 `gateStyleForEntryFx` 映射到内部风格
+ *  （`'door'→D` / `'sphere'→S` / `'off'→null` 完全跳过）；本常量只在设置不可得时兜底。
+ *  A/B/C 的代码与参数**完整保留**（Q/A 回退），`GATE_STYLE_PARAMS` 覆盖全部 5 套。 */
+export const GATE_STYLE: GateStyleId = 'D';
+
+// ── [v4] 开场动画设置项（settingsStore.entryFxStyle）→ 内部风格的**唯一映射** ──
+/** 用户可选的开场动画形式（与 `settingsStore.entryFxStyle` 同构；纯数据 ⇒ 台架可真跑）。 */
+export type EntryFxStyle = 'door' | 'sphere' | 'off';
+/** 设置项默认值（存量存档迁移亦回落此值）。 */
+export const ENTRY_FX_STYLE_DEFAULT: EntryFxStyle = 'door';
+/**
+ * 设置项 → 内部门风格：`'door'→'D'` / `'sphere'→'S'` / `'off'→null`（**完全跳过**入场特效）；
+ * 未设置 / 非法值 ⇒ 回退编译期默认 `GATE_STYLE`。**唯一映射点**（防两处各说各话）。
+ */
+export function gateStyleForEntryFx(fx: EntryFxStyle | string | undefined | null): GateStyleId | null {
+  if (fx === 'door') return 'D';
+  if (fx === 'sphere') return 'S';
+  if (fx === 'off') return null;
+  return GATE_STYLE;
+}
 
 /** [v3] 单个方案的**全部外观旋钮**（集中此处便于按真机截图迭代）。 */
 export interface GateStyleParams {
@@ -154,6 +176,15 @@ export interface GateStyleParams {
   dispersion?: number;
   /** [S] 瓦片顶点朝质心收缩比例（留缝 ⇒ 参考图 1 的"有间隙"）。 */
   gapRatio?: number;
+  // ── [v4 · D] **传送门能量块**方案专属旋钮（其余方案不填 ⇒ undefined，不参与其渲染路径）──
+  //   ⚠ 时序真源在 `three/entryDoor.ts`（`DOOR_*_SEC`），此处只放**外观**旋钮；
+  //     台架断言 "本处 blockCount == entryDoor.DOOR_BLOCK_COUNT 且 dispersion == DOOR_DISPERSION_K" ⇒ 防漂移。
+  /** [D] 门框能量块数（= `entryDoor.DOOR_BLOCK_COUNT`，60~80）。 */
+  blockCount?: number;
+  /** [D] 能量块**主色**（亮青白 ⇒ 自发光能量块）。 */
+  blockColor?: number;
+  /** [D] 位面**扫描光带**颜色（门沿舰队纵轴推进时的明亮前缘）。 */
+  scanColor?: number;
 }
 
 /** [v3] 三套外观参数（颜色 / 线宽 / 切角 / 位面不透明度 / 纹路 / 脉冲）。 */
@@ -195,6 +226,26 @@ export const GATE_STYLE_PARAMS: Record<GateStyleId, GateStyleParams> = {
     // v3.2：色散偏移由 0.016 收到 0.005（窄丝带 ⇒ 边缘微色散，不成环）；须与入口常量同步
     dispersion: 0.005,
     gapRatio: 0.08,
+  },
+  // D · **[v4] 传送门·能量块组装**（用户反馈「之前那个门的效果更好，但可以再科幻点」⇒ 把球体已成功的
+  //   离散块组装/消散、色散镶边、自发光、外圈辉光**移植到门框**，并让门"活"起来）。
+  //   观感三层（同球体优先级）：色散镶边（红/青，沿块法线微偏移）> 亮青白能量块 > 青/紫外辉光。
+  //   `blockCount` 与 `entryDoor.DOOR_BLOCK_COUNT` 同源（台架断言防漂移）。
+  D: {
+    // 门框"边缘 / 亮心 / 外辉光"三层色 —— 亮青白为主，外辉光取紫（与球体一致的冷色层次）
+    edge: 0x63c4ff, core: 0xffffff, halo: 0x8f7bff,
+    // A/B/C 的旧旋钮 D 不使用（位面走自绘 flowing 纹理；脉冲由 `doorBarrierAmt` 驱动）
+    chamfer: 0, edgeWidth: 0, feather: 0,
+    barrierOpacity: 0.085, flow: 0, density: 0, pulse: 0, shard: false,
+    blockCount: 72,
+    blockColor: 0x8fe9ff,
+    scanColor: 0xdaf6ff,
+    dispA: 0xff5a78,
+    dispB: 0x5ad6ff,
+    coreColor: 0xffffff,
+    glowColor: 0x8f7bff,
+    // 与球体一致的微妙色散（窄丝带 ⇒ 轮廓处微色散，不整圈粗红箍）
+    dispersion: 0.006,
   },
 };
 

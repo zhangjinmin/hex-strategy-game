@@ -38,6 +38,15 @@ export const useSettingsStore = defineStore('settings', () => {
   const battle3dPerfGuard = ref(true);
   /** 3D 战场显示帧率：开启时在 3D 容器一角显示极简实时 FPS，用于对比调档前后。默认关。 */
   const battle3dShowFps = ref(false);
+  /**
+   * [v4 开场动画] 开场（切片传送入场）的**特效形式**：
+   *   · `'door'`   = 传送门（能量块组装 / 消散；用户实机反馈"门的观感更好" ⇒ 默认）
+   *   · `'sphere'` = 六边形能量球（用户认可其质量，**保留**）
+   *   · `'off'`    = 关闭（**不建任何特效对象、不聚焦、不暂停**，舰队照常显示）
+   * 语义 = **下一场战斗生效**（与 battle3dQuality / shipModelDetail 同规则：3D 层创建时读取一次，
+   * 热切换需重建整层）。存量存档经 settingsVersion 迁移一律回落 `'door'`（见 load()）。
+   */
+  const entryFxStyle = ref<'door' | 'sphere' | 'off'>('door');
 
   // ===== 战略星图显示模式 =====
   // 'universe' 宇宙模式：无悬浮板，纯星际状态（全息沙盘原始观感）—— 默认模式
@@ -78,6 +87,10 @@ export const useSettingsStore = defineStore('settings', () => {
           : 'high';
         battle3dPerfGuard.value = ver < 2 ? true : (data.battle3dPerfGuard ?? true);
         battle3dShowFps.value = data.battle3dShowFps ?? false;
+        // [v4] 开场动画形式：白名单校验，非法/缺失（ver<3 存量档）一律回落 'door'（默认传送门）
+        entryFxStyle.value = (data.entryFxStyle === 'door' || data.entryFxStyle === 'sphere' || data.entryFxStyle === 'off')
+          ? data.entryFxStyle
+          : 'door';
         factionColorScheme.value = data.factionColorScheme ?? 'default';
         // 尊重已保存的模式（旧存档里的 'holo' 也保留）；无存储值时默认 'universe'
         starmapDisplayMode.value = (data.starmapDisplayMode === 'universe' || data.starmapDisplayMode === 'holo')
@@ -95,7 +108,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const save = () => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
-        settingsVersion: 2,   // [v12.1 C3] 写出结构版本，供下次 load 做迁移判定
+        settingsVersion: 3,   // [v4] 2 → 3：新增 entryFxStyle（存量档 ver<3 ⇒ 回落 'door'）
         musicVolume: musicVolume.value,
         sfxVolume: sfxVolume.value,
         musicEnabled: musicEnabled.value,
@@ -106,6 +119,7 @@ export const useSettingsStore = defineStore('settings', () => {
         battle3dQuality: battle3dQuality.value,
         battle3dPerfGuard: battle3dPerfGuard.value,
         battle3dShowFps: battle3dShowFps.value,
+        entryFxStyle: entryFxStyle.value,
         factionColorScheme: factionColorScheme.value,
         starmapDisplayMode: starmapDisplayMode.value,
         apiKey: apiKey.value,
@@ -118,7 +132,7 @@ export const useSettingsStore = defineStore('settings', () => {
   };
 
   // 自动持久化
-  watch([musicVolume, sfxVolume, musicEnabled, sfxEnabled, musicTrack, factionColorScheme, starmapDisplayMode, briefingDisabled, uiScale, apiKey, apiModel, apiUrl, showSupplyChain, shipModelDetail, battle3dQuality, battle3dPerfGuard, battle3dShowFps], save, { deep: true });
+  watch([musicVolume, sfxVolume, musicEnabled, sfxEnabled, musicTrack, factionColorScheme, starmapDisplayMode, briefingDisabled, uiScale, apiKey, apiModel, apiUrl, showSupplyChain, shipModelDetail, battle3dQuality, battle3dPerfGuard, battle3dShowFps, entryFxStyle], save, { deep: true });
 
   // 初始化加载
   load();
@@ -134,6 +148,7 @@ export const useSettingsStore = defineStore('settings', () => {
     battle3dQuality.value = 'high';
     battle3dPerfGuard.value = true;   // [v12.1 C3] 与默认值一致（帧率保护默认开）
     battle3dShowFps.value = false;
+    entryFxStyle.value = 'door';      // [v4] 恢复默认：传送门开场动画
     factionColorScheme.value = 'default';
     starmapDisplayMode.value = 'universe';
     apiKey.value = '';
@@ -156,6 +171,8 @@ export const useSettingsStore = defineStore('settings', () => {
   const getBattle3dQualityValue = (): 'high' | 'medium' | 'low' => battle3dQuality.value;
   const getBattle3dPerfGuardValue = (): boolean => battle3dPerfGuard.value;
   const getBattle3dShowFpsValue = (): boolean => battle3dShowFps.value;
+  /** [v4] 开场动画形式 —— 同样用函数 getter 透传正确类型（理由见 getShipModelDetailValue）。 */
+  const getEntryFxStyleValue = (): 'door' | 'sphere' | 'off' => entryFxStyle.value;
 
   return {
     musicVolume, sfxVolume, musicEnabled, sfxEnabled, musicTrack,
@@ -165,9 +182,11 @@ export const useSettingsStore = defineStore('settings', () => {
     battle3dQuality,
     battle3dPerfGuard,
     battle3dShowFps,
+    entryFxStyle,
     getBattle3dQualityValue,
     getBattle3dPerfGuardValue,
     getBattle3dShowFpsValue,
+    getEntryFxStyleValue,
     factionColorScheme,
     starmapDisplayMode,
     apiKey, apiModel, apiUrl,

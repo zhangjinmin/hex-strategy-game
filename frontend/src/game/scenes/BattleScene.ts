@@ -52,6 +52,8 @@ import { entryDelayForSlot, entrySpreadEffective, SLICE_DUR_PER_SHIP, SLICE_SPRE
 import {
     ENTRY_TOTAL_SEC, ENTRY_RESUME_GRACE_SEC, ENTRY_HOLD_PAUSE, ENTRY_NEEDS_ASSEMBLE_RESET,
 } from '../entrySlice';
+// [v4] 开场动画形式设置项（`'off'` ⇒ 不播入场动画 ⇒ 本文件侧也必须**不暂停**，见 beginEntryPhase）
+import { useSettingsStore } from '../../store/settingsStore';
 // [v33] 旧案 44 图战术模块整合（docs/design/loch-web-plan/02_*）：
 //   **全部走单一真源 import，禁止再在本文件内联 beats 表 / 地形分支 / 舰种装甲表。**
 //   数值真源 = config/balance.ts 的 TACTICAL_V33 / COLUMN_MATRIX / DIRECTION_ARMOR / INTERCEPT /
@@ -1342,6 +1344,9 @@ export class BattleScene extends Phaser.Scene {
         this.entryTimer?.remove();
         this.entryTimer = null;
         if (!ENTRY_HOLD_PAUSE) { this.store.isPaused = false; return; }
+        // [v4] 设置项 `entryFxStyle === 'off'`（关闭开场动画）⇒ 没有入场动画，白暂停 6.5s 只会像卡死 ⇒ 直接解除。
+        //   ⚠ 必须与 3D 层同判（3D 层 `entryFxOn()` 同样读本设置）⇒ 二者永不背离。
+        if (this.entryFxDisabledBySetting()) { this.store.isPaused = false; return; }
         // 无 3D 层（2D 降级路径，`__b3dOverlay` 为空）⇒ 没有入场动画，白暂停 5s 只会像卡死 ⇒ 直接解除。
         const has3d = typeof window !== 'undefined' && !!(window as any).__b3dOverlay;
         if (!has3d) { this.store.isPaused = false; return; }
@@ -1351,6 +1356,11 @@ export class BattleScene extends Phaser.Scene {
             (ENTRY_TOTAL_SEC + ENTRY_RESUME_GRACE_SEC) * 1000,
             () => this.endEntryPhase(),
         );
+    }
+
+    /** [v4] 设置项是否关闭了开场动画（`entryFxStyle === 'off'`）。读设置失败 ⇒ false（照常播）。 */
+    private entryFxDisabledBySetting(): boolean {
+        try { return useSettingsStore().getEntryFxStyleValue() === 'off'; } catch { return false; }
     }
 
     /** [切片传送入场 v2 · N3] 结束入场阶段：解除暂停 + **重置集结计时** + 通知 3D 收门（幂等）。 */

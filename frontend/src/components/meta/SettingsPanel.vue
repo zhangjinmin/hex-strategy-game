@@ -78,14 +78,24 @@
         </label>
         <span class="setting-value">{{ settings.battle3dShowFps ? 'ON' : 'OFF' }}</span>
       </div>
-      <div class="setting-row">
-        <span class="setting-label">舰船模型精细度</span>
-        <select class="neo-select" :value="shipDetail" @change="onShipDetailChange">
-          <option value="high">高（原始 ~5 万面）</option>
-          <option value="medium">中（LOD1 ≈20% 三角数）</option>
-          <option value="low">低（LOD2 ≈5% 三角数）</option>
-        </select>
+      <div class="setting-row">
+        <span class="setting-label">舰船模型精细度</span>
+        <select class="neo-select" :value="shipDetail" @change="onShipDetailChange">
+          <option value="high">高（原始 ~5 万面）</option>
+          <option value="medium">中（LOD1 ≈20% 三角数）</option>
+          <option value="low">低（LOD2 ≈5% 三角数）</option>
+        </select>
       </div>
+      <div class="setting-row">
+        <span class="setting-label">开场动画</span>
+        <select class="neo-select" :value="entryFx" @change="onEntryFxChange">
+          <option value="door">传送门（能量块组装）</option>
+          <option value="sphere">能量球（六边形拼接）</option>
+          <option value="off">关闭</option>
+        </select>
+      </div>
+      <div class="setting-hint">开场动画：开战时播放的入场特效（传送门 / 能量球 / 关闭）。下一场战斗生效。</div>
+      <div class="setting-hint">关闭后不播入场特效，舰队立即正常显示（也不会暂停）。</div>
       <div class="setting-hint">降低舰船模型面数可提升帧率（尤其核显）。轮廓线框各档位均保留，差别只在折角密度。下一场战斗生效。</div>
       <div class="setting-hint">核显卡顿时优先调低画质档（中/低会降低 3D 渲染分辨率与抗锯齿）。</div>
       <div class="setting-hint">帧率保护：低于约 45fps 时自动把多余实体退回光点层；跑得动时完全不生效。</div>
@@ -206,6 +216,16 @@ const b3dQuality = computed<'high' | 'medium' | 'low'>({
 function onB3dQualityChange(e: Event) {
   const v = (e.target as HTMLSelectElement).value;
   if (v === 'high' || v === 'medium' || v === 'low') b3dQuality.value = v;
+}
+
+// [v4] 开场动画形式（door 传送门 / sphere 能量球 / off 关闭）——由战斗 3D 层在创建时读取生效（下一场战斗生效）。
+const entryFx = computed<'door' | 'sphere' | 'off'>({
+  get: () => settings.entryFxStyle ?? 'door',
+  set: (v) => { settings.entryFxStyle = v; },
+});
+function onEntryFxChange(e: Event) {
+  const v = (e.target as HTMLSelectElement).value;
+  if (v === 'door' || v === 'sphere' || v === 'off') entryFx.value = v;
 }
 
 // 战略星图显示模式（宇宙 / 悬浮板）
