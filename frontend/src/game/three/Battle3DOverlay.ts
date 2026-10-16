@@ -37,8 +37,9 @@ import {
   ENTRY_CFG_DEFAULT, ENTRY_REG_WINDOW_SEC,
   SLICE_ENTRY_ENABLED_DEFAULT,
   ENTRY_AUTO_FOCUS, ENTRY_FOCUS_CAMY_K, ENTRY_FOCUS_ELEV, ENTRY_GATE_VISIBLE,
+  GATE_STYLE, GATE_STYLE_PARAMS, ENTRY_GATE_MIN_HALF, type GateStyleId,
   entryApplyClipping, entryGateAccumulate, entryGateCenterU, entryGateCenterV,
-  entryGateEmptyBox, entryGateFront, entryGateMargin, entryGateSize,
+  entryGateEmptyBox, entryGateFront, entryGateMargin, entryGateSizeU, entryGateSizeV,
   entryGateValid, entryGateWritePlanes, entryGlowAmt, entryShipProgress,
   type EntryCfg, type EntryGateBox, type EntryShip, type SliceMatLike,
 } from '../entrySlice';
@@ -265,9 +266,10 @@ interface ShipEntry {
  * 用户定案：「**就一个舰队用一个门**，然后从门里面舰队飞出来」。故门是**舰队级**对象：
  *   · 5 个裁剪平面（`planes`）由**同队所有舰共享**同一数组实例 ⇒ 一次 `entryGateWritePlanes`
  *     全队生效（性能 + 语义都只需一份）；
- *   · 截面尺寸 = 全队投影包围盒 `max(宽, 高) × ENTRY_GATE_PAD`（`halfSize` 为半边长）；
+ *   · 截面尺寸 = 全队投影包围盒 **宽/高各自 × ENTRY_GATE_PAD**（`halfU`/`halfV` 为半值）——
+ *     [v3 **改矩形**] v2 的正方形门"竖向空了一大半"，改为**矩形**以紧贴舰队轮廓；
  *   · 推进面沿**舰队朝向**（`fwd`）从舰首（`box.sHi`）扫到舰尾（`box.sLo`）；
- *   · `frame` / `barrier` 是**可见的门本体**（裁剪不可见 ⇒ 不画就看不出"从门里出来"，v1 的致命缺失）。
+ *   · `vis` 是**可见的门本体**（裁剪不可见 ⇒ 不画就看不出"从门里出来"，v1 的致命缺失）。
  */
 interface FleetGate {
   /** 所属舰队（Map 的键；必须与 `unitVis[i].fleet` 同源）。 */
@@ -281,8 +283,10 @@ interface FleetGate {
   /** 门截面中心在 right/up 基上的投影（= 投影包围盒中心）。 */
   cu: number;
   cv: number;
-  /** 门截面**半边长** = `entryGateSize(box, PAD) / 2`。 */
-  halfSize: number;
+  /** [v3 矩形] 截面**横向半跨** = `entryGateSizeU(box, PAD) / 2`。 */
+  halfU: number;
+  /** [v3 矩形] 截面**竖向半跨** = `entryGateSizeV(box, PAD) / 2`。 */
+  halfV: number;
   /** 扫描行程余量（保证 p=0 时推进面在舰首之外）。 */
   margin: number;
   /** 建门时算定的投影包围盒（暂停期舰队静止 ⇒ 一次算定即可）。 */
@@ -297,12 +301,14 @@ interface FleetGate {
   done: boolean;
   /** 本门覆盖的舰 key（结束时要逐个卸载裁剪）。 */
   shipKeys: string[];
-  /** 可见门框（正方形描边 + 4 条沿朝向后延的"柱棱" ⇒ 读作长方体通道）。 */
-  frame: THREE.LineSegments | null;
-  /** 可见门框**亮带**（方形环带 ⇒ 粗边框；1px 线条在 1600px 画面上太细，读不出"门"）。 */
-  band: THREE.Mesh | null;
-  /** 可见位面（门框内的半透明量子面）。 */
-  barrier: THREE.Mesh | null;
+  /**
+   * [v3] **可见门本体**的根组（门框 + 亮带 + 外辉光 + 位面）。
+   * 姿态一次算定（`makeBasis(right, up, fwd)` ⇒ 局部 X/Y/Z 映射到 横向/竖直/朝向），
+   * 逐帧只改 `position`（随推进面移动）+ 材质不透明度（脉冲）。**自身不挂裁剪**。
+   */
+  vis: THREE.Group | null;
+  /** [v3] 位面纹路贴图（逐帧滚动 offset ⇒ "流动"）。 */
+  barrierTex: THREE.CanvasTexture | null;
 }
 
 /**
@@ -4169,79 +4175,267 @@ export class Battle3DOverlay {
     return !(w && w.__entryFxEnabled === false);
   }
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // [v3] 门**外观**：三方案共用几何/裁剪/时序，只换"框 / 位面 / 辉光"的画法。
+  //   观感目标（用户 2026-10-16 二次反馈：v2「太丑、像纸板」）：
+  //     · 亮心（近白细线）→ 边缘（青/蓝紫）→ 外辉光（低饱和、**柔边**）三层亮度；
+  //     · 门内位面**高度透明**（透过它要能看清后面的舰船）；
+  //     · 尺寸贴合（矩形门紧贴舰队轮廓，不再"竖向空一大半"）。
+  //   ⚠ 本组对象**自己不挂 `clippingPlanes`** ⇒ 不会被自己的门切（与舰体材质完全解耦）。
+  // ──────────────────────────────────────────────────────────────────────────
+
+  /** [v3] 门框**切角矩形**轮廓（局部 [-1,1]，逆时针 CCW）。`ch` = 切角比例 0..0.5。 */
+  private gateFramePoints(ch: number): [number, number][] {
+    const c = Math.min(0.48, Math.max(0, ch));
+    if (c <= 1e-6) return [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+    return [
+      [-1 + c, -1], [1 - c, -1], [1, -1 + c], [1, 1 - c],
+      [1 - c, 1], [-1 + c, 1], [-1, 1 - c], [-1, -1 + c],
+    ];
+  }
+
   /**
-   * [v2 · N8] 建**可见的门本体**：门框（正方形描边 + 4 条沿朝向后延的柱棱 ⇒ 读作**长方体通道**）
-   * + 门内半透明**位面**（量子面）。
-   *
-   * ★ 这是 v1 最大的缺失 —— **裁剪本身完全不可见**。不画这些，用户看到的只是"舰体凭空出现"，
-   *   于是"加载效果白做了"（用户原话）。
+   * [v3] 由闭合轮廓生成**环带**面片（局部 XY 平面）：沿轮廓法线偏移 `a`→`b` 之间的四边形带。
+   * 每条边各出一个四边形 ⇒ 均匀宽度（顶点级斜接不必做，边缘处轻微重叠由加法混合自然融合）。
+   * `outward = true` ⇒ 向**外**扩（做粗边/外辉光）；否则向**内**缩（做内侧羽化/厚度）。
+   */
+  private gateBandGeometry(pts: [number, number][], a: number, b: number, outward = false): THREE.BufferGeometry {
+    const n = pts.length;
+    const s = outward ? -1 : 1;
+    const pos: number[] = [];
+    for (let i = 0; i < n; i++) {
+      const [ax, ay] = pts[i];
+      const [bx, by] = pts[(i + 1) % n];
+      const ex = bx - ax, ey = by - ay;
+      const len = Math.hypot(ex, ey) || 1;
+      // CCW 轮廓的内法线 = 边方向左旋 90° = (−ey, ex)/len
+      const nx = (-ey / len) * s, ny = (ex / len) * s;
+      const ax2 = ax + nx * a, ay2 = ay + ny * a;
+      const bx2 = bx + nx * a, by2 = by + ny * a;
+      const cx2 = bx + nx * b, cy2 = by + ny * b;
+      const dx2 = ax + nx * b, dy2 = ay + ny * b;
+      pos.push(ax, ay, 0, bx, by, 0, cx2, cy2, 0);
+      pos.push(ax, ay, 0, cx2, cy2, 0, dx2, dy2, 0);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    return geo;
+  }
+
+  /** [v3] 轮廓点 → LineLoop 几何（锐利细亮线；WebGL 线宽不可调 ⇒ "粗"一律走环带面片）。 */
+  private gateLoopGeometry(pts: [number, number][], z = 0): THREE.BufferGeometry {
+    const pos: number[] = [];
+    for (const [x, y] of pts) pos.push(x, y, z);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    return geo;
+  }
+
+  /** [v3] 柔边矩形**外辉光**贴图：边框处最亮、向外柔和衰减、**中心透明** ⇒ 不会冲淡舰船。 */
+  private makeGateHaloTexture(color: number): THREE.CanvasTexture {
+    const S = 256;
+    const cv = document.createElement('canvas');
+    cv.width = S; cv.height = S;
+    const ctx = cv.getContext('2d');
+    if (ctx) {
+      ctx.clearRect(0, 0, S, S);
+      ctx.strokeStyle = '#' + (color >>> 0).toString(16).padStart(6, '0');
+      ctx.lineJoin = 'round';
+      // 由内向外多层叠加：近框处亮而细，越外越粗越淡 ⇒ 无硬直边。
+      // ⚠ 必须**紧贴门框**（太宽会糊成一条灰带 —— 实测取证修正）。
+      for (let i = 0; i < 9; i++) {
+        const t = i / 8;
+        ctx.globalAlpha = 0.20 * (1 - t) + 0.015;
+        ctx.lineWidth = 2 + 11 * t;
+        const inset = 17 - 11 * t;
+        ctx.beginPath();
+        ctx.rect(inset, inset, S - inset * 2, S - inset * 2);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+    const tex = new THREE.CanvasTexture(cv);
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  /** [v3] 门**位面**纹路贴图（极淡）：A 竖向细纹 / B 水平扫描线 / C 噪点星尘（均可纵向滚动）。 */
+  private makeGateBarrierTexture(style: GateStyleId, density: number): THREE.CanvasTexture {
+    const S = 256;
+    const cv = document.createElement('canvas');
+    cv.width = S; cv.height = S;
+    const ctx = cv.getContext('2d');
+    if (ctx) {
+      ctx.clearRect(0, 0, S, S);
+      ctx.fillStyle = '#ffffff';
+      ctx.strokeStyle = '#ffffff';
+      const den = Math.max(1, density);
+      if (style === 'B') {
+        const step = Math.max(2, Math.round(S / den));
+        for (let y = 0; y < S; y += step) {
+          ctx.globalAlpha = 0.45 + 0.5 * Math.random();
+          ctx.fillRect(0, y, S, 1);
+        }
+      } else if (style === 'C') {
+        const count = Math.round(den * 6);
+        for (let i = 0; i < count; i++) {
+          ctx.globalAlpha = 0.2 + 0.8 * Math.random();
+          const r = Math.random() < 0.88 ? 1 : 2;
+          ctx.fillRect(Math.random() * S, Math.random() * S, r, r);
+        }
+      } else {
+        const step = Math.max(2, Math.round(S / den));
+        ctx.lineWidth = 1;
+        ctx.setLineDash([9, 17]);   // 竖向虚线 ⇒ 纵向滚动才看得出"流动"
+        for (let x = 0; x < S; x += step) {
+          ctx.globalAlpha = 0.3 + 0.55 * Math.random();
+          ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, S); ctx.stroke();
+        }
+        ctx.setLineDash([]);
+      }
+      ctx.globalAlpha = 1;
+    }
+    const tex = new THREE.CanvasTexture(cv);
+    tex.wrapS = THREE.RepeatWrapping;
+    tex.wrapT = THREE.RepeatWrapping;
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  /**
+   * [v3 · N8] 建**可见的门本体** —— 三方案（`GATE_STYLE`）共用一套骨架：
+   *   门框（sharp 线 / 环带）+ 柔边外辉光 + 极淡流动位面。
+   * ★ 这是 v1 最大的缺失（裁剪完全不可见 ⇒ "加载效果白做了"）；v2 又做成了挡视线的实心板。
    * 姿态一次算定（`makeBasis(right, up, fwd)` ⇒ 局部 X/Y/Z 映射到 横向/竖直/朝向）；
-   * 逐帧只改 `position`（随推进面移动）+ 位面亮度。
-   * ⚠ 本对象**自己不挂 `clippingPlanes`** ⇒ 不会被自己的门切（与舰体材质完全解耦）。
+   * 逐帧只改 `position`（随推进面移动）+ 材质不透明度（辉光包络 / 呼吸脉冲）。
+   * 门框是**矩形**（`halfU/halfV` 分轴缩放）⇒ 紧贴舰队投影轮廓。
    */
   private buildGateVisual(g: FleetGate): void {
     if (!ENTRY_GATE_VISIBLE) return;
-    // 门框几何（**局部单位**，由 `object.scale = halfSize` 换算到世界）：
-    //   · 正方形描边：局部 XY 平面上 (±1, ±1)
-    //   · 4 条柱棱：自四角沿局部 −Z（= 朝向的反向）伸出 RAIL ⇒ 一眼读作"长方体门洞"
-    const RAIL = 0.6;
-    const corners: [number, number][] = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
-    const pts: number[] = [];
-    for (let i = 0; i < 4; i++) {
-      const [x0, y0] = corners[i];
-      const [x1, y1] = corners[(i + 1) % 4];
-      pts.push(x0, y0, 0, x1, y1, 0);        // 门框边
-      pts.push(x0, y0, 0, x0, y0, -RAIL);    // 柱棱（短 ⇒ 读作"门洞厚度"而非长盒子）
-    }
-    const frameGeo = new THREE.BufferGeometry();
-    frameGeo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
-    const frame = new THREE.LineSegments(frameGeo, new THREE.LineBasicMaterial({
-      color: 0xdff6ff, transparent: true, opacity: 0.95,
-      blending: THREE.AdditiveBlending, depthWrite: false,
-    }));
-    frame.frustumCulled = false;
-    frame.renderOrder = 8;
-
-    // 门框**亮带**（方形环带）：1px 线宽在 WebGL 里不可调 ⇒ 必须再加一层"面"才有粗边框的观感。
-    //   这是"一眼能看出来是门"的关键（v1 只有裁剪 ⇒ 用户完全看不出）。
-    const BAND_W = 0.10;   // 环带宽度（占半边长比例）
-    const bandPts: number[] = [];
-    for (let i = 0; i < 4; i++) {
-      const [ox0, oy0] = corners[i];
-      const [ox1, oy1] = corners[(i + 1) % 4];
-      const ix0 = ox0 * (1 - BAND_W * 2), iy0 = oy0 * (1 - BAND_W * 2);
-      const ix1 = ox1 * (1 - BAND_W * 2), iy1 = oy1 * (1 - BAND_W * 2);
-      bandPts.push(ox0, oy0, 0, ox1, oy1, 0, ix1, iy1, 0);
-      bandPts.push(ox0, oy0, 0, ix1, iy1, 0, ix0, iy0, 0);
-    }
-    const bandGeo = new THREE.BufferGeometry();
-    bandGeo.setAttribute('position', new THREE.Float32BufferAttribute(bandPts, 3));
-    const band = new THREE.Mesh(bandGeo, new THREE.MeshBasicMaterial({
-      color: 0x7fdcff, transparent: true, opacity: 0.60,
-      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
-    }));
-    band.frustumCulled = false;
-    band.renderOrder = 9;
-
-    // 位面：门框内的"量子面"。**刻意很淡** —— 它盖在舰队上，太亮会把舰体冲白（实机取证发现）。
-    const barrier = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.MeshBasicMaterial({
-      color: 0x2f86b8, transparent: true, opacity: 0.10,
-      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
-    }));
-    barrier.frustumCulled = false;
-    barrier.renderOrder = 5;
-
+    const P = GATE_STYLE_PARAMS[GATE_STYLE];
+    const root = new THREE.Group();
     // 右手正交基：right = (−sin, 0, −cos) 与 up / fwd 构成 det = +1（若取 (sin,0,cos) 会带反射 ⇒ 门框镜像）
     this.gateBasis.makeBasis(g.right, g.up, g.fwd);
-    const q = new THREE.Quaternion().setFromRotationMatrix(this.gateBasis);
-    for (const o of [frame, band, barrier]) {
-      o.quaternion.copy(q);
-      o.scale.setScalar(g.halfSize);
-      this.scene.add(o);
+    root.quaternion.setFromRotationMatrix(this.gateBasis);
+    // 局部 X/Y → 横向/竖向（**分轴** ⇒ 矩形门）；Z 保持 1（门是薄位面，不再做"纸板盒"）
+    root.scale.set(g.halfU, g.halfV, 1);
+    root.frustumCulled = false;
+    root.renderOrder = 8;
+
+    const pts = this.gateFramePoints(P.chamfer);
+    const addBand = (a: number, b: number, color: number, opacity: number, outward: boolean, z: number) => {
+      const m = new THREE.Mesh(this.gateBandGeometry(pts, a, b, outward), new THREE.MeshBasicMaterial({
+        color, transparent: true, opacity,
+        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+      }));
+      m.position.z = z; m.renderOrder = 9;
+      root.add(m);
+    };
+    const addLoop = (loopPts: [number, number][], color: number, opacity: number, z: number) => {
+      const o = new THREE.LineLoop(this.gateLoopGeometry(loopPts, 0), new THREE.LineBasicMaterial({
+        color, transparent: true, opacity,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      }));
+      o.position.z = z; o.renderOrder = 12;
+      root.add(o);
+    };
+
+    if (P.shard) {
+      // ── C · 量子碎门：轮廓被切成**不等长、带间隙**的短线段 ⇒ 碎片 / 不稳定感 ──
+      let seed = 0x2f6e2b1;
+      const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+      const seg: number[] = [];
+      for (let i = 0; i < pts.length; i++) {
+        const [ax, ay] = pts[i];
+        const [bx, by] = pts[(i + 1) % pts.length];
+        let t = rnd() * 0.10;
+        while (t < 1 - 1e-3) {
+          const t1 = Math.min(1, t + 0.07 + 0.30 * rnd());
+          seg.push(ax + (bx - ax) * t, ay + (by - ay) * t, 0,
+            ax + (bx - ax) * t1, ay + (by - ay) * t1, 0);
+          t = t1 + 0.10 + 0.42 * rnd();   // 间隙加大 ⇒ 碎片感（实测原间隙太小、看着还是连续线）
+        }
+      }
+      const gs = new THREE.BufferGeometry();
+      gs.setAttribute('position', new THREE.Float32BufferAttribute(seg, 3));
+      const shardLine = new THREE.LineSegments(gs, new THREE.LineBasicMaterial({
+        color: P.core, transparent: true, opacity: 0.9,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      }));
+      shardLine.renderOrder = 12;
+      root.add(shardLine);
+      // 碎门外侧的极淡边缘色（把碎片"框"起来，读作门而不是散点）—— 必须**很淡**，否则又会连成一条实线
+      addBand(0, P.edgeWidth * 1.6, P.edge, 0.09, true, -0.001);
+    } else if (P.feather > 0) {
+      // ── B · 光栅门：单条亮线 + 内侧**由亮到透**的羽化环带（光栅/渐隐） ──
+      addLoop(pts, P.core, 0.9, 0.002);
+      const n = 6;
+      for (let k = 0; k < n; k++) {
+        const a = (P.feather * k) / n;
+        const b = (P.feather * (k + 1)) / n;
+        addBand(a, b, P.edge, 0.14 * (1 - k / n), false, 0.001);
+      }
+    } else {
+      // ── A · 能量环门：**双层细线**（外线稍暗稍粗 + 内线亮白细线）+ 八角切角 ──
+      addBand(0, P.edgeWidth, P.edge, 0.5, true, 0);                     // 外线（稍暗、有厚度）
+      addLoop(this.gateFramePoints(P.chamfer * 0.86), P.core, 0.95, 0.003); // 内线（亮白细线）
+      // 四角（斜切边）短促装饰线：沿外法线向外挑一小段 ⇒ 科幻感细节
+      const deco: number[] = [];
+      for (let i = 0; i < pts.length; i++) {
+        const [ax, ay] = pts[i];
+        const [bx, by] = pts[(i + 1) % pts.length];
+        const ex = bx - ax, ey = by - ay;
+        if (Math.abs(ex) < 0.02 || Math.abs(ey) < 0.02) continue;   // 仅挑斜切边
+        const len = Math.hypot(ex, ey) || 1;
+        const mx = (ax + bx) / 2, my = (ay + by) / 2;
+        const ox = ey / len, oy = -ex / len;                        // 外法线
+        const mx2 = mx + ox * 0.13, my2 = my + oy * 0.13;
+        deco.push(mx - ox * 0.02, my - oy * 0.02, 0, mx2, my2, 0);
+      }
+      const gd = new THREE.BufferGeometry();
+      gd.setAttribute('position', new THREE.Float32BufferAttribute(deco, 3));
+      const decoLine = new THREE.LineSegments(gd, new THREE.LineBasicMaterial({
+        color: P.core, transparent: true, opacity: 0.5,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      }));
+      decoLine.renderOrder = 12;
+      root.add(decoLine);
     }
-    g.frame = frame;
-    g.band = band;
-    g.barrier = barrier;
+
+    // 柔边**外辉光**（中心透明的环状贴图 ⇒ 亮框但不遮舰队；加法混合 ⇒ 无硬直边）
+    // 面片 2.3 与贴图 inset 17/256 对齐 ⇒ 辉光带紧贴门框（≈0.10 半个门宽外），不糊成灰带。
+    const halo = new THREE.Mesh(new THREE.PlaneGeometry(2.3, 2.3), new THREE.MeshBasicMaterial({
+      map: this.makeGateHaloTexture(P.halo), color: 0xffffff, transparent: true,
+      opacity: 0.38, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    }));
+    halo.position.z = -0.002;
+    halo.renderOrder = 7;
+    root.add(halo);
+
+    // 门内**位面**：极淡 + 纹路缓慢流动。**刻意很淡**（盖在舰队上 ⇒ 太亮会把舰体冲白）。
+    const barrierTex = this.makeGateBarrierTexture(GATE_STYLE, P.density);
+    barrierTex.repeat.set(2.2, 1.5);
+    const barrier = new THREE.Mesh(new THREE.PlaneGeometry(1.98, 1.98), new THREE.MeshBasicMaterial({
+      map: barrierTex, color: P.halo, transparent: true, opacity: P.barrierOpacity,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    }));
+    barrier.position.z = -0.004;
+    barrier.renderOrder = 6;
+    root.add(barrier);
+    g.barrierTex = barrierTex;
+
+    // 统一登记**基础不透明度**：placeGateVisual 逐帧在此之上叠加"辉光包络 × 呼吸脉冲"。
+    root.traverse((o) => {
+      const mm = (o as any).material as THREE.Material | THREE.Material[] | undefined;
+      if (!mm) return;
+      const arr = Array.isArray(mm) ? mm : [mm];
+      for (const one of arr) {
+        if (typeof (one as any).opacity === 'number') (one as any).userData.baseOpacity = (one as any).opacity;
+      }
+    });
+
+    this.scene.add(root);
+    g.vis = root;
   }
 
   /** 门本体的世界中心 = `fwd·pos + right·cu + up·cv`（与 5 个裁剪面的可见域**严格同源**）。 */
@@ -4253,38 +4447,44 @@ export class Battle3DOverlay {
     );
   }
 
-  /** 逐帧把门本体摆到推进面处 + 亮度脉冲（随进度两端淡出，中段最亮）。 */
+  /** [v3] 逐帧把门本体摆到推进面处 + **辉光包络 / 呼吸脉冲** + 位面纹路**滚动**。 */
   private placeGateVisual(g: FleetGate): void {
-    if (!g.frame && !g.barrier) return;
-    const c = this.gateWorldCenter(g, this.visTmpV);
+    if (!g.vis) return;
+    g.vis.position.copy(this.gateWorldCenter(g, this.visTmpV));
+    const P = GATE_STYLE_PARAMS[GATE_STYLE];
     const glow = entryGlowAmt(g.p);
-    if (g.frame) {
-      g.frame.position.copy(c);
-      (g.frame.material as THREE.LineBasicMaterial).opacity = 0.45 + 0.55 * glow;
-    }
-    if (g.band) {
-      g.band.position.copy(c);
-      (g.band.material as THREE.MeshBasicMaterial).opacity = 0.38 + 0.55 * glow;
-    }
-    if (g.barrier) {
-      g.barrier.position.copy(c);
-      (g.barrier.material as THREE.MeshBasicMaterial).opacity = 0.03 + 0.12 * glow;
+    // 呼吸脉冲：p 走完一圈做 4 次轻微起伏（`pulse = 0` ⇒ 恒定）
+    const breathe = 1 - P.pulse * 0.5 + P.pulse * 0.5 * Math.sin(g.p * Math.PI * 8);
+    const k = (0.4 + 0.6 * glow) * breathe;
+    g.vis.traverse((o) => {
+      const mm = (o as any).material as THREE.Material | THREE.Material[] | undefined;
+      if (!mm) return;
+      const arr = Array.isArray(mm) ? mm : [mm];
+      for (const one of arr) {
+        const base = (one as any).userData ? (one as any).userData.baseOpacity : undefined;
+        if (typeof base === 'number') (one as any).opacity = base * k;
+      }
+    });
+    if (g.barrierTex) {
+      // 位面纹路"流动"：offset 随进度滚动（wrapping ⇒ 无缝循环）
+      g.barrierTex.offset.set((g.p * P.flow * 0.35) % 1, (g.p * P.flow) % 1);
     }
   }
 
-  /** 销毁门本体（几何/材质都私有 ⇒ 必须显式 dispose，防泄漏）。 */
+  /** [v3] 销毁门本体（遍历根组：几何/材质都显式 dispose，防泄漏）。 */
   private disposeGateVisual(g: FleetGate): void {
-    for (const o of [g.frame, g.band, g.barrier]) {
-      if (!o) continue;
-      this.scene.remove(o);
-      const geo = (o as any).geometry as THREE.BufferGeometry | undefined;
-      if (geo) geo.dispose();
-      const m = (o as any).material as THREE.Material | THREE.Material[] | undefined;
-      if (Array.isArray(m)) m.forEach((mm) => mm.dispose()); else if (m) m.dispose();
+    const root = g.vis;
+    if (root) {
+      this.scene.remove(root);
+      root.traverse((o) => {
+        const geo = (o as any).geometry as THREE.BufferGeometry | undefined;
+        if (geo) geo.dispose();
+        const mm = (o as any).material as THREE.Material | THREE.Material[] | undefined;
+        if (Array.isArray(mm)) mm.forEach((one) => one.dispose()); else if (mm) mm.dispose();
+      });
     }
-    g.frame = null;
-    g.band = null;
-    g.barrier = null;
+    g.vis = null;
+    g.barrierTex = null;
   }
 
   /** 收集一个舰体 Group 内全部材质引用（Phong 体 + 轮廓线 + 旗舰光环）—— 裁剪按材质施加。 */
@@ -4372,17 +4572,18 @@ export class Battle3DOverlay {
     const up = new THREE.Vector3(0, 1, 0);
     const box = this.computeFleetGateBox(fleet, fwd, right);
     if (!entryGateValid(box)) return undefined;   // 空队 ⇒ 不开门（也就不会强制建实体）
-    // [v2 · N6] 门截面 = 投影 max(宽, 高) × PAD ⇒ 半边长
-    const halfSize = Math.max(0.5, entryGateSize(box, this.entryCfg.pad) / 2);
+    // [v3 矩形截面] 横向/竖向**各自** = 投影宽/高 × PAD ⇒ 门紧贴舰队轮廓（不再"竖向空一大半"）
+    const halfU = Math.max(ENTRY_GATE_MIN_HALF, entryGateSizeU(box, this.entryCfg.pad) / 2);
+    const halfV = Math.max(ENTRY_GATE_MIN_HALF, entryGateSizeV(box, this.entryCfg.pad) / 2);
     const margin = entryGateMargin(box);
     const planes = [0, 1, 2, 3, 4].map(() => new THREE.Plane(new THREE.Vector3(0, 1, 0), 0));
     const g: FleetGate = {
       fleet, planes, fwd, right, up,
-      cu: entryGateCenterU(box), cv: entryGateCenterV(box), halfSize, margin, box,
+      cu: entryGateCenterU(box), cv: entryGateCenterV(box), halfU, halfV, margin, box,
       t0: now, p: 0, pos: entryGateFront(0, box.sLo, box.sHi, margin), done: false,
-      shipKeys: [], frame: null, band: null, barrier: null,
+      shipKeys: [], vis: null, barrierTex: null,
     };
-    entryGateWritePlanes(g.planes, fwd, right, up, g.cu, g.cv, halfSize, g.pos);
+    entryGateWritePlanes(g.planes, fwd, right, up, g.cu, g.cv, halfU, halfV, g.pos);
     this.buildGateVisual(g);
     this.placeGateVisual(g);
     this.fleetGates.set(fleet, g);
@@ -4454,7 +4655,7 @@ export class Battle3DOverlay {
     g.p = p;
     // p=0 ⇒ 舰首之外（全隐）；p=1 ⇒ 舰尾之外（全显）；随 p **单调递减** = 从舰首扫向舰尾
     g.pos = entryGateFront(p, g.box.sLo, g.box.sHi, g.margin);
-    entryGateWritePlanes(g.planes, g.fwd, g.right, g.up, g.cu, g.cv, g.halfSize, g.pos);
+    entryGateWritePlanes(g.planes, g.fwd, g.right, g.up, g.cu, g.cv, g.halfU, g.halfV, g.pos);
     return false;
   }
 

@@ -88,6 +88,78 @@ export const ENTRY_GATE_AXIS = 'heading';
 /** [v2 · N5] 推进方向：+1 = 舰首 → 舰尾。 */
 export const ENTRY_GATE_DIR = 1;
 
+// ════════════════════════════════════════════════════════════════════════════
+// ★ v3 · 门**外观**参数（用户 2026-10-16 二次反馈：「边框太丑、要有设计感、精致点」）
+//
+//   v2 的门观感问题（真机截图实报）：
+//     ① 一块**巨大实心不透明青蓝平面**斜插战场，**把舰队整个盖住**；
+//     ② 边缘是**硬直边**（粗亮带 + 平面硬边）⇒ 像纸板/塑料片，无能量感；
+//     ③ 颜色**死板**（单一青蓝），无"亮心 → 边缘 → 外辉光"的层次。
+//
+//   v3 目标（参考家园2 hyperspace 门）：亮心（近白细线）→ 边缘（青/蓝紫）→
+//   外辉光（低饱和、**柔边**）；门内位面**高度透明**（能透过它看清舰船）；**边缘不得硬直边**。
+//
+//   ⚠ 本区块**只是常量**（纯数据，零 three 依赖）⇒ 可被离线台架直接执行校验。
+//   ⚠ 三方案只换**外观**：几何 / 5 个裁剪平面 / 入场时序**完全共用** ⇒ `GATE_STYLE` 一键切换。
+// ════════════════════════════════════════════════════════════════════════════
+
+/** [v3] 门框视觉方案：`A` 能量环门（家园2 式，推荐）/ `B` 光栅门 / `C` 量子碎门。 */
+export type GateStyleId = 'A' | 'B' | 'C';
+/** [v3] 当前生效方案（用户选定后固化此值即可；三方案共用裁剪/时序，仅换外观）。 */
+export const GATE_STYLE: GateStyleId = 'A';
+
+/** [v3] 单个方案的**全部外观旋钮**（集中此处便于按真机截图迭代）。 */
+export interface GateStyleParams {
+  /** 门框**边缘**主色（0xRRGGBB）—— 层次里的"边缘"层。 */
+  edge: number;
+  /** 门框**亮心**细线颜色（近白）—— 层次里的"亮心"层。 */
+  core: number;
+  /** 外辉光颜色（低饱和青/蓝紫）—— 层次里的"外辉光"层。 */
+  halo: number;
+  /** 四角**切角**比例（占半边长 0..0.5；0=直角；0.12 ≈ 八角门）。 */
+  chamfer: number;
+  /** 门框边缘**环带厚度**（局部比例；WebGL 线宽不可调 ⇒ 用面片模拟"稍粗"）。 */
+  edgeWidth: number;
+  /** 内侧**渐隐 / 羽化**宽度（局部比例；0 = 无 ⇒ 锐利单线观感）。 */
+  feather: number;
+  /** 位面不透明度（**必须极小** ⇒ 不遮舰队）。 */
+  barrierOpacity: number;
+  /** 位面纹理**流动速度**（每单位进度 `p` 的 UV 位移）。 */
+  flow: number;
+  /** 位面纹路**密度**（列/行数）。 */
+  density: number;
+  /** 门框**呼吸脉冲**幅度 0..1（0 = 不呼吸）。 */
+  pulse: number;
+  /** 门框是否**碎片化**（C 方案：短线拼接、有间隙 ⇒ 不稳定感）。 */
+  shard: boolean;
+}
+
+/** [v3] 三套外观参数（颜色 / 线宽 / 切角 / 位面不透明度 / 纹路 / 脉冲）。 */
+export const GATE_STYLE_PARAMS: Record<GateStyleId, GateStyleParams> = {
+  // A · 能量环门：双层细线 + 八角切角 + 垂直细纹流动 + 柔边外辉光（最像家园2）。
+  A: {
+    edge: 0x54b4f0, core: 0xeaf8ff, halo: 0x5fc8ff,
+    chamfer: 0.12, edgeWidth: 0.012, feather: 0.0,
+    barrierOpacity: 0.07, flow: 3.0, density: 30, pulse: 0.10, shard: false,
+  },
+  // B · 光栅门：单亮线 + 内侧渐隐（羽化）+ 水平扫描线；最低调、最不抢舰队。
+  B: {
+    edge: 0x8ecfe8, core: 0xeafcff, halo: 0x9fd8f0,
+    chamfer: 0.0, edgeWidth: 0.006, feather: 0.20,
+    barrierOpacity: 0.05, flow: 1.6, density: 40, pulse: 0.05, shard: false,
+  },
+  // C · 量子碎门：短线拼接（有间隙）+ 噪点/星尘；野性量子跃迁观感。
+  C: {
+    edge: 0x7f9ff0, core: 0xffffff, halo: 0x9a86ff,
+    chamfer: 0.18, edgeWidth: 0.008, feather: 0.0,
+    barrierOpacity: 0.05, flow: 2.2, density: 46, pulse: 0.16, shard: true,
+  },
+};
+
+/** [v3] 横截面尺寸下限（世界单位，半值）—— 单舰 / 极扁队形时避免门退化成"一条缝"。 */
+export const ENTRY_GATE_MIN_HALF = 0.5;
+
+
 export interface EntryCfg {
   dir: number;
   durPerShip: number;
@@ -255,9 +327,11 @@ export function entryPlaneInitConstant(dir: number): number {
 //
 // 坐标约定：`fwd / right / up` 为**世界正交基**，`s = p·fwd`（沿朝向）、
 // `u = p·right`（横向）、`v = p·up`（竖直）。门的可见域 = 
-//     { s ≥ gatePos } ∩ { |u − cu| ≤ half } ∩ { |v − cv| ≤ half }
-// 即"从舰首一侧推进的一个**无限长方柱**"：推进面沿 `fwd` 从舰首扫到舰尾，
+//     { s ≥ gatePos } ∩ { |u − cu| ≤ halfU } ∩ { |v − cv| ≤ halfV }
+// 即"从舰首一侧推进的一个**无限长（矩形截面）方柱**"：推进面沿 `fwd` 从舰首扫到舰尾，
 // 4 个侧面把方柱的横截面钉死在门框边界上 ⇒ 观感 = 舰队**从这个门里钻出来**。
+// [v3 **改矩形**] 横截面由 v2 的**正方形**（同 half）改为**矩形**（halfU/halfV 各自取自包围盒宽/高）
+//   用户反馈：正方形门"竖向空了一大半、显得笨重" ⇒ 矩形紧贴舰队轮廓。
 //
 // why 5 个面而不是 1 个：v1 只有 1 个无限平面 ⇒ 没有"门"的形体（用户实报"看不出来"）。
 // ⚠ 同队所有舰**共享这 5 个 Plane 实例**（一次 `entryGateWritePlanes` 全队生效）。
@@ -317,14 +391,21 @@ export function entryGateValid(box: EntryGateBox): boolean {
 }
 
 /**
- * [v2 · N6] 门截面**边长**（世界单位）= 全队投影 `max(宽, 高)` × `pad`。
- * 用户原话「你可以看**模型的投影切面，找个最大值，然后比最大值再往外扩一点**」
- * —— 取 `max(宽, 高)` 而非分别取宽高 ⇒ 门截面是**正方形**（正方体/长方体）。
+ * [v2 · N6 → v3 **改矩形**] 门截面**横向跨度**（世界单位）= 投影宽 × `pad`。
+ *
+ * v2 原实现取 `max(宽, 高)×pad` ⇒ 门是**正方形**；用户 2026-10-16 二次反馈「竖向空了一大半、
+ * 显得笨重」⇒ 改为**宽、高各自取各自跨度 × pad**（见 `entryGateSizeV`），使门**紧贴舰队轮廓**。
+ * 两支配套使用：`halfU = entryGateSizeU/2`、`halfV = entryGateSizeV/2`。
  */
-export function entryGateSize(box: EntryGateBox, pad: number): number {
+export function entryGateSizeU(box: EntryGateBox, pad: number): number {
   const w = Math.max(0, box.uHi - box.uLo);
+  return w * Math.max(0, pad);
+}
+
+/** [v3 **改矩形**] 门截面**竖向跨度**（世界单位）= 投影高 × `pad`（与 `entryGateSizeU` 配对）。 */
+export function entryGateSizeV(box: EntryGateBox, pad: number): number {
   const h = Math.max(0, box.vHi - box.vLo);
-  return Math.max(w, h) * Math.max(0, pad);
+  return h * Math.max(0, pad);
 }
 
 /** 门截面横向中心 = 投影包围盒中心（`p·right`）。 */
@@ -349,27 +430,28 @@ export function entryGateFront(p: number, sLo: number, sHi: number, margin: numb
 }
 
 /**
- * [v2 · N7] 写出门的 **5 个裁剪平面**（法线 + 常数）—— 同队共享同一组实例 ⇒ 一次调用全队生效。
+ * [v2 · N7 → v3 矩形截面] 写出门的 **5 个裁剪平面**（法线 + 常数）—— 同队共享同一组实例 ⇒ 一次调用全队生效。
  * three 语义：`distance(p) = normal·p + constant`，**`distance ≥ 0` 可见**。
  *   `planes[0]` 推进面：法线 = `fwd`，`constant = −gatePos` ⇒ 可见域 `s ≥ gatePos`
- *   `planes[1..2]` 左右侧面：法线 = `∓right` ⇒ 可见域 `|u − cu| ≤ half`
- *   `planes[3..4]` 上下侧面：法线 = `∓up`   ⇒ 可见域 `|v − cv| ≤ half`
+ *   `planes[1..2]` 左右侧面：法线 = `∓right` ⇒ 可见域 `|u − cu| ≤ halfU`
+ *   `planes[3..4]` 上下侧面：法线 = `∓up`   ⇒ 可见域 `|v − cv| ≤ halfV`
+ * ⚠ `halfU` / `halfV` **分别**给（横向/竖向各自来自包围盒宽/高）⇒ 截面是**矩形**而非正方形。
  * ⚠ 逐帧**只改 `constant`/`normal`**（数量恒为 5）⇒ 不触发 program 重编译。
  */
 export function entryGateWritePlanes(
   planes: GatePlaneLike[] | undefined,
   fwd: Vec3Like, right: Vec3Like, up: Vec3Like,
-  cu: number, cv: number, half: number, gatePos: number,
+  cu: number, cv: number, halfU: number, halfV: number, gatePos: number,
 ): void {
   if (!planes || planes.length < 5) return;
   planes[0].normal.set(fwd.x, fwd.y, fwd.z);
   planes[0].constant = -gatePos;
   planes[1].normal.set(-right.x, -right.y, -right.z);
-  planes[1].constant = cu + half;
+  planes[1].constant = cu + halfU;
   planes[2].normal.set(right.x, right.y, right.z);
-  planes[2].constant = half - cu;
+  planes[2].constant = halfU - cu;
   planes[3].normal.set(-up.x, -up.y, -up.z);
-  planes[3].constant = cv + half;
+  planes[3].constant = cv + halfV;
   planes[4].normal.set(up.x, up.y, up.z);
-  planes[4].constant = half - cv;
+  planes[4].constant = halfV - cv;
 }

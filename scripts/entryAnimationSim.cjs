@@ -333,7 +333,7 @@ const SEG_START = 'private stepEntryGate(g: FleetGate, now: number, on: boolean)
 // ⚠ 末端锚点必须是**方法最后一句**（`return false;`）—— 若停在中间，切出来的函数会缺 return
 //   ⇒ 返回 undefined ⇒ "未结束/已结束"的判定全部失真（本项目踩过同类静默失真）。
 const SEG_END = 'return false;';
-const SEG_WRITE = 'entryGateWritePlanes(g.planes, g.fwd, g.right, g.up, g.cu, g.cv, g.halfSize, g.pos);';
+const SEG_WRITE = 'entryGateWritePlanes(g.planes, g.fwd, g.right, g.up, g.cu, g.cv, g.halfU, g.halfV, g.pos);';
 
 /**
  * 编译 `stepEntryGate` 的**原文**（保留 `this.`，注入纯函数）。
@@ -373,12 +373,14 @@ function compileUpdateEntryFx(mutate) {
 
 /**
  * 造一个假的 `FleetGate`：`fwd=+X / right=−Z / up=+Y`（右手基），
- * 舰队沿朝向占 `[sLo, sHi]`，截面中心 `(cu, cv)`、半边长 `half`。
+ * 舰队沿朝向占 `[sLo, sHi]`，截面中心 `(cu, cv)`、**横向/竖向半跨** `halfU`/`halfV`
+ * （v3 改矩形后两者可不等）。
  */
 function makeFakeGate(opt = {}) {
   const sLo = opt.sLo ?? 90, sHi = opt.sHi ?? 110;
   const cu = opt.cu ?? 0, cv = opt.cv ?? 100;
   const half = opt.half ?? 20;
+  const halfU = opt.halfU ?? half, halfV = opt.halfV ?? half;
   const margin = opt.margin ?? 2;
   const planes = [0, 1, 2, 3, 4].map(() => {
     const n = { x: 0, y: 1, z: 0 };
@@ -390,10 +392,10 @@ function makeFakeGate(opt = {}) {
     fwd: { x: 1, y: 0, z: 0 },
     right: { x: 0, y: 0, z: -1 },
     up: { x: 0, y: 1, z: 0 },
-    cu, cv, halfSize: half, margin,
-    box: { uLo: cu - half, uHi: cu + half, vLo: cv - half, vHi: cv + half, sLo, sHi },
+    cu, cv, halfU, halfV, margin,
+    box: { uLo: cu - halfU, uHi: cu + halfU, vLo: cv - halfV, vHi: cv + halfV, sLo, sHi },
     t0: opt.t0 ?? 50, p: 0, pos: sHi + margin, done: false,
-    shipKeys: opt.shipKeys ?? [], frame: null, barrier: null,
+    shipKeys: opt.shipKeys ?? [], vis: null,
   };
 }
 
@@ -456,12 +458,26 @@ console.log('\n=== 11. stepEntryGate 真跑：一队一门的 5 个裁剪面 = �
       !gateVisible(g, 200, 130, 0) && !gateVisible(g, 200, 70, 0));
     check('★N7：门**内**（|u−cu| ≤ half 且 |v−cv| ≤ half）可见 —— 方柱内部不误裁', () =>
       gateVisible(g, 200, 100, 0) && gateVisible(g, 200, 118, 18) && gateVisible(g, 200, 82, -18));
-    check('★N6：4 个侧面把横截面钉成**正方形**（同 halfSize、中心 = 投影包围盒中心）', () =>
-      Math.abs(g.planes[1].constant - (g.cu + g.halfSize)) < 1e-9
-      && Math.abs(g.planes[2].constant - (g.halfSize - g.cu)) < 1e-9
-      && Math.abs(g.planes[3].constant - (g.cv + g.halfSize)) < 1e-9
-      && Math.abs(g.planes[4].constant - (g.halfSize - g.cv)) < 1e-9);
+    check('★N6：4 个侧面把横截面钉成**矩形**（横向 halfU / 竖向 halfV **分列**，中心 = 投影包围盒中心）', () =>
+      Math.abs(g.planes[1].constant - (g.cu + g.halfU)) < 1e-9
+      && Math.abs(g.planes[2].constant - (g.halfU - g.cu)) < 1e-9
+      && Math.abs(g.planes[3].constant - (g.cv + g.halfV)) < 1e-9
+      && Math.abs(g.planes[4].constant - (g.halfV - g.cv)) < 1e-9);
     check('★N7：裁剪面**恰好 5 个**（1 推进 + 4 侧面）', () => g.planes.length === 5);
+  }
+
+  // 场景 C2：★ v3「改矩形」⇒ halfU ≠ halfV 时横向/竖向**各自独立**（v2 的正方形做不到）
+  {
+    const g = makeFakeGate({ t0: T0, sLo: 90, sHi: 110, cu: 0, cv: 100, halfU: 30, halfV: 12, margin: 2 });
+    runStepEntryGate(stepFn, g, T0 + E.ENTRY_TOTAL_SEC * 0.5);
+    check('★v3矩形：横向 |u−cu|=25 < halfU(30) **可见**（若竖向 halfV 误当横向 ⇒ 会误裁）', () =>
+      gateVisible(g, 200, 100, 25) && gateVisible(g, 200, 100, -25));
+    check('★v3矩形：横向 |u−cu|=35 > halfU(30) 被裁', () =>
+      !gateVisible(g, 200, 100, 35) && !gateVisible(g, 200, 100, -35));
+    check('★v3矩形：竖向 |v−cv|=16 > halfV(12) 被裁（与横向 halfU 独立）', () =>
+      !gateVisible(g, 200, 116, 0) && !gateVisible(g, 200, 84, 0));
+    check('★v3矩形：竖向 |v−cv|=8 < halfV(12) 可见', () =>
+      gateVisible(g, 200, 108, 0) && gateVisible(g, 200, 92, 0));
   }
 
   // 场景 D：p ≥ 1（扫过舰尾 ⇒ 结束）与一键关闭
@@ -1078,20 +1094,27 @@ console.log('\n=== 17. v2 门几何纯函数：N4 时长 / N5 轴向 / N6 尺寸
     });
   }
 
-  // N6：门尺寸 = 投影 max(宽, 高) × PAD
+  // N6：门截面 = 投影**宽/高各自** × PAD（v3 从"正方形"改成"矩形"）
   {
     const box = { uLo: -30, uHi: 30, vLo: 95, vHi: 105, sLo: 90, sHi: 110 };
-    check('N6：门边长 = max(宽 60, 高 10) × PAD 1.25 = 75（取**最大值**）', () =>
-      Math.abs(E.entryGateSize(box, E.ENTRY_GATE_PAD) - 75) < 1e-9);
+    check('N6：横向跨度 = 宽 60 × PAD 1.25 = 75', () =>
+      Math.abs(E.entryGateSizeU(box, E.ENTRY_GATE_PAD) - 75) < 1e-9);
+    check('N6：竖向跨度 = 高 10 × PAD 1.25 = 12.5（**独立于横向** ⇒ 矩形而非正方形）', () =>
+      Math.abs(E.entryGateSizeV(box, E.ENTRY_GATE_PAD) - 12.5) < 1e-9);
+    check('★v3：矩形门不再"竖向空一大半"（竖向跨度 ≪ 横向跨度，比 v2 的 max 方门小得多）', () =>
+      E.entryGateSizeV(box, E.ENTRY_GATE_PAD) < E.entryGateSizeU(box, E.ENTRY_GATE_PAD)
+      && Math.abs(E.entryGateSizeV(box, E.ENTRY_GATE_PAD) - 12.5) < 1e-9);
     const tall = { uLo: 0, uHi: 4, vLo: 0, vHi: 40, sLo: 0, sHi: 1 };
-    check('N6：高 > 宽 时用高（4 vs 40 ⇒ 40）', () => Math.abs(E.entryGateSize(tall, 1) - 40) < 1e-9);
-    check('N6：「再往外扩一点」= 恰好 PAD 倍（PAD=1 ⇒ 60；PAD=1.25 ⇒ 75）', () =>
-      E.entryGateSize(box, 1) === 60 && E.entryGateSize(box, E.ENTRY_GATE_PAD) === 75);
+    check('N6：高 > 宽 时竖向自然 > 横向（U 4 / V 40，各自取自身跨度）', () =>
+      Math.abs(E.entryGateSizeU(tall, 1) - 4) < 1e-9 && Math.abs(E.entryGateSizeV(tall, 1) - 40) < 1e-9);
+    check('N6：「再往外扩一点」= 恰好 PAD 倍（U: 60→75；V: 8→10）', () =>
+      E.entryGateSizeU(box, 1) === 60 && E.entryGateSizeU(box, E.ENTRY_GATE_PAD) === 75
+      && E.entryGateSizeV(box, 1) === 10 && E.entryGateSizeV(box, E.ENTRY_GATE_PAD) === 12.5);
     check('N6：门截面中心 = 投影包围盒中心', () =>
       E.entryGateCenterU(box) === 0 && E.entryGateCenterV(box) === 100);
     check('N6：空包围盒 ⇒ 无效且尺寸 0（不会造出 NaN 门）', () => {
       const e = E.entryGateEmptyBox();
-      return E.entryGateValid(e) === false && E.entryGateSize(e, 1.25) === 0;
+      return E.entryGateValid(e) === false && E.entryGateSizeU(e, 1.25) === 0 && E.entryGateSizeV(e, 1.25) === 0;
     });
     check('N6：累加器把**半长**计入沿朝向跨度（覆盖舰首 ↔ 舰尾）', () => {
       const b = E.entryGateEmptyBox();
@@ -1099,44 +1122,46 @@ console.log('\n=== 17. v2 门几何纯函数：N4 时长 / N5 轴向 / N6 尺寸
       return b.sLo === 95 && b.sHi === 105 && b.uLo === -2 && b.uHi === 2 && b.vLo === 99 && b.vHi === 101;
     });
     const mutMin = loadEntryModule(entrySrc.replace(
-      'return Math.max(w, h) * Math.max(0, pad);',
-      'return Math.min(w, h) * Math.max(0, pad);'));
-    checkThrows('变异O（门尺寸取 min 而非 max）已被"= max×PAD"断言检出', () => {
-      assert.equal(Math.abs(mutMin.entryGateSize(box, 1.25) - 75) < 1e-9, true);
+      'return h * Math.max(0, pad);',
+      'return w * Math.max(0, pad);'));
+    checkThrows('变异O（竖向跨度误用**宽** ⇒ 退回"正方形"）已被"V=12.5 且 V<U"断言检出', () => {
+      assert.equal(Math.abs(mutMin.entryGateSizeV(box, 1.25) - 12.5) < 1e-9, true);
     });
     const mutNoPad = loadEntryModule(entrySrc.replace(
-      'return Math.max(w, h) * Math.max(0, pad);',
-      'return Math.max(w, h);'));
+      'return w * Math.max(0, pad);',
+      'return w;'));
     checkThrows('变异P（不乘 PAD ⇒ 不外扩）已被"恰好 PAD 倍"断言检出', () => {
-      assert.equal(mutNoPad.entryGateSize(box, 1.25) === 75, true);
+      assert.equal(mutNoPad.entryGateSizeU(box, 1.25) === 75, true);
     });
   }
 
-  // N7：纯函数写出的 5 个面必须**真围出长方柱**（门内可见 / 门外被裁）
+  // N7：纯函数写出的 5 个面必须**真围出矩形柱**（门内可见 / 门外被裁）
   {
-    const g0 = makeFakeGate({ cu: 0, cv: 100, half: 20 });
-    E.entryGateWritePlanes(g0.planes, g0.fwd, g0.right, g0.up, g0.cu, g0.cv, g0.halfSize, 50);
+    const g0 = makeFakeGate({ cu: 0, cv: 100, halfU: 30, halfV: 18 });
+    E.entryGateWritePlanes(g0.planes, g0.fwd, g0.right, g0.up, g0.cu, g0.cv, g0.halfU, g0.halfV, 50);
     check('N7：写 5 个面（1 推进 + 4 侧面）', () => g0.planes.length === 5);
     check('★N7：门内可见 / **门外的两个横向都**被裁（±u 两侧对称生效）', () =>
-      gateVisible(g0, 60, 100, 0) && !gateVisible(g0, 60, 100, 21) && !gateVisible(g0, 60, 100, -21));
-    check('★N7：**门外的两个竖直方向都**被裁（±v 两侧对称生效）', () =>
-      !gateVisible(g0, 60, 121, 0) && !gateVisible(g0, 60, 79, 0));
+      gateVisible(g0, 60, 100, 0) && !gateVisible(g0, 60, 100, 31) && !gateVisible(g0, 60, 100, -31));
+    check('★N7：**门外的两个竖直方向都**被裁（±v 两侧对称生效，阈值 = halfV 18）', () =>
+      !gateVisible(g0, 60, 119, 0) && !gateVisible(g0, 60, 81, 0));
+    check('★N7：横向 |u−cu|=29 < halfU(30) 可见（v3 矩形：横向阈值不与竖向混用）', () =>
+      gateVisible(g0, 60, 100, 29) && gateVisible(g0, 60, 100, -29));
     check('N7：平面数 < 5 时纯函数直接返回（不半写 ⇒ 不会围出畸形门）', () => {
       const p4 = [0, 1, 2, 3].map(() => {
         const n = { x: 0, y: 0, z: 0 };
         n.set = (x, y, z) => { n.x = x; n.y = y; n.z = z; };
         return { normal: n, constant: 9 };
       });
-      E.entryGateWritePlanes(p4, g0.fwd, g0.right, g0.up, 0, 100, 20, 50);
+      E.entryGateWritePlanes(p4, g0.fwd, g0.right, g0.up, 0, 100, 30, 18, 50);
       return p4.every((p) => p.constant === 9);
     });
     const mutSide = loadEntryModule(entrySrc.replace(
       'planes[1].normal.set(-right.x, -right.y, -right.z);',
       'void 0;'));
-    const g1 = makeFakeGate({ cu: 0, cv: 100, half: 20 });
-    mutSide.entryGateWritePlanes(g1.planes, g1.fwd, g1.right, g1.up, g1.cu, g1.cv, g1.halfSize, 50);
+    const g1 = makeFakeGate({ cu: 0, cv: 100, halfU: 30, halfV: 18 });
+    mutSide.entryGateWritePlanes(g1.planes, g1.fwd, g1.right, g1.up, g1.cu, g1.cv, g1.halfU, g1.halfV, 50);
     checkThrows('★变异Q（左侧面失效）已被"门外 −u 侧被裁"断言检出', () => {
-      assert.equal(!gateVisible(g1, 60, 100, -21), true);
+      assert.equal(!gateVisible(g1, 60, 100, -31), true);
     });
   }
 }
@@ -1248,30 +1273,64 @@ console.log('\n=== 18. v2 源码契约：N1 聚焦 / N2 模型 / N3 暂停 / N7 
     slice(overlay, 'destroy() {', 'this.renderer.domElement.removeEventListener')
       .includes('this.finishAllEntryGates();'));
 
-  // ── N8：必须画出「门」本体（v1 最大缺失）──
-  check('★N8：门本体真的被建（门框 LineSegments + 位面 Mesh + 加法混合 + 入场景）', () =>
-    BUILDGATE.includes('new THREE.LineSegments(') && BUILDGATE.includes('new THREE.Mesh(')
-    && BUILDGATE.includes('AdditiveBlending') && BUILDGATE.includes('this.scene.add(o)'));
-  check('★N8：门框含 4 条"柱棱"⇒ 读作**长方体通道**（用户要的"长方体或者正方体"）', () =>
-    BUILDGATE.includes('const RAIL =') && BUILDGATE.includes('pts.push(x0, y0, 0, x0, y0, -RAIL)'));
-  check('★N8：门框有**粗亮带**（方形环带 Mesh）—— 1px 线宽不可调，只有线用户仍看不出"门"', () =>
-    BUILDGATE.includes('const BAND_W') && BUILDGATE.includes('bandPts.push(') && BUILDGATE.includes('band.renderOrder'));
+  // ── N8：必须画出「门」本体（v1 最大缺失；v3 重做外观）──
+  check('★N8：门本体真的被建（根组 Group + 门框线/环带 Mesh + 位面 Mesh + 加法混合 + 入场景）', () =>
+    BUILDGATE.includes('new THREE.Group()') && BUILDGATE.includes('new THREE.LineLoop(')
+    && BUILDGATE.includes('new THREE.Mesh(') && BUILDGATE.includes('AdditiveBlending')
+    && BUILDGATE.includes('this.scene.add(root)'));
+  check('★N8/v3：门框按**矩形**分轴缩放（`root.scale.set(g.halfU, g.halfV, 1)` ⇒ 紧贴舰队轮廓）', () =>
+    BUILDGATE.includes('root.scale.set(g.halfU, g.halfV, 1)'));
+  check('★N8/v3：三方案由 `GATE_STYLE_PARAMS[GATE_STYLE]` 驱动，且 A/B/C 三条分支都在（shard / feather / 双线）', () =>
+    BUILDGATE.includes('GATE_STYLE_PARAMS[GATE_STYLE]') && BUILDGATE.includes('P.shard')
+    && BUILDGATE.includes('P.feather > 0') && BUILDGATE.includes('gateBandGeometry'));
+  check('★N8/v3：外辉光走**柔边贴图面片**（makeGateHaloTexture + 加法混合 ⇒ 边缘不硬直）', () =>
+    BUILDGATE.includes('makeGateHaloTexture(') && BUILDGATE.includes('halo.renderOrder')
+    && BUILDGATE.includes('PlaneGeometry(2.3'));
+  check('★N8/v3：门内位面**有纹路且会流动**（makeGateBarrierTexture + repeat + 逐帧 offset）', () =>
+    BUILDGATE.includes('makeGateBarrierTexture(') && BUILDGATE.includes('barrierTex.repeat.set(')
+    && overlay.includes('g.barrierTex.offset.set('));
+  check('★N8：门本体**自己不挂 clippingPlanes**（否则会被自己的门切掉）', () =>
+    BUILDGATE.length > 0 && !BUILDGATE.includes('clippingPlanes'));
   check('★N8：门本体的世界中心与 5 个裁剪面**同源**（fwd·pos + right·cu + up·cv）', () =>
     slice(overlay, 'private gateWorldCenter(', 'private placeGateVisual(')
       .includes('g.fwd.x * g.pos + g.right.x * g.cu + g.up.x * g.cv'));
-  check('★N8：门本体**自己不挂 clippingPlanes**（否则会被自己的门切掉）', () =>
-    BUILDGATE.length > 0 && !BUILDGATE.includes('clippingPlanes'));
   check('★N8：可见门可一键关闭（ENTRY_GATE_VISIBLE 编译期开关）', () =>
     entrySrc.includes('export const ENTRY_GATE_VISIBLE = true;') && overlay.includes('if (!ENTRY_GATE_VISIBLE) return;'));
   check('★N8：入场中门随推进面**逐帧移动**（placeGateVisual 每帧调用）', () =>
     slice(overlay, 'private updateEntryFx(): void {', 'for (const [fleet, g] of this.fleetGates)')
       .includes('this.placeGateVisual(g)'));
-  check('★N8：入场结束门本体被销毁（几何/材质都 dispose，不留悬空线框）', () => {
+  check('★N8：入场结束门本体被销毁（遍历根组，几何/材质都 dispose，不留悬空线框）', () => {
     const blk = slice(overlay, 'private disposeGateVisual(g: FleetGate): void {', 'private collectSliceMats(');
-    return blk.includes('this.scene.remove(o)') && blk.includes('.dispose()');
+    return blk.includes('this.scene.remove(root)') && blk.includes('.dispose()') && blk.includes('g.vis = null');
   });
   check('★N8：门姿态用**右手正交基**（right = (−sin, 0, −cos) ⇒ det=+1，门框不镜像）', () =>
     overlay.includes('new THREE.Vector3(-Math.sin(a), 0, -Math.cos(a))'));
+
+  // ── N9：v3 外观常量（**真跑**纯数据层 ⇒ 有牙齿：位面必须够淡、三方案齐备）──
+  check('★N9：`GATE_STYLE` 缺省为 `A`（能量环门，最像家园2）', () =>
+    E.GATE_STYLE === 'A');
+  check('★N9：三方案 A/B/C 参数齐备（非空对象）', () => {
+    const P = E.GATE_STYLE_PARAMS;
+    return !!P && !!P.A && !!P.B && !!P.C && typeof P.A.edge === 'number';
+  });
+  check('★N9（不遮挡舰队红线）：三方案**位面不透明度都 ≤ 0.10**（透过门要能看清舰船）', () =>
+    ['A', 'B', 'C'].every((k) => E.GATE_STYLE_PARAMS[k].barrierOpacity <= 0.10
+      && E.GATE_STYLE_PARAMS[k].barrierOpacity > 0));
+  check('★N9：三方案亮度层次齐备（edge / core / halo **三色各不相同**）', () =>
+    ['A', 'B', 'C'].every((k) => {
+      const q = E.GATE_STYLE_PARAMS[k];
+      return q.core !== q.edge && q.halo !== q.core && q.halo !== q.edge;
+    }));
+  check('★N9：门框有**呼吸脉冲**（pulse > 0）且切角/线宽为正（形式参数有效）', () =>
+    ['A', 'B', 'C'].every((k) => E.GATE_STYLE_PARAMS[k].pulse > 0
+      && E.GATE_STYLE_PARAMS[k].edgeWidth > 0 && E.GATE_STYLE_PARAMS[k].chamfer >= 0));
+  check('★N9：C 方案**碎片化**（shard=true）；A/B 非碎片（路线各异）', () =>
+    E.GATE_STYLE_PARAMS.C.shard === true
+    && E.GATE_STYLE_PARAMS.A.shard === false && E.GATE_STYLE_PARAMS.B.shard === false);
+  check('★N9：B 方案走**内侧羽化**（feather > 0）；A 走双层细线（feather = 0）', () =>
+    E.GATE_STYLE_PARAMS.B.feather > 0 && E.GATE_STYLE_PARAMS.A.feather === 0);
+  check('★N9：横向/竖向半跨下限为正（单舰/极扁队形不会退化）', () =>
+    E.ENTRY_GATE_MIN_HALF > 0);
 
   // ── 安全红线（沿用 v1）──
   check('渲染器开了**局部**裁剪 localClippingEnabled = true', () =>
