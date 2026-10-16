@@ -43,8 +43,11 @@ import { buildFleetUnits } from '../fleetGeneration';
 // [v62] troop 缺失时的 baseStats 合成兜底（getTroopById 静默折叠 bug 的配套修复）
 import { troopLikeFromClass } from '../../config/gameData';
 // 阵型排布：可随实体数 n 缩放的格位枚举（原 8 坐标硬编码表的替代）；rearCommandSlot = 后方中央指挥席
-import { formationOffsets, formationSpacing, rearCommandSlot, FORMATION_SPACING, type FormationCell } from '../../config/formationLayout';
+// rotateOffsetPx = 阵位像素偏移 → 阵面朝向旋转（**建舰期放置与逐帧追踪的唯一几何真源**）
+import { formationOffsets, formationSpacing, rearCommandSlot, rotateOffsetPx, FORMATION_SPACING, type FormationCell } from '../../config/formationLayout';
 import type { FormationType } from '../../config/formations';
+// [切片传送入场] 入场相位（按阵位索引错开）—— 纯逻辑层，见 docs/design/3d-tactical-battle/35-*
+import { entryDelayForSlot, entrySpreadEffective, SLICE_DUR_PER_SHIP, SLICE_SPREAD, SLICE_TOTAL_MAX } from '../entrySlice';
 // [v33] 旧案 44 图战术模块整合（docs/design/loch-web-plan/02_*）：
 //   **全部走单一真源 import，禁止再在本文件内联 beats 表 / 地形分支 / 舰种装甲表。**
 //   数值真源 = config/balance.ts 的 TACTICAL_V33 / COLUMN_MATRIX / DIRECTION_ARMOR / INTERCEPT /
@@ -1146,6 +1149,9 @@ export class BattleScene extends Phaser.Scene {
             this.planAiFactionsForDeploy();      // ← 本分支唯一调用点，勿上提
             // [V18-A · P1] 镜像「总指挥确认卡」候选（演习制下无真暂停 → 卡片只读展示）
             this.publishSupremeCommanderPanel(); // ← 本分支唯一调用点，勿上提
+            // [切片传送入场 · 时机修复] 无部署暂停 ⇒ 战斗即刻开始，此刻就是入场纪元起点。
+            //   （有部署时由 startBattleAfterDeploy 推送；此分支不经过它，须补一次，否则切片永不播放。）
+            pushFx3d({ kind: 'entry_start', color: 0 });
             return;
         }
 
@@ -1257,6 +1263,11 @@ export class BattleScene extends Phaser.Scene {
         this.deployPhase = false;
         this.store.isPaused = false;
         (this.store as any).battleDeployPhase = false;
+        // [切片传送入场 · 时机修复] 开战即显式启动切片入场：部署期 3D 侧不登记（3D 独立 rAF
+        //   在部署期照样跑 ⇒ 若不拦，切片会在被 BattleIntroOverlay 盖住的部署期播完）。
+        //   经 battle3dFx 正式总线（不碰 window 全局）；Enter / 军议"开战"按钮 / deployAutoStart
+        //   三条路径都汇入本方法，故在方法体内推送即可全部覆盖。
+        pushFx3d({ kind: 'entry_start', color: 0 });
         // [#74 · A2] 结束部署：清倒计时器并复位镜像（单一数据源，防残留）
         this.deployCountdownTimer?.remove();
         this.deployCountdownTimer = null;
@@ -1561,6 +1572,8 @@ export class BattleScene extends Phaser.Scene {
                 fleetObj.formationCount0 = formationSlotCounter;
                 // [W2] 部署期旗舰入位：旗舰恒占受保护的后方中央指挥席（rearCommandSlot）
                 this.placeFlagshipAtRear(fleetObj);
+                // [切片传送入场 L1] 建舰期即按阵位放置（战役轨道与演习轨道同源）
+                this.placeUnitsAtFormationSlots(fleetObj);
                 this.globalFleets.push(fleetObj);
             });
         };
@@ -1639,6 +1652,47 @@ export class BattleScene extends Phaser.Scene {
         const spacing = formationSpacing(offs, this.hexRadius);
         const halfSpan = offs.reduce((m, c) => Math.max(m, Math.abs(c[1])), 0);
         return Math.max(DEPLOY_GAP_MIN, (halfSpan * 2 + 1) * spacing * DEPLOY_GAP_FOOTPRINT_K);
+    }
+
+    /**
+     * [切片传送入场 · L1/L2] **建舰期就把实体放到阵位**（而不是先全堆在 `castlePos` 再逐帧散开）。
+     *
+     * 现状机制（设计文档 §0.1）：每个战舰容器都建在 `fac.castlePos`，阵位由 `update()` 的
+     * 逐帧追踪循环（`stepShipSlotFollow`）限速挪过去；部署暂停期 `update()` 提前 return
+     * ⇒ 全队**冻结堆在一点**，直到玩家按回车才"散开"。本函数把阵位提前到建舰期 ⇒
+     * **第一帧即"阵型已正常展开"**，D1 的问题消失。
+     *
+     * ⚠ **同源保证**：几何完全复用 `update()` 里的那一条链 ——
+     * `formationOffsets(formation, n0)`（config 模块）→ `formationSpacing(offs, hexRadius)`
+     * （config 模块）→ `rotateOffsetPx(cell·spacing, facing, lateralKeep=1)`（config 模块，
+     * `update()` 的阵位循环同样调用它）⇒ **不存在第二套几何**，两处不会漂移。
+     *   仅有的差异是 `update()` 里转向期会有 `_ctK`（紧凑转横向压缩）与换阵 morph
+     *   —— 建舰期二者都是恒等（`_ctK = 1`、无 morph），正是"目标阵位"本身。
+     *
+     * 同时给每舰打 `_entryDelay`：按**阵位索引**错开的入场相位（秒），供 3D 侧
+     * `Battle3DOverlay.updateEntryFx` 消费 ⇒ 逐舰错开、形成"从一侧扫向另一侧"的波次感。
+     * （进度绑在"入场事件 + 阵位序"上，**不绑 `addMesh`** ⇒ 推拉镜头重建实体不会重播。）
+     */
+    private placeUnitsAtFormationSlots(fleet: any): void {
+        const units = ((fleet?.units || []) as any[]);
+        const combat = units.filter((u: any) => (u.formationSlot ?? -1) >= 0);
+        const n0 = Math.max(0, Math.floor(Number((fleet as any).formationCount0)) || combat.length);
+        if (combat.length === 0 || n0 <= 0) return;
+        const offs = formationOffsets((fleet.formation || 'wedge') as FormationType, n0);
+        const spacing = formationSpacing(offs, this.hexRadius);
+        // 阵面朝向真源与 update() 一致：formFacing ?? facingSmooth ?? facingAngle ?? 0（建舰期通常为 facingAngle）
+        const facing = (fleet as any).formFacing ?? fleet.facingSmooth ?? fleet.facingAngle ?? 0;
+        const spread = entrySpreadEffective(SLICE_SPREAD, SLICE_DUR_PER_SHIP, SLICE_TOTAL_MAX);
+        for (const u of units) {
+            const slot = (typeof u.formationSlot === 'number' && u.formationSlot >= 0) ? u.formationSlot : -1;
+            if (slot < 0 || !u.sprite) continue;   // 运输舰（slot = -1）不参与阵型定位
+            const cell: FormationCell = offs[slot] || ringCell(slot);
+            const [dx, dy] = rotateOffsetPx(cell[0] * spacing, cell[1] * spacing, facing, 1);
+            u.sprite.x = fleet.x + dx;
+            u.sprite.y = fleet.y + dy;
+            // 入场相位（秒，相对 3D 入场事件起点 t0）：按阵位索引线性错开
+            u._entryDelay = entryDelayForSlot(slot, n0, spread);
+        }
     }
 
     // 保留旧方法供可能的回退（不删除，只从 create 中去掉调用）
@@ -1752,6 +1806,8 @@ export class BattleScene extends Phaser.Scene {
             // [阵型] 本舰队开局参与布阵的实体数（阵型按它枚举；与 units.length 不同，
             // 因为运输舰被排除在阵位之外）
             fleet.formationCount0 = formationSlotCounter;
+            // [切片传送入场 L1] 建舰期即按阵位放置（第一帧就是展开好的阵型；不再"堆一点再散开"）
+            this.placeUnitsAtFormationSlots(fleet);
         });
 
         // [v14 ⑤] 演习轨道（用户主用路径）同方多舰队初始部署错开——见 applyFleetDeploySpacing。
@@ -8071,8 +8127,9 @@ export class BattleScene extends Phaser.Scene {
                 //   ⚠ 只作用于**槽位目标**，不影响 u.sprite 实际位置 ⇒ 船自己会
                 //     沿直线走近的新槽位（stepShipSlotFollow 的既有行为）。
                 const _ctK = 1 - COMPACT_TURN_LATERAL_KEEP * ((fleet as any)._compactTurn ?? 0);
-                const rx = ox * Math.cos(_ff) - (oy * _ctK) * Math.sin(_ff);
-                const ry = ox * Math.sin(_ff) + (oy * _ctK) * Math.cos(_ff);
+                // ⚠ 旋转公式收敛到 formationLayout.rotateOffsetPx（与建舰期 placeUnitsAtFormationSlots
+                //   同一实现）—— 两处各自内联会让"第一帧阵型"与"逐帧目标位"漂移。
+                const [rx, ry] = rotateOffsetPx(ox, oy, _ff, _ctK);
 
 
                 const targetUnitX = fleet.x + rx;

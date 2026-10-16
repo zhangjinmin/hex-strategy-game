@@ -463,3 +463,26 @@ export function formationSpacing(offsets: FormationCell[], hexRadius: number): n
   const he = Math.max(halfExtentOf(offsets), 1);
   return Math.min(FORMATION_SPACING, budget / he);
 }
+
+/**
+ * **阵位像素偏移 → 按阵面朝向旋转后的像素偏移**（唯一真源）。
+ *
+ * ⚠ 这是「战舰在阵型里该站在哪」这一几何的**唯一实现**：建舰期放置（`BattleScene`
+ *   的 `placeUnitsAtFormationSlots`）与逐帧追踪（同文件 `update()` 的阵位循环）都必须
+ *   经本函数取值 —— 否则两处公式会各自演化、"第一帧阵型"与"逐帧目标位"必然漂移。
+ *
+ * @param oxPx 阵位纵向（沿舰首）像素偏移 = 格位 × 格距
+ * @param oyPx 阵位横向（垂直舰首）像素偏移 = 格位 × 格距
+ * @param facing 阵面朝向（rad，= `fleet.formFacing`）
+ * @param lateralKeep 横向压缩系数（= 1 − COMPACT_TURN_LATERAL_KEEP × 紧凑转强度）：
+ *        只压横向不压纵向 ⇒ 转向期"收拢"而首尾次序不变。建舰期为 1。
+ * @returns [rx, ry] 相对舰队中心的像素偏移
+ */
+export function rotateOffsetPx(
+  oxPx: number, oyPx: number, facing: number, lateralKeep = 1,
+): [number, number] {
+  const oy = oyPx * lateralKeep;
+  const c = Math.cos(facing);
+  const s = Math.sin(facing);
+  return [oxPx * c - oy * s, oxPx * s + oy * c];
+}

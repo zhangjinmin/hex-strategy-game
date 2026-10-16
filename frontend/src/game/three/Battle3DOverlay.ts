@@ -32,6 +32,14 @@ import {
 } from './battleFx';
 import { drainFx3d, type Fx3dEvent } from '../battle3dFx';
 import { projectFleetRepresentation, projectFleetRepresentationBySlot } from '../combatRepresentation';
+// [切片传送入场] 纯逻辑层（零 three 依赖，可被离线台架真跑）—— 见 docs/design/3d-tactical-battle/35-*
+import {
+  ENTRY_CFG_DEFAULT, ENTRY_GLOW_MAX, ENTRY_REG_WINDOW_SEC,
+  SLICE_ENTRY_ENABLED_DEFAULT, SLICE_GLOW_SPAN_K, SLICE_HALF_SPAN_K,
+  entryApplyClipping, entryPlaneInitConstant, entryPlaneNormalY,
+  entryShipProgress, entryWritePlanes, stepEntrySlice,
+  type EntryCfg, type EntryShip, type SliceMatLike,
+} from '../entrySlice';
 import {
   SHIP_CLASS_ALIAS, FLAGSHIP_MODEL_ALIAS,
   acquireShipModelByFiles, setShipModelDetail, type ShipModelReg,
@@ -241,6 +249,11 @@ interface ShipEntry {
   /** [v12.1 C2] 构建时的模型档位：换档走**分帧迁移**时据此识别"旧档实体"逐个淘汰重建
    *  （取代原先的 `ships.forEach(dispose); ships.clear()` 全量重建尖峰）。 */
   tier: 'high' | 'medium' | 'low';
+  /** [切片传送入场] 本舰被裁剪的材质引用（Phong 体 + 轮廓线 + 旗舰环）。入场结束/换装时置空。
+   *  每舰材质独立（几何共享、材质 new）⇒ 可按舰施加裁剪而不串扰。 */
+  sliceMats?: SliceMatLike[];
+  /** [切片传送入场] 本舰的裁剪平面（1 个，法线 = 世界 ±Y，常数沿轴推进）。入场结束置空。 */
+  entryPlanes?: THREE.Plane[];
 }
 
 /**
@@ -1185,6 +1198,33 @@ export class Battle3DOverlay {
   private shipGroup = new THREE.Group();
   private ships = new Map<string, ShipEntry>();
 
+  // ---------- [切片传送入场] 家园2 式 hyperspace entry（纯视觉）----------
+  /**
+   * 逐舰入场状态（key = UnitVis.key，**与 `ships` 解耦**）。
+   *
+   * ⚠ 进度绑在"**入场事件**"（首次见到该单位）上，**绝不绑 `addMesh`**：
+   *   `ships` 随相机推拉建/销（`MESH_ADD_PER_FRAME`/`MESH_DROP_PER_FRAME`），
+   *   若把动画挂在 `addMesh` 上，推拉镜头就会**反复重播**切片。本表按单位存活长期持有
+   *   ⇒ 实体中途被销毁再重建时，从**当前进度续切**（不重播）。
+   */
+  private entryStates = new Map<string, EntryShip>();
+  /** 入场登记窗口的起点（秒）—— **只由 `startEntryFx()` 显式写入**（= 开战时刻）。
+   *  ⚠ 不再用 `entryEpoch === 0` 表达"未开始"（那会让"未开始"与"恰在 0 秒开始"混淆）。 */
+  private entryEpoch = 0;
+  /** [入场时机修复] 是否已"开战"（由 `startEntryFx()` 显式置真）。为假 ⇒ `registerEntryState`
+   *  一律不登记。根因：3D 层是**独立 rAF 循环**（不受 `store.isPaused` / Phaser `update()` 影响），
+   *  部署期照样在跑 ⇒ 舰队在部署期就已被"首次见到"；若不拦住，切片动画会在被
+   *  `BattleIntroOverlay`（z-index:60 全屏）盖住的部署期播完 ⇒ 玩家回车开战时看不到入场。 */
+  private entryStarted = false;
+  /** 本帧"入场特效是否开启"（一键关闭开关；每帧只在 syncShips 里读一次 window）。 */
+  private entryFxActive = SLICE_ENTRY_ENABLED_DEFAULT;
+  /** 切片参数（集中常量，便于按真机截图迭代）。 */
+  private entryCfg: EntryCfg = ENTRY_CFG_DEFAULT;
+  /** 加法扫描面片（InstancedMesh = 1 draw call；"CT 扫描亮面"）。 */
+  private entryGlow: THREE.InstancedMesh | null = null;
+  /** 写 InstancedMesh 矩阵用的复用对象（不每帧 new）。 */
+  private entryGlowDummy = new THREE.Object3D();
+
   // ---------- 三级表示：光点层 + 光晕层（各 1 个 Points = 各 1 个 draw call）----------
   /** 光点层：全场景 1 个 Points，容量 `DOT_SLOTS`（= N_MAX × DOT_N = 1400 × 1，覆盖全场实体预算），
    *  超出不重建、用 alpha 屏蔽（drawRange 截断即不绘制）。⚠ 不再是 `MAX_MESHES * DOT_N`（那会塌到 400）。 */
@@ -1387,6 +1427,10 @@ export class Battle3DOverlay {
     //     只是白白分配一个多重采样后备缓冲（核显上按 2×dpr 是实打实的显存/带宽）。
     //   · powerPreference:'high-performance' —— 双显卡机器优先请求独显；单核显无副作用。
     this.renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, powerPreference: 'high-performance' });
+    // [切片传送入场] **必须开"局部裁剪"**（材质级 clippingPlanes 生效的前提）：
+    //   ⚠ 绝不能用 `renderer.clippingPlanes`（全局裁剪）—— 那会连带切掉星空 / 地形 / CRT 后处理 quad。
+    //   局部裁剪本身对既有渲染零影响（无材质声明 clippingPlanes ⇒ `numPlanes = 0` ⇒ 与未开启逐位相同）。
+    this.renderer.localClippingEnabled = true;
     this.renderer.setSize(w, h);
     // [v12 P3] dpr 上限取自画质档（high=2 = 现状）；[v56] 统一走 effDpr()（×动态分辨率系数）
     this.renderer.setPixelRatio(this.effDpr());
@@ -1483,6 +1527,9 @@ export class Battle3DOverlay {
     this.buildShipDots();
     // 三级表示的标记层（远景唯一表示；中景降为 MARKER_FLOOR 的"队形底"与光点叠两层）
     this.buildFleetMarks();
+
+    // [切片传送入场] 加法扫描面片层（1 个 InstancedMesh = 1 draw call）
+    this.buildEntryGlow();
 
     // 登陆艇：合并为 1 draw call，用于占领作战视觉
     this.boatInst = new THREE.InstancedMesh(
@@ -3631,6 +3678,8 @@ export class Battle3DOverlay {
   private get lodDrop(): number { return this.lodNear ? 0 : FAR_TIER_KEEP; }
 
   private syncShips(dt: number) {
+    // [切片传送入场] 本帧开关（一键关闭：window.__entryFxEnabled = false）—— 每帧只读一次
+    this.entryFxActive = this.entryFxOn();
     this.updateLodTier();   // [v76] 先定档，同帧内所有消费点读一致值
     this.applyDebugHide();  // [v77] 调试隐藏开关（生产环境为空集 ⇒ 无行为变更）
     this.applyNearTierLayerPolicy();   // [v77] 近景档：粒子/星空退场
@@ -3739,6 +3788,11 @@ export class Battle3DOverlay {
           vv = { key, u, fleet, x: 0, y: 0, z: 0, h: 0, seen: true, px: 0, sx: 0, sy: 0, shipLen: 0, shipW: 0, grow: 0, yaw: 0, fleetPx: 0 };
           vis.set(key, vv);
         }
+        // [切片传送入场 · 时机修复] 逐帧对**可见单位**尝试登记（幂等）。
+        //   此前只在"首次见到"（`if (!vv)`）登记 ⇒ 部署期首见被守卫拦下后**再无登记机会**，
+        //   开战即永不触发切片。改为逐帧尝试：未开战 / 部署期 / 已登记 / 窗口外都立即返回，
+        //   仍由 `entryStates.has(key)` 保证"推拉镜头不重播"（进度绑入场事件，不绑 addMesh）。
+        this.registerEntryState(key, u, now);
         vv.u = u; vv.fleet = fleet; vv.seen = true;
         vv.x = u.sprite.x; vv.y = y; vv.z = -u.sprite.y;
         vv.h = h; vv.px = px; vv.sx = sx; vv.sy = sy;
@@ -3784,15 +3838,23 @@ export class Battle3DOverlay {
     // 本帧未回收者下帧继续判定（px 阈值仍成立），只是延后回收，观感无差。
     let dropped = 0;
     for (const v of vis.values()) {
+      // [切片传送入场] P1：远景档 `lodKeep = 999` ⇒ 无实体可切。入场期**临时强制建实体**
+      //   （否则"切片传送"在雷达视角下完全看不见）；入场结束自然落回原 LOD（`lodDrop` 999 ⇒ 逐帧回收）。
+      const entryActive = this.entryActiveOf(v.key);
       if (this.ships.has(v.key)) {
         // 已持实体：低于滞回下阈才归还（滞回避免相机推拉时每帧 buildShip/dispose 造成卡顿）
-        if (v.fleetPx >= this.lodDrop) cand.push(v);
+        if (v.fleetPx >= this.lodDrop || entryActive) cand.push(v);
         else if (dropped < MESH_DROP_PER_FRAME) { this.dropMesh(v.key); dropped++; }
-      } else if (v.fleetPx >= this.lodKeep) {
+      } else if (v.fleetPx >= this.lodKeep || entryActive) {
         cand.push(v);
       }
     }
-    cand.sort((a, b) => b.fleetPx - a.fleetPx);
+    // 入场中的舰排在最前 ⇒ 实体预算被挤时**优先保住入场波次**（否则切片只演一半）
+    cand.sort((a, b) => {
+      const ea = this.entryActiveOf(a.key) ? 1 : 0;
+      const eb = this.entryActiveOf(b.key) ? 1 : 0;
+      return ea !== eb ? eb - ea : b.fleetPx - a.fleetPx;
+    });
     // [WS7] 预算 = 开 governor 时随帧时自适应收缩，否则恒 = MAX_MESHES（与改动前逐位同行为）。
     // 被预算挤出的舰**不销毁光点**：writeDotLayers 对全部 unitVis 写点，故它们自然退回中景光点层。
     const budget = this.perfOn ? this.lastStats.meshBudget : MAX_MESHES;
@@ -3872,6 +3934,20 @@ export class Battle3DOverlay {
           ? this.attachFlagshipFx(built.group, factionColor(this.getFac(u.factionId) || {}), this.shipLenOf(u, fleet))
           : undefined;
         this.shipGroup.add(built.group);
+        // [切片传送入场] 换装丢掉了旧 group 的材质 ⇒ 裁剪引用必须重建（否则指向已 dispose 的材质），
+        //   仍处入场期就补挂到新材质上（从当前进度续切，不重播）。
+        entry.sliceMats = undefined;
+        entry.entryPlanes = undefined;
+        const swapSt = this.entryFxActive ? this.entryStates.get(v.key) : undefined;
+        if (swapSt && !swapSt.done) {
+          entry.entryPlanes = [new THREE.Plane(
+            new THREE.Vector3(0, entryPlaneNormalY(this.entryCfg.dir), 0),
+            entryPlaneInitConstant(this.entryCfg.dir),
+          )];
+          entry.sliceMats = this.collectSliceMats(built.group);
+          entryApplyClipping(entry.sliceMats, entry.entryPlanes, true);
+          entry.meshT = MESH_GROW_DUR;   // P3：入场期不叠加"长出"
+        }
         void pending;
       }
 
@@ -3974,7 +4050,9 @@ export class Battle3DOverlay {
       v.x = x; v.y = y; v.z = z;
       v.yaw = g.rotation.y;
       // [v75] 用 fleetPx（舰队代表）⇒ 整队同步长出/淡出，同队不会一半模型一半点
-      v.grow = sstep(this.lodLo, this.lodHi, v.fleetPx);
+      // [切片传送入场] 入场期强制 grow = 1：实体"已在场"，**光点让位**（否则远景强制建实体时
+      //   会同时画出"点 + 半切舰"，正是 v79~v81 反复修掉的"点模共存"观感）。
+      v.grow = this.entryActiveOf(v.key) ? 1 : sstep(this.lodLo, this.lodHi, v.fleetPx);
       // [v83] **引擎特效随 LOD `grow` 同步淡入**（用户实报「金色尾焰，只有尾焰没有舰船」）。
       //   根因：舰体是**线条化渲染**（Line），缩小时线宽变细直至不可见；
       //     而 `glow`（引擎暖晕，`color=0xffcc66` 琥珀金）是**面片 + AdditiveBlending**
@@ -4026,6 +4104,158 @@ export class Battle3DOverlay {
     return ring;
   }
 
+  // ════════════════════════════════════════════════════════════════════════
+  // [切片传送入场] 家园2 式 hyperspace entry（纯视觉；不参与任何战斗数值）
+  // ════════════════════════════════════════════════════════════════════════
+
+  /** 是否启用了切片入场：编译期常量 + 运行时一键关闭 `window.__entryFxEnabled = false`。 */
+  private entryFxOn(): boolean {
+    if (!SLICE_ENTRY_ENABLED_DEFAULT) return false;
+    const w: any = (typeof window !== 'undefined') ? window : undefined;
+    return !(w && w.__entryFxEnabled === false);
+  }
+
+  /** 加法扫描面片层（1 个 InstancedMesh = 1 draw call）。平面几何：水平圆盘（法线 = 世界 Y）。 */
+  private buildEntryGlow(): void {
+    const geo = new THREE.CircleGeometry(1, 24);
+    geo.rotateX(-Math.PI / 2);   // 由 XY 平面转成 **XZ 水平面**
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0x9fe8ff, transparent: true, opacity: 0.55,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    });
+    const inst = new THREE.InstancedMesh(geo, mat, ENTRY_GLOW_MAX);
+    inst.frustumCulled = false;
+    inst.renderOrder = 7;
+    inst.count = 0;
+    this.entryGlow = inst;
+    this.scene.add(inst);
+  }
+
+  /** 收集一个舰体 Group 内全部材质引用（Phong 体 + 轮廓线 + 旗舰光环）—— 裁剪按材质施加。 */
+  private collectSliceMats(group: THREE.Object3D): SliceMatLike[] {
+    const out: SliceMatLike[] = [];
+    group.traverse((o) => {
+      const m = (o as any).material as THREE.Material | THREE.Material[] | undefined;
+      if (!m) return;
+      if (Array.isArray(m)) { for (const mm of m) out.push(mm); }
+      else out.push(m);
+    });
+    return out;
+  }
+
+  /**
+   * [切片传送入场 · 时机修复] **开战即显式启动入场**（唯一正式入口）。
+   *
+   * 为什么必须显式：部署期 `registerEntryState` 被守卫拦下（部署期一律不登记），故开战那一刻
+   * 必须重置入场纪元，否则舰队在 4s 窗口内的"首见"会落在部署期（3D 独立 rAF 早已见过它们）。
+   *   ① 清空 `entryStates`：清掉部署期理论上不该有、但防御性必须清的残留登记；
+   *   ② **显式**写入 `entryEpoch`（不再依赖 `entryEpoch === 0` 的惰性初值 ⇒ 语义唯一）；
+   *   ③ `entryStarted = true` ⇒ 之后的"首次见到"才允许登记 ⇒ 切片开始播放。
+   * 由 `BattleScene` 经 `pushFx3d({kind:'entry_start'})` 触发（Enter / 军议"开战"按钮 /
+   * `deployAutoStart` 三条路径都汇入 `startBattleAfterDeploy`）。
+   */
+  startEntryFx(): void {
+    this.entryStates.clear();
+    this.entryEpoch = performance.now() / 1000;
+    this.entryStarted = true;
+  }
+
+  /**
+   * [入场时机修复] 给**已建实体**补挂切片裁剪平面/材质引用。
+   * 为什么需要：部署期建好的实体在登记时并不在入场中（那时 `registerEntryState` 被守卫拦下）
+   *   ⇒ `addMesh` 没挂裁剪；开战后这些舰被登记，若不在此时补挂，它们会**整舰可见**、看不到切片。
+   * 与 `addMesh` / GLB 换装两处同式（`new THREE.Plane` + `collectSliceMats` + `entryApplyClipping`）。
+   */
+  private attachEntryClippingTo(key: string): void {
+    const entry = this.ships.get(key);
+    if (!entry || entry.entryPlanes) return;   // 无实体 ⇒ 留给后续 addMesh 挂；已挂 ⇒ 不重复
+    entry.entryPlanes = [new THREE.Plane(
+      new THREE.Vector3(0, entryPlaneNormalY(this.entryCfg.dir), 0),
+      entryPlaneInitConstant(this.entryCfg.dir),
+    )];
+    entry.sliceMats = this.collectSliceMats(entry.group);
+    entryApplyClipping(entry.sliceMats, entry.entryPlanes, true);
+  }
+
+  /**
+   * 登记入场状态（**只登记一次**；对每个可见单位逐帧尝试，幂等）。
+   * ⚠ 进度绑"入场事件"，不绑 `addMesh` ⇒ 推拉镜头不重播（设计文档 P2）。
+   * 入场窗口外的首见（如迷雾发现、战后增援）**不登记** ⇒ 不触发切片，避免与既有 LOD 打架。
+   * ⚠ 部署期一律不登记、开战（`startEntryFx`）前一律不登记 —— 见 `entryStarted` 的根因说明。
+   */
+  private registerEntryState(key: string, u: any, now: number): void {
+    if (!this.entryFxActive) return;
+    if (this.entryStates.has(key)) return;
+    // [时机修复 ①] 部署期不登记（读部署态走既有通道，与 BattleScene 的 deployPhase 同一真源）。
+    if ((this.battleScene as any)?.deployPhase) return;
+    // [时机修复 ②] 仅在开战之后登记；`entryEpoch` 已由 `startEntryFx` 显式置初值，故不再惰性赋 now。
+    if (!this.entryStarted) return;
+    if (now - this.entryEpoch > ENTRY_REG_WINDOW_SEC) return;
+    const d = Number((u as any)?._entryDelay);
+    this.entryStates.set(key, {
+      t0: now,
+      // 相位真源 = 2D 建舰期打的 `_entryDelay`（按阵位索引错开）；缺失时回退 0（同时序）。
+      delay: Number.isFinite(d) && d > 0 ? d : 0,
+      done: false,
+    });
+    this.attachEntryClippingTo(key);
+  }
+
+  /** 该舰是否仍处入场中（决定"临时强制建实体"与 `grow` 门控）。 */
+  private entryActiveOf(key: string): boolean {
+    if (!this.entryFxActive) return false;
+    const st = this.entryStates.get(key);
+    return !!st && !st.done;
+  }
+
+  /**
+   * 逐帧推进切片平面 + 扫描辉光。**入场结束必须清空 `clippingPlanes`**（否则舰体被永久切）。
+   *
+   * ⚠ 方法体刻意只依赖：`this.*`、`performance.now()`、以及 `entrySlice` 的纯函数
+   *   （`stepEntrySlice` / `entryApplyClipping` / …）+ 常量 ——
+   *   于是离线台架可把**本方法原文**用 `stripTypeScriptTypes` + `new Function` 真跑（见
+   *   `scripts/entryAnimationSim.cjs`），断言"结束时清空 / 中途写平面常数 / 无实体时不误判完成"。
+   */
+  private updateEntryFx(): void {
+    if (this.entryStates.size === 0) return;
+    const on = this.entryFxOn();
+    const now = performance.now() / 1000;
+    let glow = 0;
+    this.entryStates.forEach((st: EntryShip, key: string) => {
+      if (st.done) return;
+      const entry: ShipEntry | undefined = this.ships.get(key);
+      const p = entryShipProgress(now, st.t0, st.delay, this.entryCfg.durPerShip);
+      if (!on || p >= 1) {
+        // 入场结束（或一键关闭）：清理裁剪引用 ⇒ 舰体恢复正常渲染
+        if (entry) {
+          entryApplyClipping(entry.sliceMats, null, false);
+          entry.sliceMats = undefined;
+          entry.entryPlanes = undefined;
+        }
+        st.done = true;
+        return;
+      }
+      // 尚无实体（远景/被池上限挤出）⇒ **保持等待**，绝不置 done ——
+      //   否则实体建好时已错过入场窗口，切片永远不会发生（P1 的反面陷阱）。
+      if (!entry) return;
+      const half = Math.max(0.5, Number((entry.u as any)?.shipLen) || 4) * SLICE_HALF_SPAN_K;
+      const step = stepEntrySlice(now, st, entry.group.position.y - half, entry.group.position.y + half, this.entryCfg);
+      if (entry.entryPlanes) entryWritePlanes(entry.entryPlanes, step.front, this.entryCfg.dir);
+      if (this.entryGlow && step.glow > 0 && glow < ENTRY_GLOW_MAX) {
+        const s = Math.max(0.5, Number((entry.u as any)?.shipLen) || 4) * SLICE_GLOW_SPAN_K * step.glow;
+        this.entryGlowDummy.position.set(entry.group.position.x, step.front, entry.group.position.z);
+        this.entryGlowDummy.scale.set(s, 1, s);
+        this.entryGlowDummy.updateMatrix();
+        this.entryGlow.setMatrixAt(glow, this.entryGlowDummy.matrix);
+        glow += 1;
+      }
+    });
+    if (this.entryGlow) {
+      this.entryGlow.count = glow;
+      this.entryGlow.instanceMatrix.needsUpdate = true;
+    }
+  }
+
   /** 授予实体：建模型并登记 ShipEntry（长出动画从 meshT = 0 开始） */
   private addMesh(v: UnitVis) {
     const u = v.u, fleet = v.fleet;
@@ -4046,13 +4276,31 @@ export class Battle3DOverlay {
     const fa0 = fleet.facingSmooth ?? fleet.facingAngle;
     const yaw0 = (typeof fa0 === 'number' && Number.isFinite(fa0))
       ? Math.atan2(-Math.cos(fa0), Math.sin(fa0)) : 0;
+
+    // [切片传送入场] 该舰仍在入场中？⇒ 立即挂上裁剪平面，并**跳过"长出"动画**（P3：只留平面推进）。
+    //   ⚠ 这是"补挂"而非"重播"：进度真源是 entryStates（按单位存活持有），实体中途被
+    //     池化销毁再重建时，从**当前时间**续切（`updateEntryFx` 用绝对时钟算 p）。
+    const entrySt = this.entryFxActive ? this.entryStates.get(v.key) : undefined;
+    const entryActive = !!entrySt && !entrySt.done;
+    let entryPlanes: THREE.Plane[] | undefined;
+    let sliceMats: SliceMatLike[] | undefined;
+    if (entryActive) {
+      entryPlanes = [new THREE.Plane(
+        new THREE.Vector3(0, entryPlaneNormalY(this.entryCfg.dir), 0),
+        entryPlaneInitConstant(this.entryCfg.dir),
+      )];
+      sliceMats = this.collectSliceMats(built.group);
+      entryApplyClipping(sliceMats, entryPlanes, true);
+    }
+
     this.ships.set(v.key, {
       key: v.key, group: built.group, u, fleet,
       lastX: u.sprite.x, lastY: u.sprite.y, cruiseY: 0, yaw: yaw0,
       pendingModel: built.pendingModel, modelVer: built.modelVer ?? 0,
       isFlagship: isFlagshipUnit, flagshipKey: flagshipKey ?? undefined,
       cmdRing,
-      meshT: 0, baseScale: built.group.scale.x || 1,
+      meshT: entryActive ? MESH_GROW_DUR : 0, baseScale: built.group.scale.x || 1,
+      sliceMats, entryPlanes,
       // [v12.1 C2] 记录本次构建所用档位（分帧迁移据此淘汰旧档实体）
       tier: this.detailTier,
     });
@@ -5234,6 +5482,8 @@ export class Battle3DOverlay {
   }
 
   private handleFx(e: Fx3dEvent) {
+    // [切片传送入场 · 时机修复] 开战即启动切片入场（BattleScene.startBattleAfterDeploy 推送）
+    if (e.kind === 'entry_start') { this.startEntryFx(); return; }
     // [W3] 指针反馈事件（battle3dFx 总线 → 三接口）
     if (e.kind === 'pointer_chevron' && e.at) { this.showPointerChevron(e.at.x, e.at.y); return; }
     if (e.kind === 'pointer_target_lock' && e.at) { this.showTargetLock(e.at.x, e.at.y); return; }
@@ -5774,6 +6024,8 @@ export class Battle3DOverlay {
       this.updateSceneProps(dt);
       this.updateCaptureRings(dt);
       this.syncShips(dt);
+      // [切片传送入场] 紧随实体同步之后推进（需要本帧的实体世界坐标 / 建好的材质引用）
+      this.updateEntryFx();
       this.updateBillboards();
       this.updateSupplyViz();
       this.updateCastleIntelVisibility();
@@ -5993,6 +6245,9 @@ export class Battle3DOverlay {
     this.captures.clear();
     this.boatInst.count = 0;
     this.ships.clear();
+    // [切片传送入场] 状态与辉光引用清空（几何/材质由下方 scene.traverse 统一释放）
+    this.entryStates.clear();
+    if (this.entryGlow) { this.entryGlow.count = 0; this.entryGlow = null; }
     // 阵型标记层：逐条释放几何/材质（不依赖下方 scene.traverse 兜底，且引用表必须清空防串场）
     this.fleetMarks.forEach((m) => this.disposeFleetMark(m));
     this.fleetMarks.clear();
