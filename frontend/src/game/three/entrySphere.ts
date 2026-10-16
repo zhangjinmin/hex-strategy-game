@@ -78,15 +78,52 @@ export const SPHERE_RADIUS_PAD = 1.12;
 export const SPHERE_RADIUS_MIN_K = 3.0;
 
 /** 色散镶边的径向偏移量（× R）—— 红/蓝两层沿瓦片法线微偏移 ⇒ 边缘出现红蓝镶边（参考图 1 左侧）。
- *  ⚠ 实测：偏移过大（0.03）会在球体轮廓处拉出红/蓝"尖刺"、且球体整体过曝 ⇒ 收到 0.016。 */
-export const SPHERE_DISPERSION_K = 0.016;
-/** 亮白核心球半径系数（× R）—— 完整期球心那团亮白（参考图 2）。 */
-export const SPHERE_CORE_R_K = 0.95;
+ *  ⚠ 实测：偏移过大（0.03）会在球体轮廓处拉出红/蓝"尖刺"、且球体整体过曝 ⇒ 收到 0.016。
+ *  ⚠ v3.2 精修：参考图的红/青镶边**很微妙、只在轮廓边缘、断续非成环** ⇒ 进一步收到 0.005
+ *     （偏移越小 ⇒ 分离丝带越窄 ⇒ 读作"边缘微色散"而不是"一整圈明显红边"）。 */
+export const SPHERE_DISPERSION_K = 0.005;
+/** 亮白核心球半径系数（× R）—— 完整期球心那团亮白（参考图 2）。
+ *  ⚠ v3.2：接近全球覆盖（0.92）—— 它同时充当**柔光填充**（把瓦片之间的缝隙照亮 ⇒ 球体读作"发光实心球"
+ *     而非"深色蜂窝框"）；但梯度做成"白核 → 青 → 蓝紫"（不是纯白）⇒ 不压平外圈的冷色层次。 */
+export const SPHERE_CORE_R_K = 0.92;
 /** 外圈紫色辉光**亮环**半径系数（× R）—— 参考图 2 外圈那圈紫光。 */
 export const SPHERE_GLOW_R_K = 1.15;
 /** 外圈辉光**贴图面片**的半边长系数（× R）—— 必须 > `SPHERE_GLOW_R_K`
  *  （亮环在面片内部、外侧留出柔边）⇒ 否则亮环正好压在球体轮廓上，看不出"外圈辉光"。 */
-export const SPHERE_GLOW_HALF_K = 1.70;
+export const SPHERE_GLOW_HALF_K = 1.45;
+
+// ── v3.2「瓦片质感」精修旋钮（发光能量体 / 冷暖层次 / 径向亮核 / 弱色散 / 消散保亮）──
+//   参考图观感主体 = "像一颗发光的能量球"（而不是"有很多六边形"）⇒ 这里全部服务于**发光感**。
+//   ⚠ 本工程无 bloom 后处理（只有自定义 CRT post）⇒ 用**加法混合 + 逐顶点亮度衰减 + 径向正对增益**
+//     在瓦片自身做出"自发光 / 内部亮度 / 中心过曝"。
+
+/** 单块瓦片内的**边缘压暗**系数（顶点色：质心 = 1.0，周长顶点 = 本值）。
+ *  ⇒ 每块瓦片"自己从中心发光"（内部亮度衰减），而不是一块被均匀照亮的平板/瓷片。
+ *  ⚠ 实测：过小（0.34）⇒ 相邻瓦片边缘叠加后出现**明显暗缝**（读作"深色蜂窝框"，不是发光球）⇒ 取 0.72（很轻）。 */
+export const SPHERE_TILE_EDGE_DIM = 0.92;
+
+/** 瓦片亮度增益的**轮廓下限**（"正对相机程度" = 0 时的增益）。
+ *  ⚠ 实测：< 1（压暗轮廓瓦片）会让"包住轮廓的那圈瓦片"变暗 ⇒ 它们之间的**缝隙露出暗背景**
+ *     ⇒ 整球读作"深色蜂窝框"（不是发光球）⇒ 必须** ≥ 1**（瓦片近等亮）；径向亮核改由核心柔光承担。 */
+export const SPHERE_TILE_FACE_FLOOR = 1.0;
+/** 瓦片亮度增益的**正对增量**：增益 = `FLOOR + LIFT × 正对程度`（正对相机 = 投在球心 ⇒ 略亮一点）。 */
+export const SPHERE_TILE_FACE_LIFT = 0.15;
+
+/** 正对相机的瓦片再向**纯白**提亮的比例（复刻参考图 2 球心"过曝亮白"）。0..1。 */
+export const SPHERE_TILE_CORE_WHITEN = 0.35;
+
+/** 色散（红/青）镶边的**轮廓权重下限**：色散层不透明度按"轮廓程度"加权 ⇒ 只在轮廓边缘明显、
+ *  球心几乎不出现（局部边缘而非整圈均匀红边）。 */
+export const SPHERE_DISP_SIL_FLOOR = 0.15;
+
+/** 亮白核心球的基础不透明度（× `sphereCoreAmt` 包络）—— 充满球体的柔光"亮核"（发光感主体）。 */
+export const SPHERE_CORE_OPACITY = 0.90;
+/** 外圈紫色辉光的基础不透明度（× `sphereGlowAmt` 包络）—— 紧贴球体轮廓的紫光。 */
+export const SPHERE_GLOW_OPACITY = 0.85;
+
+/** 消散期**亮度保持**起始比例：瓦片透明度在前 `SPHERE_DISP_FADE_START` 段**保持 1**（仍明亮），
+ *  其后才快速收掉 ⇒ "消散靠数量减少 + 飞散来表现，不是靠瓦片变暗"（参考图 3 消散期瓦片仍白/浅蓝）。0..1。 */
+export const SPHERE_DISP_FADE_START = 0.55;
 
 /** 舰队显现：吸收段（秒）—— 开战瞬间舰队被"吸进"球里（1 → 0）。 */
 export const SPHERE_ABSORB_SEC = 0.35;
@@ -491,7 +528,10 @@ export function sphereTileMotion(
   if (t < dispEnd) {
     const td = clamp01((t - dispStart - tile.dispDelay) / dispDur);
     const e = smooth01(td);
-    return { k: 1 + (tile.dispK - 1) * e, opacity: 1 - td, spin: tile.spinB * e, phase: 3 };
+    // 消散**保持亮度**：前 `SPHERE_DISP_FADE_START` 段透明度恒为 1（瓦片仍明亮、靠数量减少 + 飞散表现"消散"），
+    //   其后一段才快速收掉（单调不增 ⇒ 不闪；`td=1` 时恰好为 0 ⇒ 消散末全透明）。
+    const fade = clamp01((td - SPHERE_DISP_FADE_START) / Math.max(1e-6, 1 - SPHERE_DISP_FADE_START));
+    return { k: 1 + (tile.dispK - 1) * e, opacity: 1 - smooth01(fade), spin: tile.spinB * e, phase: 3 };
   }
   return { k: tile.dispK, opacity: 0, spin: tile.spinB, phase: 4 };
 }

@@ -184,13 +184,16 @@ export const GATE_STYLE_PARAMS: Record<GateStyleId, GateStyleParams> = {
     chamfer: 0, edgeWidth: 0, feather: 0,
     barrierOpacity: 0, flow: 0, density: 0, pulse: 0, shard: false,
     tileCount: 120,
-    tileColor: 0xd8ecff,
-    tileFarColor: 0x6a4fd0,
-    dispA: 0xff4d6a,
-    dispB: 0x3fd0ff,
+    // v3.2 精修：近侧提成**亮青白**（自己发光的能量体）、远侧压深为**蓝紫**（拉开冷暖层次）
+    tileColor: 0x93ddff,
+    tileFarColor: 0x5a2fd8,
+    // 色散镶边：红端**大幅减弱**（参考图里红/青只在轮廓边缘、很微妙），青端略强
+    dispA: 0xff5a78,
+    dispB: 0x5ad6ff,
     coreColor: 0xffffff,
     glowColor: 0x9b5cff,
-    dispersion: 0.016,
+    // v3.2：色散偏移由 0.016 收到 0.005（窄丝带 ⇒ 边缘微色散，不成环）；须与入口常量同步
+    dispersion: 0.005,
     gapRatio: 0.08,
   },
 };

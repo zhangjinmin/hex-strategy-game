@@ -47,7 +47,9 @@ import {
 import {
   buildSphereTiles, disposeTree, sphereBoundsFit, sphereCoreAmt, sphereGlowAmt,
   sphereRevealAmt, sphereRevealDelayByRadius, sphereTileMotion,
-  SPHERE_CORE_R_K, SPHERE_GLOW_HALF_K, SPHERE_GLOW_R_K, SPHERE_MAX_INSTANCES,
+  SPHERE_CORE_OPACITY, SPHERE_CORE_R_K, SPHERE_DISP_SIL_FLOOR, SPHERE_GLOW_HALF_K, SPHERE_GLOW_OPACITY,
+  SPHERE_GLOW_R_K, SPHERE_MAX_INSTANCES, SPHERE_TILE_CORE_WHITEN, SPHERE_TILE_EDGE_DIM,
+  SPHERE_TILE_FACE_FLOOR, SPHERE_TILE_FACE_LIFT,
   SPHERE_MOTION_DEFAULT, SPHERE_RADIUS_MIN_K, SPHERE_RADIUS_PAD, SPHERE_REVEAL_DEFAULT,
   type DisposableNode, type SphereFit, type SphereFitItem, type SphereMotionCfg,
   type SphereTile, type SphereTileSet,
@@ -1338,6 +1340,8 @@ export class Battle3DOverlay {
   private sphereTmpAxis = new THREE.Vector3();
   private sphereTmpView = new THREE.Vector3();
   private sphereTmpColor = new THREE.Color();
+  /** [v3.2] 球心亮核用的**纯白**目标色（正对相机的瓦片向它提亮 ⇒ 中心过曝）。 */
+  private sphereTmpWhite = new THREE.Color(1, 1, 1);
   /** [v3.1 · S] "最近 N 支舰队"的按帧缓存（键 = `now`；见 `spherePrimaryFleets`）。 */
   private spherePrimaryAt = -1;
   private spherePrimaryCache: any[] = [];
@@ -4583,12 +4587,15 @@ export class Battle3DOverlay {
     if (ctx) {
       ctx.clearRect(0, 0, S, S);
       const c = S / 2;
+      // [v3.2] 中心**更大的过曝亮核**（充满球体的柔光），向外再渐变到**冷蓝紫**
+      //   （复刻参考图 2 的"大块白核 → 蓝紫边缘"；亮核体积足够大 ⇒ 整球读作"发光能量球"）
       const g = ctx.createRadialGradient(c, c, 0, c, c, c);
       g.addColorStop(0.00, 'rgba(255,255,255,1)');
-      g.addColorStop(0.34, 'rgba(242,249,255,0.72)');
-      g.addColorStop(0.60, 'rgba(198,224,255,0.26)');
-      g.addColorStop(0.84, 'rgba(168,204,255,0.06)');
-      g.addColorStop(1.00, 'rgba(168,204,255,0)');
+      g.addColorStop(0.20, 'rgba(250,253,255,0.92)');
+      g.addColorStop(0.42, 'rgba(206,226,255,0.76)');
+      g.addColorStop(0.62, 'rgba(172,178,255,0.62)');
+      g.addColorStop(0.82, 'rgba(150,122,255,0.38)');
+      g.addColorStop(1.00, 'rgba(120,95,255,0)');
       ctx.fillStyle = g;
       ctx.fillRect(0, 0, S, S);
     }
@@ -4629,18 +4636,28 @@ export class Battle3DOverlay {
   /**
    * [S] 由纯函数的 `SphereTile` 生成**一份** `BufferGeometry`（3 层网格共享它 ⇒ 见 `disposeTree` 的去重）。
    * 顶点 0 = 瓦片质心（局部原点），1..nv = 周长顶点（`verts − center`）⇒ 三角扇以质心为扇心。
+   *
+   * [v3.2] 额外写入**顶点色**：质心 = 1.0、周长顶点 = `SPHERE_TILE_EDGE_DIM`（配 `vertexColors` 材质）
+   * ⇒ 每块瓦片**自己的中心最亮、边缘压暗**（"内部亮度"），读作自发光能量片而不是被均匀照亮的平板。
    */
   private sphereTileGeometry(tile: SphereTile): THREE.BufferGeometry {
     const nv = tile.nv;
     const cx = tile.center[0], cy = tile.center[1], cz = tile.center[2];
     const pos = new Float32Array((nv + 1) * 3);
+    const col = new Float32Array((nv + 1) * 3);
+    // 顶点 0 = 质心（局部原点）：最亮
+    col[0] = 1; col[1] = 1; col[2] = 1;
+    const dim = Math.max(0, Math.min(1, SPHERE_TILE_EDGE_DIM));
     for (let i = 0; i < nv; i++) {
       pos[(i + 1) * 3] = tile.verts[i * 3] - cx;
       pos[(i + 1) * 3 + 1] = tile.verts[i * 3 + 1] - cy;
       pos[(i + 1) * 3 + 2] = tile.verts[i * 3 + 2] - cz;
+      // 周长顶点：压暗（瓦片内径向亮度衰减 ⇒ 内部亮度）
+      col[(i + 1) * 3] = dim; col[(i + 1) * 3 + 1] = dim; col[(i + 1) * 3 + 2] = dim;
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
     geo.setIndex(new THREE.BufferAttribute(tile.fan, 1));
     return geo;
   }
@@ -4719,9 +4736,10 @@ export class Battle3DOverlay {
     const tileFarColor = P.tileFarColor ?? 0x6a4fd0;
     const dispA = P.dispA ?? 0xff4d6a;
     const dispB = P.dispB ?? 0x3fd0ff;
-    const dispOff = Math.max(0, P.dispersion ?? 0.016) * R;
+    const dispOff = Math.max(0, P.dispersion ?? 0.005) * R;
     // 三层基础不透明度（**主色为主，色散层很弱**；加法混合下 3 层叠满会过曝 ⇒ 实测收窄）
-    const baseOpacity = [0.38, 0.14, 0.14];
+    //   [v3.2] 主色 0.38 → 0.55（更"自己在发光"、瓦片自身颜色更足）；色散层显著收弱（红/青只在轮廓边缘微微出现）
+    const baseOpacity = [0.50, 0.05, 0.10];
     const tiles: SphereTileVis[] = [];
     for (const tile of set.tiles) {
       const geo = this.sphereTileGeometry(tile);   // 3 层共享
@@ -4729,6 +4747,8 @@ export class Battle3DOverlay {
       const addLayer = (color: number, opacity: number, off: number): THREE.MeshBasicMaterial => {
         const m = new THREE.MeshBasicMaterial({
           color, transparent: true, opacity,
+          // [v3.2] 顶点色：瓦片内"中心亮、边缘暗"（内部亮度 ⇒ 自发光能量片观感）
+          vertexColors: true,
           blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
         });
         const mesh = new THREE.Mesh(geo, m);
@@ -4794,8 +4814,8 @@ export class Battle3DOverlay {
     if (!s) return;
     const cfg: SphereMotionCfg = SPHERE_MOTION_DEFAULT;
     const R = s.radius;
-    s.coreMat.opacity = 0.78 * sphereCoreAmt(elapsed, cfg);
-    s.glowMat.opacity = 0.62 * sphereGlowAmt(elapsed, cfg);
+    s.coreMat.opacity = SPHERE_CORE_OPACITY * sphereCoreAmt(elapsed, cfg);
+    s.glowMat.opacity = SPHERE_GLOW_OPACITY * sphereGlowAmt(elapsed, cfg);
     // 核心/辉光是 billboard（面向相机）⇒ 每帧对齐相机四元数
     s.core.quaternion.copy(this.camera.quaternion);
     s.glow.quaternion.copy(this.camera.quaternion);
@@ -4806,6 +4826,7 @@ export class Battle3DOverlay {
     const p = this.sphereTmpP;
     const ax = this.sphereTmpAxis;
     const col = this.sphereTmpColor;
+    const white = this.sphereTmpWhite;
     for (let i = 0; i < s.tiles.length; i++) {
       const tv = s.tiles[i];
       const m = sphereTileMotion(tv.tile, elapsed, cfg);
@@ -4817,13 +4838,22 @@ export class Battle3DOverlay {
       if (m.phase === 4) { tv.group.visible = false; continue; }
       tv.group.visible = true;
       const o = m.opacity;
-      tv.mats[0].opacity = tv.baseOpacity[0] * o;
-      tv.mats[1].opacity = tv.baseOpacity[1] * o;
-      tv.mats[2].opacity = tv.baseOpacity[2] * o;
-      // 近侧（面向相机）→ `nearColor`（浅蓝白）；远侧（背向）→ `farColor`（蓝紫）
+      // `dot`：瓦片法线与视线夹角余弦 —— 1 = 正对相机（投影在**球心**）、0 = 轮廓、-1 = 背面。
       const dot = d[0] * view.x + d[1] * view.y + d[2] * view.z;
+      const face = Math.max(0, Math.min(1, dot));        // 正对程度 ⇒ 亮核
+      const sil = 1 - Math.abs(dot);                     // 轮廓程度 ⇒ 色散镶边只在轮廓出现
+      // 近侧（正对）→ `nearColor`（亮青白）；远侧（背向）→ `farColor`（深蓝紫）
       col.copy(s.nearColor).lerp(s.farColor, Math.max(0, Math.min(1, 0.5 - 0.5 * dot)));
+      // 正对瓦片再向**纯白**提亮 ⇒ 球心"过曝亮白"（径向渐变的内端）
+      col.lerp(white, face * SPHERE_TILE_CORE_WHITEN);
+      // 亮度增益：正对最亮、轮廓/背面压暗 ⇒ 球心亮、边缘暗（径向衰减，复刻参考图 2 的亮核）
+      const gain = SPHERE_TILE_FACE_FLOOR + SPHERE_TILE_FACE_LIFT * face;
       tv.mats[0].color.copy(col);
+      tv.mats[0].opacity = tv.baseOpacity[0] * o * gain;
+      // 色散层（红/青）只在**轮廓边缘**加权 ⇒ 局部微色散，而不是整圈均匀红边
+      const dg = SPHERE_DISP_SIL_FLOOR + (1 - SPHERE_DISP_SIL_FLOOR) * sil;
+      tv.mats[1].opacity = tv.baseOpacity[1] * o * dg;
+      tv.mats[2].opacity = tv.baseOpacity[2] * o * dg;
     }
   }
 
