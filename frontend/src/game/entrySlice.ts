@@ -103,10 +103,11 @@ export const ENTRY_GATE_DIR = 1;
 //   ⚠ 三方案只换**外观**：几何 / 5 个裁剪平面 / 入场时序**完全共用** ⇒ `GATE_STYLE` 一键切换。
 // ════════════════════════════════════════════════════════════════════════════
 
-/** [v3] 门框视觉方案：`A` 能量环门（家园2 式，推荐）/ `B` 光栅门 / `C` 量子碎门。 */
-export type GateStyleId = 'A' | 'B' | 'C';
-/** [v3] 当前生效方案（用户选定后固化此值即可；三方案共用裁剪/时序，仅换外观）。 */
-export const GATE_STYLE: GateStyleId = 'A';
+/** [v3] 门框视觉方案：`A` 能量环门（家园2 式）/ `B` 光栅门 / `C` 量子碎门 /
+ *  `S` **六边形球体组装·消散**（用户 2026-10-16 三次反馈后重做，见 `entrySphere.ts`）。 */
+export type GateStyleId = 'A' | 'B' | 'C' | 'S';
+/** [v3.1] 当前生效方案 —— 默认切到 **`S`（球体）**；A/B/C 的代码与参数**完整保留**，改此值即可回退。 */
+export const GATE_STYLE: GateStyleId = 'S';
 
 /** [v3] 单个方案的**全部外观旋钮**（集中此处便于按真机截图迭代）。 */
 export interface GateStyleParams {
@@ -132,6 +133,27 @@ export interface GateStyleParams {
   pulse: number;
   /** 门框是否**碎片化**（C 方案：短线拼接、有间隙 ⇒ 不稳定感）。 */
   shard: boolean;
+  // ── 以下为 **[v3.1 · S] 球体方案专属**旋钮（A/B/C 不填 ⇒ undefined，不参与 A/B/C 渲染路径）──
+  //   ⚠ 球体的**时序**真源在 `three/entrySphere.ts`（`SPHERE_*_SEC`），此处只放**外观**旋钮；
+  //     台架 `entrySphereSim.cjs` 断言 "本处的数值 == entrySphere 的几何常量" ⇒ 防两处漂移。
+  /** [S] 球面瓦片数（= `entrySphere.SPHERE_TILE_COUNT`）。 */
+  tileCount?: number;
+  /** [S] 瓦片**主色**（近侧 = 面向相机的一侧；浅蓝白 ⇒ 参考图里的蓝白瓦片）。 */
+  tileColor?: number;
+  /** [S] 瓦片**远侧主色**（背向相机的一侧；蓝紫 ⇒ 参考图 1/2 里那些深紫瓦片）。 */
+  tileFarColor?: number;
+  /** [S] 色散镶边层 **A**（红端）色 —— 复刻参考图 1 左边缘那条红蓝镶边。 */
+  dispA?: number;
+  /** [S] 色散镶边层 **B**（蓝端）色。 */
+  dispB?: number;
+  /** [S] 亮白**核心球**颜色（参考图 2 球心那团亮白）。 */
+  coreColor?: number;
+  /** [S] 外圈**紫色辉光**颜色（参考图 2 外圈紫光）。 */
+  glowColor?: number;
+  /** [S] 色散层沿瓦片法线的径向偏移（× R）。 */
+  dispersion?: number;
+  /** [S] 瓦片顶点朝质心收缩比例（留缝 ⇒ 参考图 1 的"有间隙"）。 */
+  gapRatio?: number;
 }
 
 /** [v3] 三套外观参数（颜色 / 线宽 / 切角 / 位面不透明度 / 纹路 / 脉冲）。 */
@@ -153,6 +175,23 @@ export const GATE_STYLE_PARAMS: Record<GateStyleId, GateStyleParams> = {
     edge: 0x7f9ff0, core: 0xffffff, halo: 0x9a86ff,
     chamfer: 0.18, edgeWidth: 0.008, feather: 0.0,
     barrierOpacity: 0.05, flow: 2.2, density: 46, pulse: 0.16, shard: true,
+  },
+  // S · **六边形球体**（组装 → 完整 → 消散）：三层质感 = 色散镶边（红/蓝双层）> 亮白核心 > 紫辉光。
+  //   参考图 1（组装中：瓦片零散、有间隙、左缘红蓝镶边）/ 图 2（完整态：亮白核心 + 蓝紫边 + 外圈紫辉光）/
+  //   图 3（消散中：瓦片飞散）。`edge/core/halo` 沿用"边缘 / 亮心 / 外辉光"的既有语义。
+  S: {
+    edge: 0x9fd0ff, core: 0xffffff, halo: 0x9b5cff,
+    chamfer: 0, edgeWidth: 0, feather: 0,
+    barrierOpacity: 0, flow: 0, density: 0, pulse: 0, shard: false,
+    tileCount: 120,
+    tileColor: 0xd8ecff,
+    tileFarColor: 0x6a4fd0,
+    dispA: 0xff4d6a,
+    dispB: 0x3fd0ff,
+    coreColor: 0xffffff,
+    glowColor: 0x9b5cff,
+    dispersion: 0.016,
+    gapRatio: 0.08,
   },
 };
 

@@ -43,6 +43,15 @@ import {
   entryGateValid, entryGateWritePlanes, entryGlowAmt, entryShipProgress,
   type EntryCfg, type EntryGateBox, type EntryShip, type SliceMatLike,
 } from '../entrySlice';
+// [v3.1 · S] 球体入场的**几何 / 运动学纯逻辑层**（零 three 依赖 ⇒ 离线台架可真跑）
+import {
+  buildSphereTiles, disposeTree, sphereBoundsFit, sphereCoreAmt, sphereGlowAmt,
+  sphereRevealAmt, sphereRevealDelayByRadius, sphereTileMotion,
+  SPHERE_CORE_R_K, SPHERE_GLOW_HALF_K, SPHERE_GLOW_R_K, SPHERE_MAX_INSTANCES,
+  SPHERE_MOTION_DEFAULT, SPHERE_RADIUS_MIN_K, SPHERE_RADIUS_PAD, SPHERE_REVEAL_DEFAULT,
+  type DisposableNode, type SphereFit, type SphereFitItem, type SphereMotionCfg,
+  type SphereTile, type SphereTileSet,
+} from './entrySphere';
 import {
   SHIP_CLASS_ALIAS, FLAGSHIP_MODEL_ALIAS,
   acquireShipModelByFiles, setShipModelDetail, type ShipModelReg,
@@ -309,6 +318,46 @@ interface FleetGate {
   vis: THREE.Group | null;
   /** [v3] 位面纹路贴图（逐帧滚动 offset ⇒ "流动"）。 */
   barrierTex: THREE.CanvasTexture | null;
+  /**
+   * [v3.1 · S] **球体方案**的可视对象（`GATE_STYLE !== 'S'` ⇒ null）。
+   * 与 `planes` 的分工：`planes` 仍是"入场状态的载体"（`entryPlanes` 字段/CSS 契约沿用），
+   * 但 **S 方案不把 `planes` 挂到舰体材质上** ⇒ 舰体不被切；舰队"在球里出现"改由
+   * `sphereRevealAmt`（缩放淡入，逐舰径向错开）驱动 ⇒ 结束**没有裁剪需要拆除**（红线仍满足）。
+   */
+  sphere: SphereVis | null;
+}
+
+/** [v3.1 · S] 单块瓦片的可视句柄：3 层网格共享 **1 份几何**，挂在 **1 个 Group** 下（Group 承载位姿）。 */
+interface SphereTileVis {
+  tile: SphereTile;
+  group: THREE.Group;
+  /** 三层材质：[0] 主色（浅蓝白）/ [1] 色散 A（红端）/ [2] 色散 B（蓝端）。 */
+  mats: THREE.MeshBasicMaterial[];
+  /** 三层各自的**基础**不透明度（逐帧 = 基础 × 阶段包络）。 */
+  baseOpacity: number[];
+}
+
+/** [v3.1 · S] **一支舰队一个球体**（球心 = 舰队包围球心；半径 = 包围球半径）。 */
+interface SphereVis {
+  /** 根组（球心为原点；位置 = 世界球心）。几何全部**相对球心** ⇒ 只改子对象位姿。 */
+  root: THREE.Group;
+  /** 球心（世界坐标）。 */
+  center: THREE.Vector3;
+  /** 球半径（世界单位）。 */
+  radius: number;
+  /** 剖分结果（诊断/断言用）。 */
+  set: SphereTileSet;
+  /** 逐瓦片可视句柄。 */
+  tiles: SphereTileVis[];
+  /** 亮白核心球（半径 = R × `SPHERE_CORE_R_K`）。 */
+  core: THREE.Mesh;
+  coreMat: THREE.MeshBasicMaterial;
+  /** 外圈紫色辉光（半径 = R × `SPHERE_GLOW_R_K`）。 */
+  glow: THREE.Mesh;
+  glowMat: THREE.MeshBasicMaterial;
+  /** [v3.1] 瓦片主色：近侧（面向相机）/**远侧**（背向相机）—— 逐帧按视线方向插值 ⇒ 蓝白/紫层次。 */
+  nearColor: THREE.Color;
+  farColor: THREE.Color;
 }
 
 /**
@@ -1283,6 +1332,18 @@ export class Battle3DOverlay {
   private fleetGates = new Map<any, FleetGate>();
   /** 写门框/位面姿态用的复用矩阵（不每帧 new）。 */
   private gateBasis = new THREE.Matrix4();
+  /** [v3.1 · S] 球体逐帧摆位的复用临时量（瓦片数 × 每帧 ⇒ 必须零分配）。 */
+  private sphereTmpQ = new THREE.Quaternion();
+  private sphereTmpP = new THREE.Vector3();
+  private sphereTmpAxis = new THREE.Vector3();
+  private sphereTmpView = new THREE.Vector3();
+  private sphereTmpColor = new THREE.Color();
+  /** [v3.1 · S] "最近 N 支舰队"的按帧缓存（键 = `now`；见 `spherePrimaryFleets`）。 */
+  private spherePrimaryAt = -1;
+  private spherePrimaryCache: any[] = [];
+  /** [v3.1 · S] 球体**创建 / 销毁台账**（真机取证与红队用它独立核对"入场结束后零残留"）。 */
+  private sphereBuiltCount = 0;
+  private sphereDisposedCount = 0;
   /** 门推进面前一帧的沿轴坐标（算"扫掠速度"给位面做亮度脉冲）。 */
   private gatePrevPos = 0;
 
@@ -4001,7 +4062,8 @@ export class Battle3DOverlay {
         entry.entryPlanes = undefined;
         const swapSt = this.entryFxActive ? this.entryStates.get(v.key) : undefined;
         const swapGate = swapSt && !swapSt.done ? this.fleetGates.get(entry.fleet) : undefined;
-        if (swapGate && !swapGate.done) {
+        // [v3.1 · S] 球体方案不挂裁剪 ⇒ 换装时同样不补挂（缩放淡入与材质无关）。
+        if (swapGate && !swapGate.done && GATE_STYLE !== 'S') {
           // [v2] 复用**本队门的同一组 5 个平面实例**（不新建 ⇒ 同队共享、一次更新全队生效）
           entry.entryPlanes = swapGate.planes;
           entry.sliceMats = this.collectSliceMats(built.group);
@@ -4101,7 +4163,16 @@ export class Battle3DOverlay {
       //   ⚠ 这会部分削弱"远小近大"的透视层次（用户明确要"看得见"优先）；
       //     下限值可调：调大 ⇒ 远处更醒目但透视更弱。
       const _minK = (v.px > 0.1 && v.px < MIN_MESH_PX) ? (MIN_MESH_PX / v.px) : 1;
-      g.scale.setScalar(entry.baseScale * (0.25 + 0.75 * ge) * _minK);
+      // ── [v3.1 · S] **舰队"在球里出现"**：逐舰**径向错开的缩放淡入**（0 → 1）──────────
+      //   复用既有 `entryStates`（进度绑"入场事件"）⇒ 推拉镜头不重播；A/B/C 与常规期恒为 1。
+      //   开战瞬间先"吸进球里"（1 → 0，`SPHERE_ABSORB_SEC`），球体完整期再"由内向外浮现"。
+      let revealK = 1;
+      if (GATE_STYLE === 'S') {
+        revealK = this.entryRevealScale(v.key, now);
+        // 缩放淡入到几乎不可见时直接不画（省掉一次退化矩阵；`visible` 在别处无人写 ⇒ 无冲突）
+        g.visible = revealK > 0.004;
+      }
+      g.scale.setScalar(entry.baseScale * (0.25 + 0.75 * ge) * _minK * revealK);
 
       // 【旗舰方案】指挥光环慢转（只在实体档可见；不额外建对象，纯改 rotation）
       if (entry.cmdRing) entry.cmdRing.rotation.z += dt * FLAGSHIP_RING_SPIN;
@@ -4487,6 +4558,300 @@ export class Battle3DOverlay {
     g.barrierTex = null;
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // [v3.1 · S] **六边形球体组装 / 消散**入场（`GATE_STYLE = 'S'`）
+  //
+  //   用户需求：「一个圆球，用**六边形拼接**……从零开始随机组装拼接，组成一个圆球，然后**随机消散**……
+  //   就是**一个圆包裹，显示组成，然后消散，舰队就在里面出现**」。
+  //
+  //   几何/运动学真源在 `./entrySphere`（纯函数、零 three 依赖 ⇒ 台架真跑）；本区块只负责
+  //   "把纯函数的输出写进 three 对象"：
+  //     · 视觉三层（**优先级**）：色散镶边（红/蓝双层沿法线微偏移 + 加法混合）> 亮白核心 > 紫辉光
+  //     · 每块瓦片 = 1 个 `Group`（承载位姿）+ **3 个 Mesh**（主色 / 色散 A / 色散 B，共享 1 份几何）
+  //     · 几何**只在入场开始时生成一次**；动画期间只改 `position / quaternion / opacity`
+  //     · 结束**必须完整 dispose**（`disposeTree`：几何 + 材质 + 贴图）—— 红队重点检查项
+  //   ⚠ S 方案**不把裁剪平面挂到舰体**（见 `attachEntryClippingTo`）⇒ "舰队在球里出现"由
+  //     `entryRevealScale`（逐舰径向错开的缩放淡入）驱动 ⇒ 结束**没有裁剪需要拆除**。
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /** [S] 亮白**核心球**的柔边贴图：中心最亮 → 向外柔和衰减（加法混合 ⇒ 无硬边）。 */
+  private makeSphereCoreTexture(): THREE.CanvasTexture {
+    const S = 256;
+    const cv = document.createElement('canvas');
+    cv.width = S; cv.height = S;
+    const ctx = cv.getContext('2d');
+    if (ctx) {
+      ctx.clearRect(0, 0, S, S);
+      const c = S / 2;
+      const g = ctx.createRadialGradient(c, c, 0, c, c, c);
+      g.addColorStop(0.00, 'rgba(255,255,255,1)');
+      g.addColorStop(0.34, 'rgba(242,249,255,0.72)');
+      g.addColorStop(0.60, 'rgba(198,224,255,0.26)');
+      g.addColorStop(0.84, 'rgba(168,204,255,0.06)');
+      g.addColorStop(1.00, 'rgba(168,204,255,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, S, S);
+    }
+    const tex = new THREE.CanvasTexture(cv);
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  /** [S] 外圈**紫色辉光**贴图：中心透明 → 在 `SPHERE_GLOW_R_K / SPHERE_GLOW_HALF_K` 处最亮 → 外侧柔和收掉。 */
+  private makeSphereGlowTexture(color: number): THREE.CanvasTexture {
+    const S = 256;
+    const cv = document.createElement('canvas');
+    cv.width = S; cv.height = S;
+    const ctx = cv.getContext('2d');
+    if (ctx) {
+      ctx.clearRect(0, 0, S, S);
+      const c = S / 2;
+      const r = (color >> 16) & 255, gg = (color >> 8) & 255, b = color & 255;
+      const rgba = (a: number): string => `rgba(${r},${gg},${b},${a})`;
+      // 亮环在**面片内部**（≈0.68 半边长 = 1.15R）⇒ 环外还有柔边 ⇒ 读作"外圈辉光"而不是一条硬环
+      const peak = SPHERE_GLOW_R_K / SPHERE_GLOW_HALF_K;
+      const g = ctx.createRadialGradient(c, c, 0, c, c, c);
+      g.addColorStop(0, rgba(0));
+      g.addColorStop(Math.max(0, peak - 0.30), rgba(0.02));
+      g.addColorStop(Math.max(0, peak - 0.09), rgba(0.20));
+      g.addColorStop(peak, rgba(0.70));
+      g.addColorStop(Math.min(1, peak + 0.09), rgba(0.22));
+      g.addColorStop(Math.min(1, peak + 0.20), rgba(0.05));
+      g.addColorStop(1, rgba(0));
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, S, S);
+    }
+    const tex = new THREE.CanvasTexture(cv);
+    tex.needsUpdate = true;
+    return tex;
+  }
+
+  /**
+   * [S] 由纯函数的 `SphereTile` 生成**一份** `BufferGeometry`（3 层网格共享它 ⇒ 见 `disposeTree` 的去重）。
+   * 顶点 0 = 瓦片质心（局部原点），1..nv = 周长顶点（`verts − center`）⇒ 三角扇以质心为扇心。
+   */
+  private sphereTileGeometry(tile: SphereTile): THREE.BufferGeometry {
+    const nv = tile.nv;
+    const cx = tile.center[0], cy = tile.center[1], cz = tile.center[2];
+    const pos = new Float32Array((nv + 1) * 3);
+    for (let i = 0; i < nv; i++) {
+      pos[(i + 1) * 3] = tile.verts[i * 3] - cx;
+      pos[(i + 1) * 3 + 1] = tile.verts[i * 3 + 1] - cy;
+      pos[(i + 1) * 3 + 2] = tile.verts[i * 3 + 2] - cz;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setIndex(new THREE.BufferAttribute(tile.fan, 1));
+    return geo;
+  }
+
+  /**
+   * [S] **球体尺寸真源**：本舰队的包围球（球心 = 成员质心；半径 = `max(minR, (max距离+半长)×PAD)`）。
+   * 读 `unitVis`（**全部存活单位**）而非 `ships`（只有实体的）⇒ 不受 `MESH_ADD_PER_FRAME` 分帧建实体影响。
+   */
+  private fleetSphereFit(fleet: any): SphereFit | null {
+    const items: SphereFitItem[] = [];
+    for (const v of this.unitVis.values()) {
+      if (v.fleet !== fleet) continue;
+      const L = v.shipLen > 0 ? v.shipLen : 4;
+      items.push({ x: v.x, y: v.y, z: v.z, r: L * 0.5 });
+    }
+    return sphereBoundsFit(items, SPHERE_RADIUS_PAD, this.hexR * SPHERE_RADIUS_MIN_K);
+  }
+
+  /**
+   * [v3.1 · S] 本帧"离相机最近的 N 支舰队"—— 只有它们建可见球体（性能上限）。
+   *
+   * 两条硬约束（都是真机实测踩出来的）：
+   *   ① **按相机距离**（不是 `fleetPx`）：`fleetPx` 在入场首帧还是**聚焦前**的旧值 ⇒ 逐帧会漂移，
+   *      "主力"中途易主 ⇒ 建出**第二个球**（实测出现过两个球叠在一起）。
+   *   ② **一旦已有球体就锁定**：入场期相机静止 ⇒ 距离稳定；再加锁定是为了彻底杜绝中途漂移。
+   * 按帧缓存（键 = `now` 秒时间戳）⇒ 同帧内所有单位共用一份，不出现 `单位数 × 舰队数` 的重复排序。
+   */
+  private spherePrimaryFleets(now: number): any[] {
+    if (this.spherePrimaryAt === now) return this.spherePrimaryCache;
+    const existing = Array.from(this.fleetGates.keys());
+    if (existing.length > 0) {
+      this.spherePrimaryAt = now;
+      this.spherePrimaryCache = existing;
+      return existing;
+    }
+    const best = new Map<any, number>();   // fleet → 该队**最近成员**到相机的距离平方
+    const cam = this.camera.position;
+    for (const v of this.unitVis.values()) {
+      const f = v.fleet;
+      if (!f) continue;
+      const dx = v.x - cam.x, dy = v.y - cam.y, dz = v.z - cam.z;
+      const d = dx * dx + dy * dy + dz * dz;
+      const prev = best.get(f);
+      if (prev === undefined || d < prev) best.set(f, d);
+    }
+    const arr = Array.from(best.entries());
+    arr.sort((a, b) => a[1] - b[1]);
+    const list = arr.slice(0, Math.max(0, SPHERE_MAX_INSTANCES)).map(([f]) => f);
+    this.spherePrimaryAt = now;
+    this.spherePrimaryCache = list;
+    return list;
+  }
+
+  /** [S] 建**可见球体**：瓦片（3 层/块）+ 亮白核心 + 紫辉光。几何只在此刻生成一次。 */
+  private buildSphereVisual(g: FleetGate): void {
+    const fit = this.fleetSphereFit(g.fleet);
+    if (!fit || !(fit.r > 0)) return;
+    const P = GATE_STYLE_PARAMS.S;
+    const R = fit.r;
+    const set = buildSphereTiles({
+      radius: R,
+      count: P.tileCount,
+      gapRatio: P.gapRatio,
+    });
+    const center = new THREE.Vector3(fit.cx, fit.cy, fit.cz);
+    const root = new THREE.Group();
+    root.position.copy(center);
+    root.frustumCulled = false;
+    root.renderOrder = 7;
+    // [v3.1 · S] 打标记 + 台账：真机取证/红队可**独立**核对"入场结束后球体是否零残留"
+    //   （即使不看 fleetGates 也能数出场景里还剩几个球体根）。
+    root.userData.entrySphere = true;
+    this.sphereBuiltCount += 1;
+
+    const tileColor = P.tileColor ?? 0xbfe0ff;
+    const tileFarColor = P.tileFarColor ?? 0x6a4fd0;
+    const dispA = P.dispA ?? 0xff4d6a;
+    const dispB = P.dispB ?? 0x3fd0ff;
+    const dispOff = Math.max(0, P.dispersion ?? 0.016) * R;
+    // 三层基础不透明度（**主色为主，色散层很弱**；加法混合下 3 层叠满会过曝 ⇒ 实测收窄）
+    const baseOpacity = [0.38, 0.14, 0.14];
+    const tiles: SphereTileVis[] = [];
+    for (const tile of set.tiles) {
+      const geo = this.sphereTileGeometry(tile);   // 3 层共享
+      const grp = new THREE.Group();
+      const addLayer = (color: number, opacity: number, off: number): THREE.MeshBasicMaterial => {
+        const m = new THREE.MeshBasicMaterial({
+          color, transparent: true, opacity,
+          blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+        });
+        const mesh = new THREE.Mesh(geo, m);
+        // 色散层沿瓦片法线（径向）微偏移 ⇒ 球体**轮廓处**分离出红/蓝镶边（参考图 1 左缘）
+        mesh.position.set(tile.dispersion[0] * off, tile.dispersion[1] * off, tile.dispersion[2] * off);
+        mesh.frustumCulled = false;
+        mesh.renderOrder = 8;
+        // 标记：真机取证可**独立**数出"场景里还剩几个球体网格"（零残留核对）
+        mesh.userData.entrySphere = true;
+        m.userData.entrySphere = true;
+        grp.add(mesh);
+        return m;
+      };
+      const mats = [
+        addLayer(tileColor, baseOpacity[0], 0),
+        addLayer(dispA, baseOpacity[1], +dispOff),
+        addLayer(dispB, baseOpacity[2], -dispOff),
+      ];
+      root.add(grp);
+      tiles.push({ tile, group: grp, mats, baseOpacity });
+    }
+
+    // ── 亮白核心（参考图 2 球心那团亮白）：billboard 柔边面片，加法混合 ⇒ 无硬边 ──
+    const coreMat = new THREE.MeshBasicMaterial({
+      map: this.makeSphereCoreTexture(), color: P.coreColor ?? 0xffffff, transparent: true, opacity: 0,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, depthTest: true,
+    });
+    const core = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), coreMat);
+    core.scale.setScalar(R * 2 * SPHERE_CORE_R_K);
+    core.frustumCulled = false;
+    core.renderOrder = 9;
+    core.userData.entrySphere = true;
+    coreMat.userData.entrySphere = true;
+    root.add(core);
+
+    // ── 外圈紫辉光（参考图 2 外圈紫光）：billboard 环状渐变，加法混合 ⇒ 柔边 ──
+    const glowMat = new THREE.MeshBasicMaterial({
+      map: this.makeSphereGlowTexture(P.glowColor ?? 0x9b5cff), color: 0xffffff, transparent: true,
+      opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    });
+    const glow = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), glowMat);
+    // 面片半边长 = R × SPHERE_GLOW_HALF_K > 亮环半径 R × SPHERE_GLOW_R_K ⇒ 亮环外侧仍有柔边
+    glow.scale.setScalar(R * 2 * SPHERE_GLOW_HALF_K);
+    glow.frustumCulled = false;
+    glow.renderOrder = 6;
+    glow.userData.entrySphere = true;
+    glowMat.userData.entrySphere = true;
+    root.add(glow);
+
+    this.scene.add(root);
+    g.sphere = {
+      root, center, radius: R, set, tiles, core, coreMat, glow, glowMat,
+      nearColor: new THREE.Color(tileColor), farColor: new THREE.Color(tileFarColor),
+    };
+  }
+
+  /**
+   * [S] 逐帧把**全部瓦片**摆到 `elapsed`（秒，相对入场起点）对应的位姿 —— 只改
+   * `position / quaternion / opacity / visible`（几何与材质对象都不重建）。
+   */
+  private placeSphereVisual(g: FleetGate, elapsed: number): void {
+    const s = g.sphere;
+    if (!s) return;
+    const cfg: SphereMotionCfg = SPHERE_MOTION_DEFAULT;
+    const R = s.radius;
+    s.coreMat.opacity = 0.78 * sphereCoreAmt(elapsed, cfg);
+    s.glowMat.opacity = 0.62 * sphereGlowAmt(elapsed, cfg);
+    // 核心/辉光是 billboard（面向相机）⇒ 每帧对齐相机四元数
+    s.core.quaternion.copy(this.camera.quaternion);
+    s.glow.quaternion.copy(this.camera.quaternion);
+    // 视线方向（球心 → 相机）：用于逐瓦片"近侧蓝白 / 远侧蓝紫"插值（参考图 1/2 的紫蓝层次）
+    const view = this.sphereTmpView.subVectors(this.camera.position, s.center);
+    if (view.lengthSq() > 1e-9) view.normalize();
+    const q = this.sphereTmpQ;
+    const p = this.sphereTmpP;
+    const ax = this.sphereTmpAxis;
+    const col = this.sphereTmpColor;
+    for (let i = 0; i < s.tiles.length; i++) {
+      const tv = s.tiles[i];
+      const m = sphereTileMotion(tv.tile, elapsed, cfg);
+      const d = tv.tile.dir;
+      p.set(d[0] * R * m.k, d[1] * R * m.k, d[2] * R * m.k);
+      tv.group.position.copy(p);
+      q.setFromAxisAngle(ax.set(tv.tile.axis[0], tv.tile.axis[1], tv.tile.axis[2]), m.spin);
+      tv.group.quaternion.copy(q);
+      if (m.phase === 4) { tv.group.visible = false; continue; }
+      tv.group.visible = true;
+      const o = m.opacity;
+      tv.mats[0].opacity = tv.baseOpacity[0] * o;
+      tv.mats[1].opacity = tv.baseOpacity[1] * o;
+      tv.mats[2].opacity = tv.baseOpacity[2] * o;
+      // 近侧（面向相机）→ `nearColor`（浅蓝白）；远侧（背向）→ `farColor`（蓝紫）
+      const dot = d[0] * view.x + d[1] * view.y + d[2] * view.z;
+      col.copy(s.nearColor).lerp(s.farColor, Math.max(0, Math.min(1, 0.5 - 0.5 * dot)));
+      tv.mats[0].color.copy(col);
+    }
+  }
+
+  /**
+   * [S] 销毁球体（**必须完整 dispose**：几何 + 材质 + 贴图；走纯函数 `disposeTree` ⇒ 台架可真跑同一份去重逻辑）。
+   * ⚠ 3 层瓦片网格共享同一份几何 ⇒ `disposeTree` 内部按对象**去重**，不会重复 dispose。
+   */
+  private disposeSphereVisual(g: FleetGate): void {
+    const s = g.sphere;
+    if (!s) return;
+    this.scene.remove(s.root);
+    disposeTree(s.root as unknown as DisposableNode);
+    this.sphereDisposedCount += 1;
+    g.sphere = null;
+  }
+
+  /**
+   * [S] 单舰**显现系数** 0..1（缩放淡入；纯函数 `sphereRevealAmt` 驱动）。
+   * `GATE_STYLE !== 'S'` / 未登记 / 已结束 / 一键关闭 ⇒ 恒 1（不改变 A/B/C 与常规行为）。
+   */
+  private entryRevealScale(key: string, now: number): number {
+    if (GATE_STYLE !== 'S') return 1;
+    if (!this.entryFxActive) return 1;
+    const st = this.entryStates.get(key);
+    if (!st || st.done) return 1;
+    return sphereRevealAmt(now - st.t0, st.delay, SPHERE_REVEAL_DEFAULT);
+  }
+
   /** 收集一个舰体 Group 内全部材质引用（Phong 体 + 轮廓线 + 旗舰光环）—— 裁剪按材质施加。 */
   private collectSliceMats(group: THREE.Object3D): SliceMatLike[] {
     const out: SliceMatLike[] = [];
@@ -4564,7 +4929,14 @@ export class Battle3DOverlay {
   private ensureFleetGate(fleet: any, now: number): FleetGate | undefined {
     const found = this.fleetGates.get(fleet);
     if (found && !found.done) return found;
-    if (found) { this.disposeGateVisual(found); this.fleetGates.delete(fleet); }
+    if (found) {
+      this.disposeGateVisual(found);
+      this.disposeSphereVisual(found);
+      this.fleetGates.delete(fleet);
+    }
+    // [v3.1 · S] 球体只给**离相机最近的 N 支舰队**建（每球 ≈ 3×瓦片数 个 Mesh ⇒ draw call 上限）。
+    //   上限外的舰队**不建门** ⇒ 不登记入场 ⇒ 照常显示（相机已聚焦我方主力 ⇒ 主力必然入选）。
+    if (GATE_STYLE === 'S' && !this.spherePrimaryFleets(now).includes(fleet)) return undefined;
     const fa = (typeof fleet?.facingSmooth === 'number' ? fleet.facingSmooth : fleet?.facingAngle);
     const a = Number.isFinite(fa) ? fa : 0;
     const fwd = new THREE.Vector3(Math.cos(a), 0, -Math.sin(a));
@@ -4581,11 +4953,20 @@ export class Battle3DOverlay {
       fleet, planes, fwd, right, up,
       cu: entryGateCenterU(box), cv: entryGateCenterV(box), halfU, halfV, margin, box,
       t0: now, p: 0, pos: entryGateFront(0, box.sLo, box.sHi, margin), done: false,
-      shipKeys: [], vis: null, barrierTex: null,
+      shipKeys: [], vis: null, barrierTex: null, sphere: null,
     };
     entryGateWritePlanes(g.planes, fwd, right, up, g.cu, g.cv, halfU, halfV, g.pos);
-    this.buildGateVisual(g);
-    this.placeGateVisual(g);
+    // ── [v3.1] 外观分派：`S` ⇒ 六边形球体（组装/消散）；其余 ⇒ 原 A/B/C 门框（代码零改动）──
+    if (GATE_STYLE === 'S') {
+      this.buildSphereVisual(g);
+      // 包围球拟合失败（理论不可达：`entryGateValid` 已保证有单位）⇒ 不建门，
+      // **绝不留"无球的门"**（否则 `attachEntryClippingTo` 会误挂裁剪 ⇒ 舰体被切）。
+      if (!g.sphere) return undefined;
+      this.placeSphereVisual(g, 0);
+    } else {
+      this.buildGateVisual(g);
+      this.placeGateVisual(g);
+    }
     this.fleetGates.set(fleet, g);
     return g;
   }
@@ -4600,6 +4981,8 @@ export class Battle3DOverlay {
     if (!entry || entry.entryPlanes) return;   // 无实体 ⇒ 留给后续 addMesh 挂；已挂 ⇒ 不重复
     const g = this.fleetGates.get(entry.fleet);
     if (!g || g.done) return;
+    // [v3.1 · S] 球体方案**不切舰体**（舰队"在球里出现"由缩放淡入驱动）⇒ 不挂任何裁剪平面。
+    if (GATE_STYLE === 'S') return;
     entry.entryPlanes = g.planes;
     entry.sliceMats = this.collectSliceMats(entry.group);
     entryApplyClipping(entry.sliceMats, entry.entryPlanes, true);
@@ -4623,11 +5006,22 @@ export class Battle3DOverlay {
     const g = this.ensureFleetGate(fleet, now);
     if (!g) return;
     const d = Number((u as any)?._entryDelay);
+    // [v2] 一队一门 ⇒ 逐舰相位由**门的几何扫掠**天然给出（靠舰首一侧的舰先显形）。
+    //   `_entryDelay` 仍由 2D 建舰期写入（v1 沿用），此处仅保留为诊断值，**不参与门的时序**。
+    let delay = Number.isFinite(d) && d > 0 ? d : 0;
+    // [v3.1 · S] 球体方案改为**径向错开**：离球心越近的舰越早显现
+    //   （`delay` 字段自此承载"显现延迟"，由 `entryRevealScale` 消费 ⇒ "舰队由内向外浮现"）。
+    if (g.sphere) {
+      const s = g.sphere;
+      // 用 XZ 平面距离（2D 精灵所在平面）：与真实球面距离单调同序 ⇒ 排序语义等价且省一次开方域换算。
+      delay = sphereRevealDelayByRadius(
+        Math.hypot(u.sprite.x - s.center.x, -u.sprite.y - s.center.z),
+        s.radius, SPHERE_REVEAL_DEFAULT.spread,
+      );
+    }
     this.entryStates.set(key, {
       t0: g.t0,
-      // [v2] 一队一门 ⇒ 逐舰相位由**门的几何扫掠**天然给出（靠舰首一侧的舰先显形）。
-      //   `_entryDelay` 仍由 2D 建舰期写入（v1 沿用），此处仅保留为诊断值，**不参与门的时序**。
-      delay: Number.isFinite(d) && d > 0 ? d : 0,
+      delay,
       done: false,
     });
     g.shipKeys.push(key);
@@ -4659,18 +5053,21 @@ export class Battle3DOverlay {
     return false;
   }
 
-  /** 结束一个门：**卸载全队裁剪**（否则舰体被永久切）+ 销毁门本体 + 逐舰标 done。 */
+  /** 结束一个门：**卸载全队裁剪**（否则舰体被永久切）+ 销毁门本体（含球体）+ 逐舰标 done。 */
   private finishEntryGate(g: FleetGate): void {
     for (const key of g.shipKeys) {
       const st = this.entryStates.get(key);
       if (st) st.done = true;
       const entry = this.ships.get(key);
       if (!entry) continue;
+      // ⚠ [v3.1 · S] 红线：**无论走哪条外观分支，都必须把裁剪清掉**（S 本就没挂，此处为防御性兜底）。
       entryApplyClipping(entry.sliceMats, null, false);
       entry.sliceMats = undefined;
       entry.entryPlanes = undefined;
     }
     this.disposeGateVisual(g);
+    // [v3.1 · S] 球体**必须完整 dispose**（几何 + 材质 + 贴图）—— 入场结束后**零残留**（红队检查项）。
+    this.disposeSphereVisual(g);
     g.done = true;
   }
 
@@ -4693,7 +5090,13 @@ export class Battle3DOverlay {
     for (const g of this.fleetGates.values()) {
       if (g.done) continue;
       if (this.stepEntryGate(g, now, on)) { this.finishEntryGate(g); continue; }
-      this.placeGateVisual(g);
+      if (g.sphere) {
+        // [v3.1 · S] 球体按**真实经过时间**推进（与 `entryCfg.total` 同源 ⇒ 动画必然在暂停窗口内跑完）
+        const el = Math.min(this.entryCfg.total, Math.max(0, now - g.t0));
+        this.placeSphereVisual(g, el);
+      } else {
+        this.placeGateVisual(g);
+      }
     }
     for (const [fleet, g] of this.fleetGates) if (g.done) this.fleetGates.delete(fleet);
   }
@@ -4727,7 +5130,8 @@ export class Battle3DOverlay {
     const entryActive = !!gate && !gate.done;
     let entryPlanes: THREE.Plane[] | undefined;
     let sliceMats: SliceMatLike[] | undefined;
-    if (entryActive) {
+    // [v3.1 · S] 球体方案**不切舰体**（显现由第三遍的 `entryRevealScale` 缩放淡入驱动）⇒ 不挂裁剪。
+    if (entryActive && GATE_STYLE !== 'S') {
       // [v2] 直接用**本队门的 5 个平面实例**（同队所有舰共享 ⇒ 一次 `entryGateWritePlanes` 全队生效）
       entryPlanes = gate!.planes;
       sliceMats = this.collectSliceMats(built.group);

@@ -511,7 +511,13 @@ console.log('\n=== 11b. finishEntryGate 真跑：**结束必须卸载全队裁�
   // ⚠ 先抓住材质**数组引用**：finishEntryGate 会把 `entry.sliceMats` 置空（置空是要求的一部分）
   const mats = ships.get('a').sliceMats;
   let disposed = 0;
-  const self = { entryStates: states, ships, disposeGateVisual: () => { disposed += 1; } };
+  let sphereDisposed = 0;
+  const self = {
+    entryStates: states, ships,
+    disposeGateVisual: () => { disposed += 1; },
+    // [v3.1 · S] `finishEntryGate` 现在还会 `disposeSphereVisual`（球体零残留红线）⇒ 假 self 必须提供
+    disposeSphereVisual: () => { sphereDisposed += 1; },
+  };
   runFinish(finFn, self, g);
   check('★ 结束 ⇒ 全队材质的 clippingPlanes **全部归 null**（否则舰体被永久切）', () =>
     mats.every((m) => m.clippingPlanes === null));
@@ -520,6 +526,7 @@ console.log('\n=== 11b. finishEntryGate 真跑：**结束必须卸载全队裁�
   check('结束 ⇒ 全队 entryStates 逐舰置 done（不再强制建实体/grow=1）', () =>
     ['a', 'b', 'c'].every((k) => states.get(k).done === true));
   check('结束 ⇒ 门本体被销毁一次（可见的门框/位面必须收掉）', () => disposed === 1);
+  check('★v3.1：结束 ⇒ **球体也被销毁一次**（S 方案"入场结束后零残留"红线）', () => sphereDisposed === 1);
   check('结束 ⇒ gate.done = true', () => g.done === true);
 }
 
@@ -545,6 +552,8 @@ console.log('\n=== 12. updateEntryFx 真跑 + 变异自检（改坏 Wiring ⇒ �
     self.stepEntryGate = (g, now, on2) => stepInner.call(self, g, now, on2);
     self.finishEntryGate = (g) => finInner.call(self, g);
     self.disposeGateVisual = () => { self._disposed += 1; };
+    // [v3.1 · S] `finishEntryGate` 还会 `disposeSphereVisual` ⇒ 假 self 必须提供（否则取门时抛错）
+    self.disposeSphereVisual = () => { self._sphereDisposed = (self._sphereDisposed || 0) + 1; };
     self.placeGateVisual = () => { self._placed += 1; };
     self.entryFxOn = () => on;
     for (const k of gate.shipKeys) {
@@ -641,7 +650,7 @@ console.log('\n=== 12. updateEntryFx 真跑 + 变异自检（改坏 Wiring ⇒ �
       s.split('entryApplyClipping(entry.sliceMats, null, false);').join('void 0;'));
     const gI = makeFakeGate({ shipKeys: ['a'] });
     const shipsI = new Map([['a', { sliceMats: [{ clippingPlanes: gI.planes }], entryPlanes: gI.planes }]]);
-    const selfI = { entryStates: new Map([['a', { done: false }]]), ships: shipsI, disposeGateVisual: () => {} };
+    const selfI = { entryStates: new Map([['a', { done: false }]]), ships: shipsI, disposeGateVisual: () => {}, disposeSphereVisual: () => {} };
     finI.call(selfI, E.entryApplyClipping).call(selfI, gI);
     checkThrows('变异I（结束不卸载裁剪）已被"clippingPlanes 归 null"断言检出', () => {
       assert.equal(shipsI.get('a').sliceMats.every((m) => m.clippingPlanes === null), true);
@@ -1300,18 +1309,19 @@ console.log('\n=== 18. v2 源码契约：N1 聚焦 / N2 模型 / N3 暂停 / N7 
     slice(overlay, 'private updateEntryFx(): void {', 'for (const [fleet, g] of this.fleetGates)')
       .includes('this.placeGateVisual(g)'));
   check('★N8：入场结束门本体被销毁（遍历根组，几何/材质都 dispose，不留悬空线框）', () => {
-    const blk = slice(overlay, 'private disposeGateVisual(g: FleetGate): void {', 'private collectSliceMats(');
+    // ⚠ 末端锚点必须是**紧随其后**的球体销毁方法（v3.1 插在 disposeGateVisual 与 collectSliceMats 之间）
+    const blk = slice(overlay, 'private disposeGateVisual(g: FleetGate): void {', 'private disposeSphereVisual(g: FleetGate): void {');
     return blk.includes('this.scene.remove(root)') && blk.includes('.dispose()') && blk.includes('g.vis = null');
   });
   check('★N8：门姿态用**右手正交基**（right = (−sin, 0, −cos) ⇒ det=+1，门框不镜像）', () =>
     overlay.includes('new THREE.Vector3(-Math.sin(a), 0, -Math.cos(a))'));
 
   // ── N9：v3 外观常量（**真跑**纯数据层 ⇒ 有牙齿：位面必须够淡、三方案齐备）──
-  check('★N9：`GATE_STYLE` 缺省为 `A`（能量环门，最像家园2）', () =>
-    E.GATE_STYLE === 'A');
-  check('★N9：三方案 A/B/C 参数齐备（非空对象）', () => {
+  check('★v3.1：`GATE_STYLE` 缺省为 `S`（六边形球体入场；A/B/C 代码与参数**保留**，改此值即可回退）', () =>
+    E.GATE_STYLE === 'S');
+  check('★N9：四套方案 A/B/C/S 参数齐备（S = 球体）', () => {
     const P = E.GATE_STYLE_PARAMS;
-    return !!P && !!P.A && !!P.B && !!P.C && typeof P.A.edge === 'number';
+    return !!P && !!P.A && !!P.B && !!P.C && !!P.S && typeof P.A.edge === 'number';
   });
   check('★N9（不遮挡舰队红线）：三方案**位面不透明度都 ≤ 0.10**（透过门要能看清舰船）', () =>
     ['A', 'B', 'C'].every((k) => E.GATE_STYLE_PARAMS[k].barrierOpacity <= 0.10
