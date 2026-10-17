@@ -306,8 +306,8 @@ const FORM_FACING_MIN_SPD2 = 0.02 * 0.02;
 
 
 // [v21 JIT] 阵位跟随的除零保护阈值（px）已随 P2 的 `stepShipSlotFollow` 收进
-//   fleetKinematics（ARRIVE_EPS 内生）；运输舰 sprite 跟随的死区见
-//   `SupplyChainSystem.AUX_CHASE_EPS`（同值 0.02，口径统一，此处不再保留副本）。
+//   fleetKinematics（ARRIVE_EPS 内生）；运输舰 sprite 位置由 `syncAuxVisual` **硬同步**到
+//   独立坐标（零滞后，无追赶死区），故此处不再保留任何副本阈值。
 
 // [P2] 阵位移动硬速度上限 → `UNIT_MOTION_LIMITS.maxSpeed`（fleetKinematics 单一真源）。
 

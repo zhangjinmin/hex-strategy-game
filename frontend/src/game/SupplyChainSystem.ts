@@ -306,9 +306,6 @@ export function moveAuxShips(auxShips: AuxShip[], dt: number): void {
   });
 }
 
-/** 运输舰 sprite 追踪死区（px）：与舰队列的 `UNIT_CHASE_EPS` 同值，口径统一。 */
-export const AUX_CHASE_EPS = 0.02;
-
 /**
  * 运输舰「显示层」同步（每帧调用，必须在 `moveAuxShips` 之后）。
  *
@@ -323,6 +320,9 @@ export const AUX_CHASE_EPS = 0.02;
  *   （实机探针观测到 `sprite.visible === false` 的运输舰：sprite 在、3D 却不为它建实体；
  *     若把赋值放在 sprite 守卫之后，这类舰的 visHeading 就会永久缺失 —— 该分支必须无条件覆盖。）
  *
+ * @param dt 帧步进（速度倍率口径）。⚠ 位置已是硬同步、不再依赖 dt；
+ *           形参保留是为了**调用口径统一**（每帧调用点与 `moveAuxShips` 同参），
+ *           且将来若真需要平滑可直接在函数内消费，不必改所有调用点。
  * @returns 是否写入了朝向（= `aux.unit` 存在）
  */
 export function syncAuxVisual(aux: AuxShip, dt: number): boolean {
@@ -335,14 +335,19 @@ export function syncAuxVisual(aux: AuxShip, dt: number): boolean {
   const sp: any = u.sprite;
   if (!sp || sp.active === false) return true;
 
-  // ② 位置跟随独立坐标：固定步长（不用指数插值 —— 否则会吞掉积累误差）
-  const dx = aux.x - sp.x, dy = aux.y - sp.y;
-  const d = Math.hypot(dx, dy);
-  if (d > AUX_CHASE_EPS) {
-    const step = Math.min(AUX_SPEED * dt, d);
-    sp.x += (dx / d) * step;
-    sp.y += (dy / d) * step;
-  }
+  // ② 位置 = 独立坐标（**硬同步、零滞后**）
+  //   v21 起这里曾是「沿直线以固定步长追向 aux」（moveTowardsAtSpeed 语义）。那条路径的
+  //   位移方向是**指向 aux 的直线**，而 `moveAuxShips` 的位移方向是 `aux.heading`（舰首消费航向）：
+  //   两者只在 gap≈0 时相同。一旦 sprite 与 aux 有偏差（新建运输舰坐标取母港、中途并入编制、
+  //   母港切换…），舰体就会"舰首朝 A、沿 B 方向平移" = 用户实报的「横着飞 / 飘着走」。
+  //   ⚠ 真机实测（_probe_auxgap.mjs，3D 战场 / 双阵营 / loading·outbound·supplying·returning
+  //     全状态、26k+ 帧）：正常帧 `|sprite-aux| ≡ 0`（p99=0，max 0.7px 单帧），即"追赶"
+  //     在稳态**不产生任何平滑收益**，却把上述错位留成唯一可达路径 ⇒ 直接取真值。
+  //   ⚠ 运输舰不是阵型单位，sprite 只是它的**位置载体**，没有理由落后于逻辑坐标；
+  //     运动连续性由 `moveAuxShips` 每帧 ≤ AUX_SPEED*dt 的推进保证（跨 Tick 由 prev 映射保号），
+  //     故硬同步不会引入跳变。
+  sp.x = aux.x;
+  sp.y = aux.y;
 
   // ③ 2D 降级路径的舰首贴图补偿：舰头贴图是「竖向、舰头朝上(-Y)」，而容器 +X = 前进方向
   //    ⇒ 必须给 border 子件 +π/2（与舰队列 `borderShape.rotation = Math.PI / 2` 同口径）。

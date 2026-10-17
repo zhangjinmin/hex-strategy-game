@@ -74,16 +74,60 @@ console.log('\n=== Transport visual sync: bow source must NOT depend on sprite a
     && Math.abs(sOn._kids.text.rotation + aOn.heading) < 1e-9,
     `vis=${aOn.unit.visHeading}, rot=${sOn.rotation}, border=${sOn._kids.border.rotation}, text=${sOn._kids.text.rotation}`);
 
-  // ④ 位置跟随：固定步长（目标再远也不加速）、不越冲
+  // ④ 位置 = 独立坐标（硬同步）：显示位置永不落后于逻辑坐标
   const sFar = mkSprite(true, true); sFar.x = -1000; sFar.y = 0;
   const aFar = mkAux(sFar);
   S.syncAuxVisual(aFar, 1);
-  check('sprite follows the independent coord by a bounded step (a far coord never speeds it up)',
-    Math.abs(sFar.x - (-1000 + S.AUX_SPEED)) < 1e-9 && Math.abs(sFar.y) < 1e-9, `sprite=(${sFar.x},${sFar.y})`);
+  check('sprite lands exactly on the independent coord in one frame (no straight-line crawl)',
+    sFar.x === 100 && sFar.y === 0, `sprite=(${sFar.x},${sFar.y})`);
   const sNear = mkSprite(true, true); sNear.x = 99.5; sNear.y = 0;
   const aNear = mkAux(sNear);
   S.syncAuxVisual(aNear, 1);
   check('sprite stops exactly on the coord without overshoot', sNear.x === 100 && sNear.y === 0, `sprite=(${sNear.x},${sNear.y})`);
+
+  // ⑤ **本轮用户报障的机制**：显示位置走"直线追赶"时，位移方向 = 指向 aux 的直线，
+  //   而物理位移方向 = aux.heading（moveAuxShips 让舰首消费航向）⇒ 两者可差 90° = 「横着飞」。
+  //   断言口径必须是 **位移方向 vs 朝向**（不是"角度 == 角度"）。
+  {
+    // 稳态：连续 60 帧 outbound 追目标，每一帧 sprite 位移方向必须 == aux.heading
+    const sp = mkSprite(true, true); sp.x = 0; sp.y = 0;
+    const a = mkAux(sp);
+    a.x = 0; a.y = 600; a.heading = 0; a.state = 'outbound';
+    a.targetFleet = { x: 0, y: 0 };      // 目标在正北 ⇒ 航向必须先转
+    S.syncAuxVisual(a, 1);               // 首帧硬同步（sprite 落到 aux）
+    let worst = 0;
+    for (let f = 0; f < 60; f++) {
+      const px = sp.x, py = sp.y;
+      S.moveAuxShips([a], 1);
+      S.syncAuxVisual(a, 1);
+      const dx = sp.x - px, dy = sp.y - py;
+      if (Math.hypot(dx, dy) < 1e-9) continue;
+      let d = Math.abs(Math.atan2(dy, dx) - a.heading) * 180 / Math.PI;
+      if (d > 180) d = 360 - d;
+      if (d > worst) worst = d;
+    }
+    check('steady state: every frame the sprite displacement direction equals the hull heading',
+      worst < 1e-6, `max=${worst.toExponential(2)}°`);
+
+    // 反例自检：把位置跟随换回"固定步长直线追赶"（v21~v97 的实现），同一场景必须失败
+    const legacyChase = (aux, dt) => {
+      const s = aux.unit.sprite;
+      const dx2 = aux.x - s.x, dy2 = aux.y - s.y, d2 = Math.hypot(dx2, dy2);
+      if (d2 > 0.02) {
+        const step = Math.min(S.AUX_SPEED * dt, d2);
+        s.x += (dx2 / d2) * step; s.y += (dy2 / d2) * step;
+      }
+    };
+    const spB = mkSprite(true, true); spB.x = 0; spB.y = 0;
+    const aB = mkAux(spB);
+    aB.x = 0; aB.y = 600; aB.heading = 0; aB.state = 'loading'; aB.targetFleet = null;
+    for (let f = 0; f < 20; f++) legacyChase(aB, 1);
+    const moveAng = Math.atan2(spB.y - 0, spB.x - 0);
+    let diff = Math.abs(moveAng - aB.heading) * 180 / Math.PI;
+    if (diff > 180) diff = 360 - diff;
+    check('counterexample: the legacy crawl flies 90° across its own bow when a spawn gap exists',
+      Math.abs(diff - 90) < 1e-6, `displacement vs heading = ${diff.toFixed(2)}°`);
+  }
 
   // ⑤ 反例自检：把 visHeading 的赋值放回 `if (!sprite || !sprite.active) return` 之后（旧顺序）
   //    ⇒ 同一场景下 visHeading 必须**缺失**。这条通过 = 台架确实抓得住这次回归（而非"怎么写都绿"）。
