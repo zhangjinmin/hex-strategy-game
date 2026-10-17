@@ -812,8 +812,13 @@ check('第二遍实体池对入场中的舰**临时强制建实体**（P1：远�
   const block = overlay.slice(overlay.indexOf('// ── 第二遍：实体池'), overlay.indexOf('// ── 第三遍：实体位置'));
   return block.includes('this.entryActiveOf(v.key)') && block.includes('cand.push(v)');
 });
-check('第三遍对入场中的舰强制 grow = 1（抑制"点+模型共存"）', () =>
-  overlay.includes('v.grow = this.entryActiveOf(v.key) ? 1 : sstep(this.lodLo, this.lodHi, v.fleetPx);'));
+check('第三遍对入场中的舰强制 grow = 1（抑制"点+模型共存"）', () => {
+  // v8：grow 表达式多了一条"运输舰用自身 px"的分支，但契约不变：
+  //   入场期恒 1；否则由 fleetPx（运输舰 = 自身 px）与 lodLo/lodHi 驱动。
+  const line = (overlay.match(/v\.grow = this\.entryActiveOf\(v\.key\)[\s\S]*?;/) || [''])[0];
+  return line.includes('this.entryActiveOf(v.key)') && line.includes('? 1')
+    && line.includes('v.fleetPx') && line.includes('this.lodLo') && line.includes('this.lodHi');
+});
 check('tick() 在 syncShips 之后推进入场特效', () => {
   const block = overlay.slice(overlay.indexOf('this.syncShips(dt);'), overlay.indexOf('this.updateBillboards();'));
   return block.includes('this.updateEntryFx();');
@@ -1217,8 +1222,11 @@ console.log('\n=== 18. v2 源码契约：N1 聚焦 / N2 模型 / N3 暂停 / N7 
     const blk = slice(overlay, '// ── 第二遍：实体池', '// ── 第三遍：实体位置');
     return blk.includes('this.entryActiveOf(v.key)') && blk.includes('cand.push(v)');
   });
-  check('N2：入场期强制 grow = 1（抑制"点 + 半切舰"共存）', () =>
-    overlay.includes('v.grow = this.entryActiveOf(v.key) ? 1 : sstep(this.lodLo, this.lodHi, v.fleetPx);'));
+  check('N2：入场期强制 grow = 1（抑制"点 + 半切舰"共存）', () => {
+    const line = (overlay.match(/v\.grow = this\.entryActiveOf\(v\.key\)[\s\S]*?;/) || [''])[0];
+    return line.includes('this.entryActiveOf(v.key)') && line.includes('? 1')
+      && line.includes('v.fleetPx') && line.includes('this.lodLo') && line.includes('this.lodHi');
+  });
 
   // ── N3：入场期间暂停 / 结束解除 / **绝不卡在暂停** ──
   check('★N3：startBattleAfterDeploy 里**不再**直接 `isPaused = false`（改为入场阶段结束时解除）', () =>

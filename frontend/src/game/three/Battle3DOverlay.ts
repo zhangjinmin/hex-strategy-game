@@ -32,9 +32,8 @@ import {
 } from './battleFx';
 import { drainFx3d, type Fx3dEvent } from '../battle3dFx';
 import { projectFleetRepresentation, projectFleetRepresentationBySlot } from '../combatRepresentation';
-// [v96] 补给运输舰的朝向兜底要用同一个"是否补给舰"判据（舰种 'supply' / '补给'）——
-//   运输舰独立往返、不参与舰队阵位，朝向语义与战舰不同（见 syncShips 第三遍 v96 注释）。
-import { isSupplyUnit } from '../SupplyChainSystem';
+// ★ v8 运输舰 LOD：**自身 px** 是唯一输入（纯逻辑模块，可被台架真跑；见 auxLod.ts 头注）
+import { auxLodPx, auxLodVerdict, auxGrowK } from './auxLod';
 // [切片传送入场] 纯逻辑层（零 three 依赖，可被离线台架真跑）—— 见 docs/design/3d-tactical-battle/35-*
 import {
   ENTRY_CFG_DEFAULT, ENTRY_REG_WINDOW_SEC,
@@ -270,8 +269,10 @@ interface ShipEntry {
   group: THREE.Group;
   u: any;
   fleet: any;
+  /** 上一帧位置（世界系，**与 g.position 同口径**）：仅用于"无朝向"兜底时取位移方向。
+   *  v8 起 z 直接存世界 z（= −像素 y），不再混存像素 y —— 运输舰的世界位置来自 aux 自身坐标。 */
   lastX: number;
-  lastY: number;
+  lastZ: number;
   cruiseY: number;
   /** 舰体当前偏航角（rad）。[v14 ③2] 曾由 3D 侧按 SHIP_TURN_RATE 限速逼近；
    *  [R10-B1] 改由 2D 层 `fleet.facingSmooth`（按「帧 × dt」限速平滑）**直接给出** ⇒ 此处仅持有值，
@@ -1447,6 +1448,13 @@ export class Battle3DOverlay {
   private haloPx = new Float32Array(MAX_MESHES);
   /** 全部存活单位的可见性状态（含未获实体者）；[v12.2 R1] 由 syncShips **每帧就地更新**（不再 clear+重建） */
   private unitVis = new Map<string, UnitVis>();
+  /** ★ v8 运输舰的**独立渲染宿主**（unit → host）：运输舰不隶属任何舰队，`unitVis[].fleet`
+   *  需要一个承载对象来跑既有的 LOD/光点/实体管线。该宿主**只服务于这一艘运输舰**：
+   *    · 只有 `{ id: 'aux:*', factionId, units: [u], _isAux: true, aux, x, y, facingSmooth }`；
+   *    · 因此 LOD 的 `fleetPx`（成员 px 均值）**恒等于它自己的 px**（成员只有它自己）；
+   *    · 托盘/名牌/高度档/门/拾取一律按 `_isAux` 显式跳过（它不是舰队，不该有舰队表示）。
+   *  host 引用跨帧稳定（Map 键 = unit）⇒ 门/缓存/拾取不会每帧换对象。 */
+  private auxHosts = new Map<any, any>();
   /** px 计算用临时向量（避免每帧 200 次分配；同一次计算里复用为 sx/sy 的投影载体） */
   private visTmpV = new THREE.Vector3();
   /** 远景点阵分桶（屏幕空间 cell key → 该格代表点 UnitVis）。每帧 clear() 复用同一实例，不 new。 */
@@ -3204,9 +3212,8 @@ export class Battle3DOverlay {
     for (const v of this.unitVis.values()) {
       const fl = v.fleet;
       if (!fl) continue;
-      // [B 档] 后勤支队（编队仅剩运输舰）不画舰队托盘：它没有阵位/战斗编制，
-      //   编队锚点是陈旧值 ⇒ 画出来就是一块悬空的"幽灵底框"。
-      if ((fl as any)._logisticsOnly) continue;
+      // v8：运输舰的渲染宿主（`_isAux`）**不是舰队** ⇒ 不画舰队托盘（它没有阵位、没有编队足迹）
+      if ((fl as any)._isAux) continue;
       const fid: number = fl.id !== undefined ? fl.id : fl.factionId;
       const a = agg.get(fid);
       if (a) {
@@ -3980,6 +3987,42 @@ export class Battle3DOverlay {
   private get lodKeep(): number { return this.lodNear ? 0 : FAR_TIER_KEEP; }
   private get lodDrop(): number { return this.lodNear ? 0 : FAR_TIER_KEEP; }
 
+  /**
+   * ★ v8 取（懒建）运输舰的**独立渲染宿主**。
+   *
+   * 为什么需要宿主：`unitVis` 管线的每条下游（LOD/光点/实体/受创外观）都以 `v.fleet` 读
+   *   `factionId` / `units` / `facingSmooth`。运输舰**不隶属任何舰队**（`AuxShip` 连 `fleet` 字段都没有），
+   * 因此这里给它一个**只代表它自己**的宿主对象，而不是借用某支真实舰队。
+ *
+   * 宿主的三条不变量（改这里前先读）：
+   *   1. **成员恒为该运输舰一艘** ⇒ 第二遍算出的 `fleetPx`（成员均值）就是它自己的 px，
+   *      所以"相机贴脸 ⇒ 一定越过 lodKeep ⇒ 一定建实体"是结构性的，不依赖任何编队位置。
+   *   2. **不带 `formation` / `formationCount0` / `id`（number）** ⇒ 不会被当成编队参与托盘/名牌/高度档/拾取。
+   *   3. 引用按 unit 缓存（跨帧稳定）：门/缓存/拾取若按对象键索引也不会每帧换键。
+   */
+  private auxHostOf(u: any, aux: any): any {
+    let h = this.auxHosts.get(u);
+    if (!h) {
+      h = {
+        id: `aux:${Math.random().toString(36).slice(2)}`,
+        factionId: u.factionId,
+        units: [u],
+        _isAux: true,
+        aux: null,
+      };
+      this.auxHosts.set(u, h);
+    }
+    h.factionId = u.factionId;
+    h.units[0] = u;
+    h.aux = aux;
+    // 供 addMesh 的初始朝向 / 任何读 `facingSmooth` 的下游使用 —— 恒等于运输舰自身航向。
+    h.facingSmooth = typeof aux?.heading === 'number' ? aux.heading : 0;
+    h.facingAngle = h.facingSmooth;
+    h.x = aux?.x ?? 0;
+    h.y = aux?.y ?? 0;
+    return h;
+  }
+
   private syncShips(dt: number) {
     // [切片传送入场] 本帧开关（一键关闭：window.__entryFxEnabled = false）—— 每帧只读一次
     this.entryFxActive = this.entryFxOn();
@@ -4002,8 +4045,6 @@ export class Battle3DOverlay {
     //    ⚠ 只施加在 3D 视觉层：BattleScene 的 2D 逻辑/命中/寻路保持平面，高度不参与命中判定。
     const aliveFleets: any[] = [];
     for (const fleet of fleets) {
-      // [B 档] 后勤支队不占高度档（它没有阵位，若计入档数会推移其它编队的层高）
-      if ((fleet as any)._logisticsOnly) continue;
       if ((fleet.units || []).length > 0) aliveFleets.push(fleet);
     }
     const fleetTierY = assignFleetTiers(aliveFleets, (f: any) => {
@@ -4025,7 +4066,7 @@ export class Battle3DOverlay {
     this.flagshipSet.clear();
     for (const fleet of fleets) {
       const units = (fleet.units as any[]) || [];
-      const flagship = ((fleet as any)._scout || (fleet as any)._scoutFlight || (fleet as any)._logisticsOnly)
+      const flagship = ((fleet as any)._scout || (fleet as any)._scoutFlight)
         ? null : (units.find((u: any) => u.isFlagship === true) || units[0]);
       if (flagship) this.flagshipSet.add(flagship);
     }
@@ -4115,6 +4156,47 @@ export class Battle3DOverlay {
       }
     }
 
+    // ── 第一遍 · 运输舰（v8 **独立通道**：不隶属任何舰队）───────────────────────
+    //   数据源 = BattleScene 的 `auxShips`（每艘只有 `unit / factionId / x / y / heading`）；
+    //   位置/朝向**直接取 aux 自身**，不经过「舰队阵位」「u.sprite 借位」「舰队朝向兜底」任何一路：
+    //     · px 由**相机到它自己**的距离算 ⇒ `fleetPx`（宿主只有它一个成员）= 自身 px；
+    //       相机贴脸时 px 必然越过 lodKeep ⇒ **必定建实体**（旧实现用母队 px 均值 ⇒ 独航时被误判为远）。
+    //     · 宿主对象只承担 unitVis 管线的"承载"，托盘/名牌/高度档/门/拾取都按 `_isAux` 跳过。
+    //   迷雾权威仍是 `u.sprite.visible`（BattleScene 按运输舰自身坐标写）——此处只消费，不自行判断。
+    const auxList: any[] = (bs as any).auxShips || [];
+    for (const aux of auxList) {
+      const au = aux?.unit;
+      if (!au || !au.sprite || au.sprite.visible === false || au.hp <= 0) continue;
+      if (typeof aux.x !== 'number' || typeof aux.y !== 'number') continue;
+      const host = this.auxHostOf(au, aux);
+      const akey = `${host.factionId}:${au.sprite._b3dKey || (au.sprite._b3dKey = Math.random().toString(36).slice(2))}`;
+      const ashipLen = this.shipLenOf(au, host);
+      const ashipW = this.shipWOf(au, host);
+      const ah = this.heightAtPx(aux.x, aux.y);
+      // 运输舰不吃"队内分层 / 队间高度档"（它没有阵位、没有编队层）—— 只吃地形高 + 巡航余量。
+      const ay = ah + this.cruiseClearance;
+      const apx = this.pxOf(this.visTmpV.set(aux.x, ay, -aux.y), ashipLen);
+      this.visTmpV.project(this.camera);
+      const asx = (this.visTmpV.x * 0.5 + 0.5) * this.renderer.domElement.width;
+      const asy = (0.5 - this.visTmpV.y * 0.5) * this.renderer.domElement.height;
+      let avv = vis.get(akey);
+      if (!avv) {
+        avv = { key: akey, u: au, fleet: host, x: 0, y: 0, z: 0, h: 0, seen: true, px: 0, sx: 0, sy: 0, shipLen: 0, shipW: 0, grow: 0, yaw: 0, fleetPx: 0 };
+        vis.set(akey, avv);
+      }
+      // ⚠ **不登记入场状态**：入场裁剪/门是「舰队级」特效（一队一门），运输舰没有舰队，
+      //   硬塞进某支舰队的门会重新把它绑回编队。它按自身 px 直接出现在 LOD 档上。
+      avv.u = au; avv.fleet = host; avv.seen = true;
+      avv.x = aux.x; avv.y = ay; avv.z = -aux.y;
+      avv.h = ah; avv.px = apx; avv.sx = asx; avv.sy = asy;
+      avv.shipLen = ashipLen; avv.shipW = ashipW;
+      avv.grow = 0;
+      // ★ **自身 px**（不是舰队均值）：LOD 的唯一判据（见 auxLod.ts 的三条契约）
+      avv.fleetPx = auxLodPx(apx);
+      const ahd = (typeof aux.heading === 'number' && Number.isFinite(aux.heading)) ? aux.heading : 0;
+      avv.yaw = Math.atan2(-Math.cos(ahd), Math.sin(ahd));
+    }
+
     // [v12.2 R1] 清掉本帧未再出现的陈旧条目（阵亡 / 撤场）—— 就地更新的"垃圾回收"。
     // 放在第一遍之后、第二遍之前：二/三遍与后续各消费者见到的都只剩本帧存活单位，语义与旧 clear()+重建一致。
     for (const [k, vv2] of vis) { if (!vv2.seen) vis.delete(k); }
@@ -4130,6 +4212,8 @@ export class Battle3DOverlay {
     {
       const acc = new Map<any, { sum: number; n: number }>();
       for (const v of vis.values()) {
+        // 运输舰不参与舰队均值：它的 `fleetPx` 已在第一遍写成**自身 px**（相机到它自己的距离）
+        if ((v.fleet as any)?._isAux) continue;
         let a = acc.get(v.fleet);
         if (!a) { a = { sum: 0, n: 0 }; acc.set(v.fleet, a); }
         a.sum += v.px; a.n += 1;
@@ -4150,6 +4234,16 @@ export class Battle3DOverlay {
       // [切片传送入场] P1：远景档 `lodKeep = 999` ⇒ 无实体可切。入场期**临时强制建实体**
       //   （否则"切片传送"在雷达视角下完全看不见）；入场结束自然落回原 LOD（`lodDrop` 999 ⇒ 逐帧回收）。
       const entryActive = this.entryActiveOf(v.key);
+      // ★ v8 运输舰走**自身 px** 的独立判定（共享实现见 three/auxLod.ts，台架真跑同一函数）
+      if ((v.fleet as any)?._isAux) {
+        const verdict = auxLodVerdict({
+          selfPx: v.fleetPx, hasMesh: this.ships.has(v.key),
+          lodKeep: this.lodKeep, lodDrop: this.lodDrop, entryActive,
+        });
+        if (verdict === 'mesh') cand.push(v);
+        else if (verdict === 'drop' && dropped < MESH_DROP_PER_FRAME) { this.dropMesh(v.key); dropped++; }
+        continue;
+      }
       if (this.ships.has(v.key)) {
         // 已持实体：低于滞回下阈才归还（滞回避免相机推拉时每帧 buildShip/dispose 造成卡顿）
         if (v.fleetPx >= this.lodDrop || entryActive) cand.push(v);
@@ -4274,7 +4368,12 @@ export class Battle3DOverlay {
       // 与平面换阵迁移（BattleScene 的阻尼 lerp，约 0.4s）同步 —— 换阵/换档时"重新分层"是插值而非瞬跳。
       entry.cruiseY += (targetY - entry.cruiseY) * (1 - Math.exp(-dt / FORM_ANIM_TAU));
       let y = Math.max(entry.cruiseY, h + this.minClearance);
-      let x = u.sprite.x, z = -u.sprite.y;
+      // ★ v8 运输舰：位置**直接取 aux 自身坐标**（不经 sprite 中转，更不经过任何舰队）；
+      //   战斗舰维持原通道（sprite 是 2D 物理真源）。
+      const _isAux = !!(fleet as any)?._isAux;
+      const _aux = _isAux ? (fleet as any).aux : null;
+      let x = _aux ? _aux.x : u.sprite.x;
+      let z = _aux ? -_aux.y : -u.sprite.y;
 
       // 星球 3D 径向避让：不允许战舰进入星球/要塞球体（兜底，主防线仍靠 2D 逻辑绕开）
       for (const p of this.planetCenters) {
@@ -4315,32 +4414,26 @@ export class Battle3DOverlay {
       let targetYaw: number;
       // [v47] 真源 = 逐舰 visHeading（2D 层限速后的物理航迹朝向）；缺失回退舰队朝向
       const _vh = (u as any).visHeading;
-      const fa = (typeof _vh === 'number' ? _vh : (fleet.facingSmooth ?? fleet.facingAngle));
+      // ★ v8 运输舰：舰首真源 = `aux.heading`（moveAuxShips 里"位移由舰首消费" ⇒ 航迹与舰首同源）。
+      //   它**没有舰队可回退**（host.facingSmooth 也只是 aux.heading 的镜像），故此处直接取 aux。
+      const fa = _isAux
+        ? (Number.isFinite((_aux as any)?.heading) ? (_aux as any).heading : 0)
+        : (typeof _vh === 'number' ? _vh : (fleet.facingSmooth ?? fleet.facingAngle));
       const hasFacing = (typeof fa === 'number' && Number.isFinite(fa));
-      // 本帧位移（世界 XZ）：像素 (dx,dy) → 世界 (dx,-dy)。兜底分支与 v96 共用。
-      const mvX = u.sprite.x - entry.lastX;
-      const mvZ = -(u.sprite.y - entry.lastY);
+      // 本帧位移（世界 XZ）：像素 (dx,dy) → 世界 (dx,-dy)。仅作"无朝向"兜底。
+      const mvX = x - entry.lastX;
+      const mvZ = z - entry.lastZ;
       const moving = mvX * mvX + mvZ * mvZ > 0.01;
-      // [v96] **补给运输舰的舰首必须跟自己的航迹**：
-      //   运输舰走 `moveAuxShips` 独立往返（不参与舰队阵位），它的位移方向由 `aux.heading` 决定，
-      //   与所属舰队的 `facingSmooth` **毫无关系**。旧实现里 visHeading 缺失就回退舰队朝向
-      //   ⇒ 位置沿自身航迹走、舰首却按舰队摆 = 用户实报的「横着在高速移动」。
-      //   因此这里对运输舰**禁用**舰队朝向兜底，改用「本帧位移方向」（与屏幕所见同一真源）。
-      //   ⚠ visHeading 存在时（正常路径，由 SupplyChainSystem.syncAuxVisual 无条件写入）
-      //     行为与改动前**逐位一致** —— 本分支只在异常/旧帧路径生效。
-      const auxNoVis = isSupplyUnit(u) && typeof _vh !== 'number';
-      if (auxNoVis) {
-        targetYaw = moving ? Math.atan2(-mvX, -mvZ) : entry.yaw;
-      } else if (hasFacing) {
+      if (hasFacing) {
         targetYaw = Math.atan2(-Math.cos(fa), Math.sin(fa));
       } else {
         // 兜底：无朝向时退回"移动向量优先"（保持旧语义，静止则维持当前朝向）
         targetYaw = moving ? Math.atan2(-mvX, -mvZ) : entry.yaw;
       }
-      entry.yaw = (hasFacing && !auxNoVis) ? targetYaw : approachAngle(entry.yaw, targetYaw, SHIP_TURN_RATE * dt);
+      entry.yaw = hasFacing ? targetYaw : approachAngle(entry.yaw, targetYaw, SHIP_TURN_RATE * dt);
       g.rotation.y = entry.yaw;
-      entry.lastX = u.sprite.x;
-      entry.lastY = u.sprite.y;
+      entry.lastX = x;
+      entry.lastZ = z;
 
       // HP < 50%：受创色 + 火焰点变红放大
       const hpPct = u.maxHp > 0 ? u.hp / u.maxHp : 1;
@@ -4383,7 +4476,10 @@ export class Battle3DOverlay {
       // [v75] 用 fleetPx（舰队代表）⇒ 整队同步长出/淡出，同队不会一半模型一半点
       // [切片传送入场] 入场期强制 grow = 1：实体"已在场"，**光点让位**（否则远景强制建实体时
       //   会同时画出"点 + 半切舰"，正是 v79~v81 反复修掉的"点模共存"观感）。
-      v.grow = this.entryActiveOf(v.key) ? 1 : sstep(this.lodLo, this.lodHi, v.fleetPx);
+      // ★ v8 运输舰：`fleetPx` 已是**自身 px**（宿主只有它自己），grow 走同一口径的共享实现。
+      v.grow = this.entryActiveOf(v.key)
+        ? 1
+        : (_isAux ? auxGrowK(v.fleetPx, this.lodLo, this.lodHi) : sstep(this.lodLo, this.lodHi, v.fleetPx));
       // [任务3] 舰首标记随 LOD `grow` 同步淡入淡出（与光点/光晕/实体淡化同源）——
       //   否则中景下"舰体线框已淡出、箭标还亮着"就是本工程反复修过的"无主体特效"。
       if (entry.bowMarker) {
@@ -5594,8 +5690,8 @@ export class Battle3DOverlay {
     const color = factionColor(this.getFac(u.factionId) || {});
     const units = (fleet.units as any[]) || [];
     const isFlagshipUnit = !(fleet as any)._scout && !(fleet as any)._scoutFlight
-      // [B 档] 后勤支队里 units[0] 就是运输舰 ⇒ 不得当成旗舰（否则孤零零的运输舰会戴上指挥光环）
-      && !(fleet as any)._logisticsOnly
+      // v8：运输舰的渲染宿主只有它自己一个成员 ⇒ 绝不能因此被当成旗舰（否则孤舰戴指挥光环）
+      && !(fleet as any)._isAux
       && u === (units.find((candidate: any) => candidate.isFlagship === true) || units[0]);
     const flagshipKey = isFlagshipUnit ? this.flagshipKeyOf(u, fleet) : null;
     const built = this.buildShip(String(u.classType || 'destroyer'), color, this.isEmpireSideOf(u), flagshipKey ?? undefined);
@@ -5606,8 +5702,8 @@ export class Battle3DOverlay {
     this.shipGroup.add(built.group);
 
     // [v14 ③2] 初始朝向 = 舰队朝向（避免首帧从 0 猛转）；无则 0
-    // [R10-B1] 优先 2D 限速平滑值 facingSmooth（缺省回退权威 facingAngle）
-    const fa0 = fleet.facingSmooth ?? fleet.facingAngle;
+    // ★ v8 运输舰：初始朝向 = `aux.heading`（host.facingSmooth 即其镜像，此处统一走 host 也正确）
+    const fa0 = (fleet as any)?._isAux ? (fleet as any).aux?.heading : (fleet.facingSmooth ?? fleet.facingAngle);
     const yaw0 = (typeof fa0 === 'number' && Number.isFinite(fa0))
       ? Math.atan2(-Math.cos(fa0), Math.sin(fa0)) : 0;
 
@@ -5629,7 +5725,9 @@ export class Battle3DOverlay {
 
     this.ships.set(v.key, {
       key: v.key, group: built.group, u, fleet,
-      lastX: u.sprite.x, lastY: u.sprite.y, cruiseY: 0, yaw: yaw0,
+      lastX: (fleet as any)?._isAux ? (fleet as any).aux?.x ?? 0 : u.sprite.x,
+      lastZ: (fleet as any)?._isAux ? -((fleet as any).aux?.y ?? 0) : -u.sprite.y,
+      cruiseY: 0, yaw: yaw0,
       pendingModel: built.pendingModel, modelVer: built.modelVer ?? 0,
       isFlagship: isFlagshipUnit, flagshipKey: flagshipKey ?? undefined,
       cmdRing,
@@ -6068,18 +6166,37 @@ export class Battle3DOverlay {
     return this.isFleetIntelVisible(fleet);
   }
 
-  /** [A/B 档] **运输舰**的迷雾可见性（不借 `aux.fleet` 作归属）。
-   *    · 归属阵营取 `aux.factionId`（真源）：己方/友方恒可见；
-   *    · 敌方：情报档位取**自身承载容器**（容器由 BattleScene 每帧写 `_intelDisplayMode`）——
-   *      后勤支队同样是合法容器，故母队被歼后运输舰的情报仍正确；
-   *    · 容器缺失（极端帧）：按"未确认"处理（宁可隐藏，也不越迷雾泄漏位置）。 */
+  /** ★ v8 **运输舰**的迷雾可见性 —— 只用「它的归属阵营 + 它自己的坐标」，**不读任何舰队容器**。
+   *    · 归属取 `aux.factionId`（唯一真源）；己方/友方恒可见；
+   *    · 敌方：按**自身位置**判断"我方传感器是否覆盖到它"（舰队 250 / 索敌 450、建筑 300），
+   *      与"它曾经承载在哪支舰队"完全无关（`AuxShip.fleet` 已删除，也没有容器可读）。
+   *    ⚠ 与 2D 的 `sprite.visible` 同口径：2D 已在 BattleScene 按同一规则写可见性，
+   *      这里再算一次是为了补给圈/链路（它们不是 sprite，需独立判定）。 */
   private isAuxIntelVisible(aux: any): boolean {
     const fac: any = this.getFac(aux?.factionId) || {};
     const player = ((this.store as any).factions || []).find((f: any) => f.type === 'player');
     const playerTeam = player?.team ?? 1;
     if (fac.team === playerTeam) return true;
-    const host = aux?.fleet;
-    if (host && typeof host === 'object') return this.isFleetIntelVisible(host);
+    if (typeof aux?.x !== 'number' || typeof aux?.y !== 'number') return false;
+    const bs: any = this.battleScene;
+    const mine: any[] = (bs.globalFleets || []).filter((fl: any) => {
+      const f = this.getFac(fl.factionId);
+      return !!f && f.team === playerTeam;
+    });
+    for (const fl of mine) {
+      const units: any[] = fl.units || [];
+      if (units.length === 0 || !units[0].sprite) continue;
+      const range = fl.stance === 'search' ? 450 : 250;
+      if (Math.hypot(aux.x - units[0].sprite.x, aux.y - units[0].sprite.y) <= range) return true;
+    }
+    // 我方建筑（雷达 300）—— 与 BattleScene 的迷雾节点同口径
+    const tiles: any[] = bs.tilesList || [];
+    for (const t of tiles) {
+      if (t.type !== 'castle' && t.type !== 'tower' && t.type !== 'planet' && t.type !== 'relay') continue;
+      const tf = this.getFac(t.ownerId);
+      if (!tf || tf.team !== playerTeam) continue;
+      if (Math.hypot(aux.x - t.x, aux.y - t.y) <= 300) return true;
+    }
     return false;
   }
 
@@ -6112,8 +6229,8 @@ export class Battle3DOverlay {
     this.unitVis.forEach((v) => {
       const fleet = v.fleet;
       if (!fleet) return;
-      // [B 档] 后勤支队不出舰队名牌：它没有战斗编制，名牌只会显示"幽灵舰队"（名字 + 运输舰 HP）
-      if ((fleet as any)._logisticsOnly) return;
+      // v8：运输舰不挂舰队名牌（它是独立资产，名牌会显示成"幽灵舰队"）
+      if ((fleet as any)._isAux) return;
       const fid = fleet.id !== undefined ? fleet.id : fleet.factionId;
       const key = `f${fid}`;
       let a = acc.get(key);
@@ -6479,7 +6596,7 @@ export class Battle3DOverlay {
     auxShips.forEach((aux: any) => {
       if (!aux?.unit || aux.unit.hp <= 0) return;
       // 敌方运输舰既是可攻击目标，也必须先被识别；补给圈和航线不能越过迷雾泄漏其位置。
-      // [A/B 档] 归属取 `aux.factionId`（真源），**不再借 `aux.fleet`**（母队被歼后它指向后勤支队）。
+      // v8：归属只取 `aux.factionId`，档位按**它自己的坐标**判定（见 isAuxIntelVisible）。
       if (!this.isAuxIntelVisible(aux)) return;
       const key = aux.unit;   // aux 包装对象每帧重建，unit 引用稳定
       seenAux.add(key);
@@ -6552,8 +6669,6 @@ export class Battle3DOverlay {
     const seen = new Set<any>();
     fleets.forEach((fl: any) => {
       if (!fl?.units || fl.units.length === 0) return;
-      // [B 档] 后勤支队没有任务/意图（已被清空）⇒ 不画意图线
-      if ((fl as any)._logisticsOnly) return;
       if (!this.isFleetIntelVisible(fl)) return;
       const fac = this.getFac(fl.factionId);
       if (!fac) return;
@@ -7312,7 +7427,8 @@ export class Battle3DOverlay {
     let bestD2 = Infinity;
     for (const v of this.unitVis.values()) {
       const fl = v.fleet;
-      if (!fl || fl._scoutFlight) continue;
+      // v8：运输舰的宿主不是舰队（id 是字符串）⇒ 不参与"选舰队"拾取
+      if (!fl || fl._scoutFlight || (fl as any)._isAux) continue;
       const fid: number = fl.id !== undefined ? fl.id : fl.factionId;
       if (cands && !cands.has(fid)) continue;
       const dx = v.sx - pxDev, dy = v.sy - pyDev;

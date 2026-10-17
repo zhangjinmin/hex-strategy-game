@@ -308,38 +308,68 @@ console.log('\n=== [P2 acceptance] slot settle drift (0.3 spacing budget) ===');
     drift3s < BUDGET, `drift3s=${drift3s.toFixed(3)}px, budget=${BUDGET}px, longRun=${driftLong.toFixed(3)}px`);
 }
 
-console.log('\n=== [A/B 档] 运输舰归属基地：基地侧资产池 + factionId 归属真源 ===');
+console.log('\n=== [v8] 运输舰彻底解耦：不绑定任何舰队 / 自身 px LOD / 自主补给逻辑 ===');
 {
-  // ── ① 收集**只认资产池**：容器（fleet）缺失也必须照收 ──
-  //   旧实现是「扫舰队 → 取 units 里的运输舰」，母队被歼/被移出 globalFleets 后收集为 0
-  //   ⇒ 运输舰随母队消失。新实现消费 AuxAsset[]，容器只是承载引用。
-  const orphan = { hp: 100, classType: '补给', sprite: { x: 0, y: 0 } };
-  const dead = { hp: 0, classType: '补给' };
+  const fs = require('node:fs');
+  const L = require('../frontend/src/game/three/auxLod.ts');
+
+  // ── ① 结构：AuxShip / AuxAsset **没有 fleet 字段**（结构上不可能被"绑定"）──
+  const orphan = { hp: 100, classType: '补给', factionId: 7, sprite: { x: 33, y: 44 } };
+  const dead = { hp: 0, classType: '补给', factionId: 7 };
   const pooled = S.collectAuxShips(
-    [{ unit: orphan, factionId: 7, fleet: null }, { unit: dead, factionId: 7, fleet: null }],
+    [{ unit: orphan, factionId: 7 }, { unit: dead, factionId: 7 }],
     (fid) => (fid === 7 ? { x: 500, y: 400 } : null),
   );
-  check('asset pool: a transport with NO fleet container is still collected (survival decoupled from fleet)',
+  check('collection works with a pool that has NO fleet reference at all (0 fleets ⇒ still collected)',
     pooled.length === 1 && pooled[0].unit === orphan, `n=${pooled.length}`);
-  check('asset pool: factionId (ownership truth) is carried onto AuxShip',
-    pooled[0] && pooled[0].factionId === 7, `factionId=${pooled[0] && pooled[0].factionId}`);
-  check('asset pool: new transport spawns at its faction home port (homeOf(factionId))',
-    pooled[0] && pooled[0].homeX === 500 && pooled[0].homeY === 400,
-    `home=(${pooled[0] && pooled[0].homeX},${pooled[0] && pooled[0].homeY})`);
-  check('asset pool: destroyed transports are dropped', pooled.every((a) => a.unit.hp > 0));
+  check('AuxShip carries NO fleet field (runtime `\'fleet\' in aux === false`)',
+    !('fleet' in pooled[0]), `keys=${Object.keys(pooled[0]).join(',')}`);
+  check('AuxShip keys are exactly the decoupled set (unit/factionId/x/y/heading/cargo/state/targetFleet/homeX/homeY)',
+    ['unit', 'factionId', 'x', 'y', 'heading', 'cargo', 'state', 'targetFleet', 'homeX', 'homeY']
+      .every((k) => k in pooled[0]) && Object.keys(pooled[0]).length === 10,
+    `keys=${Object.keys(pooled[0]).join(',')}`);
+  check('ownership truth is factionId (no container to fall back to)', pooled[0].factionId === 7);
+  check('new transport spawns at its faction home port (homeOf(factionId))',
+    pooled[0].homeX === 500 && pooled[0].homeY === 400,
+    `home=(${pooled[0].homeX},${pooled[0].homeY})`);
+  check('destroyed transports are dropped', pooled.every((a) => a.unit.hp > 0));
 
-  // ── ② 跨 Tick 连续 + 容器可换（归属与坐标都不跟容器走）──
+  // 源结构：两个 interface 里都不许再出现 `fleet:` 字段
+  const supplySrc = fs.readFileSync('./frontend/src/game/SupplyChainSystem.ts', 'utf8');
+  const iface = (name) => {
+    const i = supplySrc.indexOf(`export interface ${name} {`);
+    return i < 0 ? '' : supplySrc.slice(i, supplySrc.indexOf('\n}', i));
+  };
+  check('source: AuxShip interface declares no fleet field', !/\bfleet\s*:/.test(iface('AuxShip')));
+  check('source: AuxAsset interface declares no fleet field', !/\bfleet\s*:/.test(iface('AuxAsset')));
+
+  // ── ② 收集器**绝不读** asset.fleet（守卫 getter 会抛错）──
+  const guarded = { unit: { hp: 100, classType: '补给', factionId: 7, sprite: { x: 1, y: 2 } }, factionId: 7 };
+  Object.defineProperty(guarded, 'fleet', {
+    get() { throw new Error('collectAuxShips read asset.fleet'); },
+  });
+  let threw = null;
+  try { S.collectAuxShips([guarded]); } catch (e) { threw = e.message; }
+  check('collectAuxShips never touches asset.fleet (a throwing getter is never invoked)', threw === null, String(threw));
+
+  // 旧调用方仍带着 fleet 字段时：字段被忽略、坐标不从容器继承
+  const legacyAsset = { unit: { hp: 100, classType: '补给', factionId: 7, sprite: { x: 33, y: 44 } }, factionId: 7, fleet: { factionId: 99, x: 9999, y: 9999 } };
+  const fromLegacy = S.collectAuxShips([legacyAsset]);
+  check('a legacy asset carrying a fleet cannot smuggle it in (nor inherit its coordinates)',
+    !('fleet' in fromLegacy[0]) && fromLegacy[0].x === 33 && fromLegacy[0].y === 44,
+    `x=${fromLegacy[0].x}, y=${fromLegacy[0].y}`);
+
+  // ── ③ 跨 Tick 连续（坐标/货量/状态按 unit 保留，与任何容器无关）──
   const prev = new Map();
   prev.set(orphan, pooled[0]);
   pooled[0].x = 123; pooled[0].heading = 0.77; pooled[0].cargo = 42;
-  const host2 = { factionId: 7 };
-  const again = S.collectAuxShips([{ unit: orphan, factionId: 7, fleet: host2 }], () => null, prev);
-  check('asset pool: state/coord/cargo survive a Tick and a container swap (fleet ref refreshed only)',
-    again.length === 1 && again[0] === pooled[0] && again[0].fleet === host2
-    && again[0].x === 123 && again[0].cargo === 42 && again[0].factionId === 7,
-    `x=${again[0].x}, cargo=${again[0].cargo}, fleetSwapped=${again[0].fleet === host2}`);
+  const again = S.collectAuxShips([{ unit: orphan, factionId: 7 }], () => null, prev);
+  check('state/coord/cargo survive a Tick (and no fleet key appears)',
+    again.length === 1 && again[0] === pooled[0] && !('fleet' in again[0])
+    && again[0].x === 123 && again[0].cargo === 42 && again[0].heading === 0.77,
+    `x=${again[0].x}, cargo=${again[0].cargo}`);
 
-  // ── ③ 反例自检：旧「扫舰队」收集在容器缺失时必须收不到 ──
+  // 反例自检：旧「扫舰队」收集在容器缺失时必须收不到（证明本断言确实在钉"解耦"而不是空转）
   const legacyCollect = (fleets) => {
     const out = [];
     fleets.forEach((fl) => { fl.units.forEach((u) => { if (u.classType === '补给' && u.hp > 0) out.push(u); }); });
@@ -348,29 +378,84 @@ console.log('\n=== [A/B 档] 运输舰归属基地：基地侧资产池 + factio
   check('counterexample: the legacy fleet-scanning collect returns 0 once the container is gone',
     legacyCollect([]).length === 0 && legacyCollect([{ units: [] }]).length === 0);
 
-  // ── ④ 阵营归属判定必须走 factionId，而不是承载容器 ──
-  //   场景：运输舰被"重新承载"到一支**敌方）容器**（模拟后勤支队/换容器）；
-  //   归属队仍是 factionId=11 的 team 1 ⇒ 应正常认领 team 1 的缺补舰队。
+  // ── ④ 归属只认 factionId；缺它时**不回退任何容器** ──
   const tf = { factionId: 11, x: 1000, y: 0, units: [{ supply: 10 }] };
   const teamOf = (ref) => (typeof ref === 'number' ? (ref === 11 ? 1 : 2) : (ref && ref.factionId === 11 ? 1 : 2));
   const mk = (factionId) => ({
     unit: { hp: 100, classType: '补给' }, factionId,
-    fleet: { factionId: 99 },   // ← 承载容器属于敌对阵营（team 2）
     x: 0, y: 0, heading: 0, cargo: 100, state: 'outbound', targetFleet: null, homeX: 0, homeY: 0,
   });
   const sources = [{ x: 0, y: 0, team: 1, kind: 'castle' }];
   const own = mk(11);
   S.updateSupplyChain([tf], sources, [own], 1, teamOf);
-  check('ownership: aux resolves its team from factionId, not from the hosting fleet container',
+  check('ownership: aux resolves its team from factionId alone',
     own.targetFleet === tf && own.state !== 'returning',
     `targetFleet=${own.targetFleet === tf}, state=${own.state}`);
-  // 反例对照：去掉 factionId ⇒ 回退承载容器（team 2）⇒ **认领不到** team 1 的缺补舰队
   const bad = mk(undefined);
   S.updateSupplyChain([tf], sources, [bad], 1, teamOf);
-  check('counterexample: without factionId the container-derived team misses the friendly target',
-    bad.targetFleet === null && bad.state === 'returning',
+  check('counterexample: without factionId nothing is claimed (there is no container to fall back to)',
+    bad.targetFleet === null && bad.state === 'outbound',
     `targetFleet=${bad.targetFleet}, state=${bad.state}`);
+
+  // 0 支舰队也要能推进状态机（运输舰不是"某舰队的零件"）
+  const lonely = mk(11);
+  lonely.state = 'outbound';
+  S.updateSupplyChain([], sources, [lonely], 1, teamOf);
+  check('the state machine ticks with ZERO fleets (no fleet is needed to drive a transport)',
+    lonely.state === 'returning' && lonely.targetFleet === null, `state=${lonely.state}`);
+
+  // ── ⑤ 自主选目标：缺补给更多的赢，即使它更远；与"谁曾承载过它"无关 ──
+  //    ⚠ 两个候选都必须在**补给源圈外**（否则 `inSupply` 会让它天然不缺，测的就不是评分了）
+  const A = { factionId: 11, x: 1200, y: 0, units: [{ supply: 5 }] };    // 更缺补给、更远
+  const B = { factionId: 11, x: 600, y: 0, units: [{ supply: 68 }] };    // 几乎满了、更近
+  const autonomous = mk(11);
+  S.updateSupplyChain([A, B], sources, [autonomous], 1, teamOf);
+  check('autonomous target: the neediest fleet wins even though it is farther (A@1200 supply5 vs B@600 supply68)',
+    autonomous.targetFleet === A && autonomous.state === 'outbound',
+    `picked=${autonomous.targetFleet === A ? 'A' : autonomous.targetFleet === B ? 'B' : 'null'}`);
+  check('counterexample: a pure-nearest rule would have picked B (that is what we no longer do)',
+    Math.hypot(0 - B.x, 0 - B.y) < Math.hypot(0 - A.x, 0 - A.y));
+  // 纯函数直调（与 updateSupplyChain 同一实现）：不受任何外部"宿主"影响
+  const info = S.updateSupplyChain([A, B], sources, [], 1, teamOf);
+  check('pickAuxTarget is a pure function of (own position, fleet needs) — no host fleet is an input',
+    S.pickAuxTarget(autonomous, [A, B], info, 1, teamOf) === A
+    && S.pickAuxTarget({ ...autonomous, __host: { factionId: 99, x: 9999 } }, [A, B], info, 1, teamOf) === A);
+
+  // 承诺目标补满 ⇒ **当场重选**（旧实现：`!target → returning` 空手返航）
+  const C = { factionId: 11, x: 900, y: 0, units: [{ supply: 30 }] };
+  const D = { factionId: 11, x: 1000, y: 0, units: [{ supply: 92 }] };   // 已被补满（≥ 释放线 85）
+  const switcher = mk(11);
+  switcher.state = 'supplying'; switcher.targetFleet = D;
+  S.updateSupplyChain([D, C], sources, [switcher], 1, teamOf);
+  check('a satisfied commitment is re-targeted in the same tick (does not fly home empty)',
+    switcher.targetFleet === C && switcher.state !== 'returning',
+    `target=${switcher.targetFleet === C ? 'C' : switcher.targetFleet === D ? 'D' : 'null'}, state=${switcher.state}`);
+
+  // ── ⑥ LOD：以**自身 px** 判定（反例：用母队均值 ⇒ 贴脸仍退化光点）──
+  const SELF_NEAR = 72;      // 相机贴脸时运输舰自身 px
+  const MOTHER_FAR = 3.2;    // 母队（早已千里之外）成员 px 均值
+  check('aux LOD input is its OWN px (never the mother-fleet mean)',
+    L.auxLodPx(SELF_NEAR) === SELF_NEAR && L.auxGrowK(SELF_NEAR, 0, 8) === 1,
+    `px=${L.auxLodPx(SELF_NEAR)}, grow=${L.auxGrowK(SELF_NEAR, 0, 8)}`);
+  check('near camera ⇒ aux BUILDS a mesh (self px well above the keep threshold)',
+    L.auxLodVerdict({ selfPx: SELF_NEAR, hasMesh: false, lodKeep: 14, lodDrop: 15 }) === 'mesh');
+  check('counterexample: feeding the mother-fleet mean px degrades the same aux to a dot',
+    L.auxLodVerdict({ selfPx: MOTHER_FAR, hasMesh: false, lodKeep: 14, lodDrop: 15 }) === 'none'
+    && L.auxGrowK(MOTHER_FAR, 0, 8) < 0.4,
+    `verdict=${L.auxLodVerdict({ selfPx: MOTHER_FAR, hasMesh: false, lodKeep: 14, lodDrop: 15 })}, grow=${L.auxGrowK(MOTHER_FAR, 0, 8).toFixed(3)}`);
+
+  // 渲染层接线契约（3D 层无法在台架里 import three ⇒ 用源码契约钉住"接线没被改回去"）
+  const overlaySrc = fs.readFileSync('./frontend/src/game/three/Battle3DOverlay.ts', 'utf8');
+  check('overlay: the aux pass feeds its OWN px into fleetPx (LOD representative)',
+    overlaySrc.includes('avv.fleetPx = auxLodPx(apx)'));
+  check('overlay: aux entries are excluded from the fleet-level px average',
+    overlaySrc.includes('if ((v.fleet as any)?._isAux) continue;'));
+  check('overlay: aux grow/LOD decisions go through the shared pure module',
+    overlaySrc.includes('auxLodVerdict({') && overlaySrc.includes('auxGrowK(v.fleetPx'));
+  check('overlay: the aux pass positions the hull from aux.x / aux.y (not from a fleet or its sprite)',
+    overlaySrc.includes('avv.x = aux.x; avv.y = ay; avv.z = -aux.y;'));
 }
+
 
 console.log(`\n${passed + failed} assertions: ${passed} passed / ${failed} failed`);
 process.exitCode = failed === 0 ? 0 : 1;

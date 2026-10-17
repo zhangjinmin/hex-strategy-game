@@ -14,11 +14,21 @@
  *   - 装货耗时形成"舰队先出发、运输船后出发"的自然节奏
  *   - 运输舰可被击沉 → 该链路断裂（斩链玩法的核心目标）
  *
- *   ★ v7（B 档）**归属基地，不归属舰队**：
- *     · `AuxShip.factionId` 是归属真源；`AuxShip.fleet` 降级为**承载/服务引用**（容器随时可换）。
- *     · `collectAuxShips` 只消费**基地侧资产池 `AuxAsset[]`**，不再扫舰队 ⇒ 收集不依赖舰队容器。
- *     · 母队被歼时由 BattleScene 把编队转为「后勤支队」（`_logisticsOnly`）⇒ 运输舰独立存活并返航。
- *     这样做同时保住"切断补给链"这一核心玩法：运输舰必须**真的被打掉**才算断链。
+ *   ★ v8（本轮）**彻底从舰队解耦：不隶属、不承载、不借用任何舰队对象**：
+ *     · `AuxShip` 只剩 `unit / factionId / x / y / heading / cargo / state / targetFleet / homeX / homeY`
+ *       —— **没有 `fleet` 字段**（v7 的"承载/服务引用"已删除；"当前补给谁"就是 `targetFleet`）。
+ *     · `AuxAsset` 同步收敛为 `{ unit, factionId }`：归属只有 `factionId` 一个真源。
+ *     · `collectAuxShips` 只消费**资产池**，池由 BattleScene 从**单位登记表**（运输舰自有 roster）产出，
+ *       不再遍历 `fleet.units` ⇒ 收集/存活与任何舰队容器都无关。
+ *     · 舰队全灭时运输舰**不产生任何"后勤支队"伪舰队**：它是基地侧资产，继续独立往返。
+ *     这样同时保住"切断补给链"这一核心玩法：运输舰必须**真的被打掉**才算断链。
+ *
+ *   ★ v8 补给逻辑（用户第 3 点「有自己的补给逻辑」）：
+ *     · 每 Tick 由 `pickAuxTarget` **自主**在所有同 team 舰队中重选"最需要补给"的对象
+ *       （评分 = 路程 ÷ (1+缺补量) ⇒ 缺得越多可接受的路程越远；缺补相同即"最近"）。
+ *     · **没有任何"母队优先"残留**：本模块已不存在"母队"概念，运输舰不知道自己曾属于谁。
+ *     · 已承诺目标只在"仍缺补给"期间保留（迟滞带 70/85），目标补满/进源圈后**当场重选**，
+ *       不等于直接返航（旧实现会空手回家）。
  *
  * 设计要点：
  *   - 纯计算模块，不碰 Phaser 渲染；updateSupplyChain 每 1s 逻辑 Tick 调用（状态迁移+卸货），
@@ -73,23 +83,16 @@ export interface SupplyNode {
 
 export interface AuxShip {
   unit: any;         // 战斗单位引用（sprite 由 BattleScene 按独立坐标同步）
-  /** **归属阵营 id（基地侧资产的真正归属）** —— 存活/斩链/AI/迷雾等一切"这是谁家的"判定
-   *  一律用它，**不再用 `fleet.factionId`**。
-   *  [A 档] 旧实现把「阵营归属」寄存在 `fleet` 上；`fleet` 只是**承载容器**（会随分兵/并队
-   *  被换、随战损被移除）⇒ 容器一变归属就丢。归属上移到运输舰自身后，容器换不换都无影响。 */
+  /** **归属阵营 id（唯一归属真源）** —— 存活/斩链/AI/迷雾等一切"这是谁家的"判定
+   *  一律用它，**不存在任何舰队容器引用**（v8 起 `fleet` 字段已删除）。 */
   factionId: number;
-  /** **承载/服务引用（不是归属）** —— 当前为它提供 3D 实体渲染容器、阵位枚举、
-   *  迷雾情报(`_intelDisplayMode`) 的那支舰队；`updateSupplyChain` 的 `targetFleet` 亦是"被服务的对象"。
-   *  [B 档] 母队被歼后本引用指向**后勤支队容器**（`_logisticsOnly`），运输舰因此**独立于
-   *  原舰队容器而存活**；`factionId` 才是归属真源（见上）。 */
-  fleet: any;
-  x: number;         // 独立坐标（不再依赖舰队位置 + 偏移）
+  x: number;         // 独立坐标（不依赖任何舰队位置 + 偏移）
   y: number;
   heading: number;   // 当前航向（rad，用于 sprite 朝向）
   cargo: number;     // 剩余载货
   state: AuxState;
   /** 被**服务**的目标舰队（outbound/supplying 的补给对象；null = 无）。
-   *  ⚠ 与 `fleet` 无关：这不是"归属"，只是"这一趟去补给谁"。 */
+   *  ⚠ 这不是"归属"：它每个 Tick 由 `pickAuxTarget` 自主重选，唯一含义是"这一趟去补给谁"。 */
   targetFleet: any;
   /** 母港（补给源）坐标：返航/装货的目的地。
    *  v6.1：不再恒为司令部——每 Tick 重算为"距运输舰最近的己方补给源（含已占中继）"，
@@ -98,15 +101,13 @@ export interface AuxShip {
   homeY: number;
 }
 
-/** [B 档] 基地侧运输舰资产项：**以 unit 为主体**（不再以舰队为主体）。
- *  池由 BattleScene 从"己方补给源/编制"侧登记，`collectAuxShips` 只认这个池 ——
- *  因此运输舰的收集**不依赖任何舰队容器是否存在**。 */
+/** v8：基地侧运输舰资产项：**以 unit 为主体**，归属只有 `factionId`。
+ *  池由 BattleScene 从运输舰**单位登记表**（自有 roster）登记，`collectAuxShips` 只认这个池 ——
+ *  因此运输舰的收集/存活**不依赖任何舰队容器是否存在**（没有 `fleet` 字段可依赖）。 */
 export interface AuxAsset {
   unit: any;
   /** 归属阵营 id（真源） */
   factionId: number;
-  /** 当前承载容器（渲染/阵位/情报）；可为 null（此时仍被收集，视觉由 syncAuxVisual 独立驱动） */
-  fleet: any;
 }
 
 export interface FleetSupplyInfo {
@@ -151,6 +152,46 @@ export function resolveAuxHome(
   return best;
 }
 
+/** 舰队的补给度（舰队级口径，唯一读法）：取 `units[0].supply`，缺失按满补给。
+ *  ⚠ v8 起运输舰已不在 `fleet.units` 里 ⇒ 该首项稳定是战斗舰，不会被运输舰顶掉。 */
+export function fleetSupplyOf(fleet: any): number {
+  return fleet?.units?.[0]?.supply ?? 100;
+}
+
+/**
+ * **运输舰自主选补给对象**（v8 唯一选择规则，`updateSupplyChain` 与台架共用同一份实现）。
+ *
+ *  候选 = 同 team + 不在补给源圈内 + 补给度 < 获取阈值(70) 的舰队。
+ *  评分 = 路程 ÷ (1 + 缺补量)，缺补量 = 70 − 当前补给度：
+ *    · 缺得**越多**，可接受的路程越远（"最需要补给"优先）；
+ *    · 缺补量相同 ⇒ 等价于"**最近**"（评分 = 路程 / 常数）。
+ *
+ *  ⚠ **不存在"母队/承载容器优先"**：入参只有 `aux` 自身的坐标与阵营，本函数读不到、也不读
+ *    任何"运输舰曾属于哪支舰队"的信息（`AuxShip` 已无 `fleet` 字段）。
+ */
+export function pickAuxTarget(
+  aux: AuxShip,
+  fleets: any[],
+  supplyInfo: Map<any, FleetSupplyInfo>,
+  myTeam: number,
+  teamOf: TeamOf,
+): any | null {
+  let target: any = null;
+  let bestScore = Infinity;
+  fleets.forEach(other => {
+    if (teamOf(other) !== myTeam) return;
+    const oi = supplyInfo.get(other);
+    if (!oi || oi.inSupply) return;                    // 源圈内的不缺
+    const supply = fleetSupplyOf(other);
+    if (supply >= AUX_TARGET_ACQUIRE_SUPPLY) return;    // 补给度尚可
+    const deficit = Math.max(0.5, AUX_TARGET_ACQUIRE_SUPPLY - supply);
+    const d = Math.hypot(aux.x - other.x, aux.y - other.y);
+    const score = d / (1 + deficit);
+    if (score < bestScore) { bestScore = score; target = other; }
+  });
+  return target;
+}
+
 /**
  * 计算所有舰队的补给状态，并驱动运输舰状态机（每 1s 逻辑 Tick 调用）。
  * 位移由 moveAuxShips 每帧推进；本函数只做状态迁移与卸货结算。
@@ -188,29 +229,17 @@ export function updateSupplyChain(
   // 2. 运输舰状态机：loading → outbound → supplying → returning → loading …
   auxShips.forEach(aux => {
     if (!aux.unit || aux.unit.hp <= 0) return;
-    // [A 档] 阵营归属取运输舰自身的 `factionId`（真源）；旧数据/旧调用缺该字段时回退承载容器。
-    const myTeam = aux.factionId != null ? teamOf(aux.factionId) : teamOf(aux.fleet);
+    // v8：归属只认 `aux.factionId`（唯一真源）——`AuxShip` 已无任何舰队容器引用可回退。
+    if (aux.factionId == null) return;
+    const myTeam = teamOf(aux.factionId);
     if (myTeam === undefined) return;
 
     // v6.1：每 Tick 重算最近母港（含已占中继）——中继占领后运输舰就地改挂新港
     const home = resolveAuxHome(aux, sources, myTeam);
     aux.homeX = home.x; aux.homeY = home.y;
 
-    // 找需要补给的友军舰队：同阵营 + 在补给源圈外 + 补给度 < AUX_TARGET_ACQUIRE_SUPPLY，取距运输舰最近者。
-    // v6.1：目标优先级改为"运输舰到目标的路程"，而非直线距离——在中继装货的运输舰
-    //   会自然倾向补给中继附近的舰队（用户要求：往返于补给源/已占中继/前线舰队）。
-    // R10-A1/B2：这里是**获取**门槛（70）；一旦承诺（targetFleet），改由释放门槛（85）放手，
-    //   二者构成迟滞带 → 不再"补到 70 就撒手"。
-    let target: any = null;
-    let bestD = Infinity;
-    fleets.forEach(other => {
-      if (teamOf(other) !== myTeam) return;
-      const oi = result.get(other);
-      if (!oi || oi.inSupply) return;                       // 源圈内的不缺
-      if ((other.units?.[0]?.supply ?? 100) >= AUX_TARGET_ACQUIRE_SUPPLY) return;  // 补给度尚可
-      const d = Math.hypot(aux.x - other.x, aux.y - other.y);
-      if (d < bestD) { bestD = d; target = other; }
-    });
+    // 自主选目标（最近且最缺；见 pickAuxTarget）
+    let target = pickAuxTarget(aux, fleets, result, myTeam, teamOf);
 
     switch (aux.state) {
       case 'loading': {
@@ -226,11 +255,12 @@ export function updateSupplyChain(
       case 'supplying': {
         // R10-A1/B3：已承诺目标优先——只要它仍缺补给（< 释放门槛 85）、且尚未回到补给源圈，
         //   就继续跟随/补给它，不因本 Tick 全局重扫的瞬时结果而「失目标即返航」。
-        //   原实现 `!target → returning`（配 :163 的 70 门槛）正是"卸到 70 就撒手"的直接来源。
+        // v8：承诺失效（补满 / 进源圈 / 阵营变了）时**当场重选**（`pickAuxTarget` 的结果已在此），
+        //   只有"确实没有谁需要补给"才返航 —— 旧实现 `!target → returning` 会让空货返航。
         if (aux.targetFleet && aux.cargo > 0) {
           const committed = aux.targetFleet;
           const ci = result.get(committed);
-          const stillNeed = (committed.units?.[0]?.supply ?? 100) < AUX_TARGET_RELEASE_SUPPLY;
+          const stillNeed = fleetSupplyOf(committed) < AUX_TARGET_RELEASE_SUPPLY;
           const inSourceCircle = !!(ci && ci.inSupply && ci.via === 'source');
           if (teamOf(committed) === myTeam && stillNeed && !inSourceCircle) target = committed;
         }
@@ -371,11 +401,12 @@ export function isSupplyUnit(u: any): boolean {
   return u?.classType === 'supply' || u?.classType === '补给';
 }
 
-/** [B 档] 从**基地侧资产池**收集运输舰，初始化/复用 AuxShip 结构（独立往返制）。
- *  ⚠ 入参是 `AuxAsset[]`（以 unit 为主体的池）而**不是舰队列表** —— 这是 B 档的核心：
+/** v8：从**基地侧运输舰资产池**收集运输舰，初始化/复用 AuxShip 结构（独立往返制）。
+ *  ⚠ 入参是 `AuxAsset[]`（以 unit 为主体、只有 `factionId` 的池）而**不是舰队列表** ——
  *    运输舰的收集/存活**不依赖任何舰队容器**（母队被拆/并/歼都不影响）。
+ *  ⚠ 资产项没有 `fleet` 字段 ⇒ 本函数**不可能**把任何舰队对象带进 AuxShip（结构上堵死）。
  *
- *  @param assets 基地侧资产池（BattleScene 维护：编制侧登记 ∪ 上一次池内容，见 collectAuxAssets）
+ *  @param assets 基地侧资产池（BattleScene 维护：运输舰单位登记表 ∪ 上一次池内容，见 collectAuxAssets）
  *  @param homeOf 阵营 id → 初始母港（补给源）坐标（仅新建时使用；后续由 resolveAuxHome 每 Tick 重算）
  *  @param prev  上一轮的 unit → AuxShip 映射：包装对象每 Tick 重建，但坐标/货量/状态
  *               按 unit 引用跨 Tick 保留（独立航行的连续性依赖于此）
@@ -389,25 +420,28 @@ export function collectAuxShips(
   assets.forEach(a => {
     const u = a.unit;
     if (!u || !isSupplyUnit(u) || u.hp <= 0) return;
+    if (a.factionId == null) return;
     const factionId = a.factionId;
     const home = homeOf ? homeOf(factionId) : null;
     const old = prev?.get(u);
     if (old) {
-      // [A 档] 归属阵营是**真源**：每 Tick 校正（阵营不会变，但保证首次由旧结构升上来时有值）。
+      // 归属阵营是**唯一真源**：每 Tick 校正（阵营不会变，但保证首次由旧结构升上来时有值）。
       old.factionId = factionId;
-      // 承载容器引用可能随舰队重建/后勤支队转移而变化 → 刷新引用（**仅供渲染/情报**，不参与归属判定）。
       // R10-A1/B6：**不再每 Tick 用 homeOf(castlePos) 覆写母港**——母港由 resolveAuxHome
       //   （:151-152）带 120px 换港迟滞维护；此处的覆写会让迟滞失去"上一次母港"参照，
       //   使"就近装货/改挂已占中继"的防抖保护实际失效（运输舰在两源间抖动）。
-      old.fleet = a.fleet;
       out.push(old);
     } else {
-      // 新运输舰：泊在母港，空载装货（装满后才出航 → 天然的首航延迟）
+      // 新运输舰：泊在母港，空载装货（装满后才出航 → 天然的首航延迟）。
+      // 母港解析失败时退到**单位自己的 sprite 坐标**（建舰期就在己方出生点）——
+      // 仍然不读任何舰队容器（`AuxAsset` 里没有 fleet 可读）。
+      const sx = typeof u.sprite?.x === 'number' ? u.sprite.x : 0;
+      const sy = typeof u.sprite?.y === 'number' ? u.sprite.y : 0;
       out.push({
-        unit: u, factionId, fleet: a.fleet,
-        x: home?.x ?? a.fleet?.x ?? 0, y: home?.y ?? a.fleet?.y ?? 0,
+        unit: u, factionId,
+        x: home?.x ?? sx, y: home?.y ?? sy,
         heading: 0, cargo: 0, state: 'loading', targetFleet: null,
-        homeX: home?.x ?? a.fleet?.x ?? 0, homeY: home?.y ?? a.fleet?.y ?? 0,
+        homeX: home?.x ?? sx, homeY: home?.y ?? sy,
       });
     }
   });
