@@ -6,13 +6,19 @@
  *   2. 指挥制无格子 → 地块驱动补给失效
  *   3. 玩家看不到补给状态（不知道部队在不在补给线内）
  *
- * 补给链模型（v3 独立往返制）：
+ * 补给链模型（v3 独立往返制；v7 归属基地）：
  *   己方补给源（基地/星球） → [AUX 运输舰独立出航] → 前线舰队 → 返航补给源 → 装货 → 再出航
  *
  *   状态机：loading（泊港装货）→ outbound（出航）→ supplying（补给）→ returning（返航）→ loading …
  *   - 运输舰拥有独立坐标（x/y），不再跟随舰队阵型
  *   - 装货耗时形成"舰队先出发、运输船后出发"的自然节奏
  *   - 运输舰可被击沉 → 该链路断裂（斩链玩法的核心目标）
+ *
+ *   ★ v7（B 档）**归属基地，不归属舰队**：
+ *     · `AuxShip.factionId` 是归属真源；`AuxShip.fleet` 降级为**承载/服务引用**（容器随时可换）。
+ *     · `collectAuxShips` 只消费**基地侧资产池 `AuxAsset[]`**，不再扫舰队 ⇒ 收集不依赖舰队容器。
+ *     · 母队被歼时由 BattleScene 把编队转为「后勤支队」（`_logisticsOnly`）⇒ 运输舰独立存活并返航。
+ *     这样做同时保住"切断补给链"这一核心玩法：运输舰必须**真的被打掉**才算断链。
  *
  * 设计要点：
  *   - 纯计算模块，不碰 Phaser 渲染；updateSupplyChain 每 1s 逻辑 Tick 调用（状态迁移+卸货），
@@ -67,18 +73,40 @@ export interface SupplyNode {
 
 export interface AuxShip {
   unit: any;         // 战斗单位引用（sprite 由 BattleScene 按独立坐标同步）
-  fleet: any;        // 所属舰队（母队，用于阵营/斩链判定）
+  /** **归属阵营 id（基地侧资产的真正归属）** —— 存活/斩链/AI/迷雾等一切"这是谁家的"判定
+   *  一律用它，**不再用 `fleet.factionId`**。
+   *  [A 档] 旧实现把「阵营归属」寄存在 `fleet` 上；`fleet` 只是**承载容器**（会随分兵/并队
+   *  被换、随战损被移除）⇒ 容器一变归属就丢。归属上移到运输舰自身后，容器换不换都无影响。 */
+  factionId: number;
+  /** **承载/服务引用（不是归属）** —— 当前为它提供 3D 实体渲染容器、阵位枚举、
+   *  迷雾情报(`_intelDisplayMode`) 的那支舰队；`updateSupplyChain` 的 `targetFleet` 亦是"被服务的对象"。
+   *  [B 档] 母队被歼后本引用指向**后勤支队容器**（`_logisticsOnly`），运输舰因此**独立于
+   *  原舰队容器而存活**；`factionId` 才是归属真源（见上）。 */
+  fleet: any;
   x: number;         // 独立坐标（不再依赖舰队位置 + 偏移）
   y: number;
   heading: number;   // 当前航向（rad，用于 sprite 朝向）
   cargo: number;     // 剩余载货
   state: AuxState;
-  targetFleet: any;  // outbound/supplying 的目标舰队（null = 无）
+  /** 被**服务**的目标舰队（outbound/supplying 的补给对象；null = 无）。
+   *  ⚠ 与 `fleet` 无关：这不是"归属"，只是"这一趟去补给谁"。 */
+  targetFleet: any;
   /** 母港（补给源）坐标：返航/装货的目的地。
    *  v6.1：不再恒为司令部——每 Tick 重算为"距运输舰最近的己方补给源（含已占中继）"，
    *  运输舰就近装货/周转，中继占领真正生效。 */
   homeX: number;
   homeY: number;
+}
+
+/** [B 档] 基地侧运输舰资产项：**以 unit 为主体**（不再以舰队为主体）。
+ *  池由 BattleScene 从"己方补给源/编制"侧登记，`collectAuxShips` 只认这个池 ——
+ *  因此运输舰的收集**不依赖任何舰队容器是否存在**。 */
+export interface AuxAsset {
+  unit: any;
+  /** 归属阵营 id（真源） */
+  factionId: number;
+  /** 当前承载容器（渲染/阵位/情报）；可为 null（此时仍被收集，视觉由 syncAuxVisual 独立驱动） */
+  fleet: any;
 }
 
 export interface FleetSupplyInfo {
@@ -93,8 +121,11 @@ export interface FleetSupplyInfo {
   aux: AuxShip | null;
 }
 
-/** team 解析函数：由调用方传入（舰队本身无 team 字段，需经 factionMap 查） */
-export type TeamOf = (fleet: any) => number | undefined;
+/** team 解析函数：由调用方传入。
+ *  [A 档] 入参放宽为「舰队 **或** 阵营 id」——
+ *    · 传 fleet ⇒ 解析该舰队所属阵营（舰队本身无 team 字段，需经 factionMap 查）；
+ *    · 传 number（factionId）⇒ 直接解析阵营 —— 运输舰的归属判定走这条（不再借 `aux.fleet`）。 */
+export type TeamOf = (ref: any) => number | undefined;
 
 /**
  * v6.1：为运输舰解析当前最优母港——距其最近的己方补给源（司令部/已占星球/已占中继）。
@@ -157,7 +188,8 @@ export function updateSupplyChain(
   // 2. 运输舰状态机：loading → outbound → supplying → returning → loading …
   auxShips.forEach(aux => {
     if (!aux.unit || aux.unit.hp <= 0) return;
-    const myTeam = teamOf(aux.fleet);
+    // [A 档] 阵营归属取运输舰自身的 `factionId`（真源）；旧数据/旧调用缺该字段时回退承载容器。
+    const myTeam = aux.factionId != null ? teamOf(aux.factionId) : teamOf(aux.fleet);
     if (myTeam === undefined) return;
 
     // v6.1：每 Tick 重算最近母港（含已占中继）——中继占领后运输舰就地改挂新港
@@ -334,38 +366,45 @@ export function isSupplyUnit(u: any): boolean {
   return u?.classType === 'supply' || u?.classType === '补给';
 }
 
-/** 从所有舰队中收集运输舰，初始化/复用 AuxShip 结构（独立往返制）。
- *  @param prev 上一轮的 unit → AuxShip 映射：包装对象每 Tick 重建，但坐标/货量/状态
- *              按 unit 引用跨 Tick 保留（独立航行的连续性依赖于此）
- *  @param homeOf 舰队 → 初始母港（补给源）坐标（仅新建时使用；后续由 resolveAuxHome 每 Tick 重算） */
+/** [B 档] 从**基地侧资产池**收集运输舰，初始化/复用 AuxShip 结构（独立往返制）。
+ *  ⚠ 入参是 `AuxAsset[]`（以 unit 为主体的池）而**不是舰队列表** —— 这是 B 档的核心：
+ *    运输舰的收集/存活**不依赖任何舰队容器**（母队被拆/并/歼都不影响）。
+ *
+ *  @param assets 基地侧资产池（BattleScene 维护：编制侧登记 ∪ 上一次池内容，见 collectAuxAssets）
+ *  @param homeOf 阵营 id → 初始母港（补给源）坐标（仅新建时使用；后续由 resolveAuxHome 每 Tick 重算）
+ *  @param prev  上一轮的 unit → AuxShip 映射：包装对象每 Tick 重建，但坐标/货量/状态
+ *               按 unit 引用跨 Tick 保留（独立航行的连续性依赖于此）
+ */
 export function collectAuxShips(
-  fleets: any[],
-  homeOf?: (fleet: any) => { x: number; y: number } | null,
+  assets: AuxAsset[],
+  homeOf?: (factionId: number) => { x: number; y: number } | null,
   prev?: Map<any, AuxShip>,
 ): AuxShip[] {
   const out: AuxShip[] = [];
-  fleets.forEach(fl => {
-    const home = homeOf ? homeOf(fl) : null;
-    fl.units?.forEach((u: any) => {
-      if (!isSupplyUnit(u) || u.hp <= 0) return;
-      const old = prev?.get(u);
-      if (old) {
-        // 母队引用可能随舰队容器重建而变化，刷新引用。
-        // R10-A1/B6：**不再每 Tick 用 homeOf(castlePos) 覆写母港**——母港由 resolveAuxHome
-        //   （:151-152）带 120px 换港迟滞维护；此处的覆写会让迟滞失去"上一次母港"参照，
-        //   使"就近装货/改挂已占中继"的防抖保护实际失效（运输舰在两源间抖动）。
-        old.fleet = fl;
-        out.push(old);
-      } else {
-        // 新运输舰：泊在母港，空载装货（装满后才出航 → 天然的首航延迟）
-        out.push({
-          unit: u, fleet: fl,
-          x: home?.x ?? fl.x, y: home?.y ?? fl.y,
-          heading: 0, cargo: 0, state: 'loading', targetFleet: null,
-          homeX: home?.x ?? fl.x, homeY: home?.y ?? fl.y,
-        });
-      }
-    });
+  assets.forEach(a => {
+    const u = a.unit;
+    if (!u || !isSupplyUnit(u) || u.hp <= 0) return;
+    const factionId = a.factionId;
+    const home = homeOf ? homeOf(factionId) : null;
+    const old = prev?.get(u);
+    if (old) {
+      // [A 档] 归属阵营是**真源**：每 Tick 校正（阵营不会变，但保证首次由旧结构升上来时有值）。
+      old.factionId = factionId;
+      // 承载容器引用可能随舰队重建/后勤支队转移而变化 → 刷新引用（**仅供渲染/情报**，不参与归属判定）。
+      // R10-A1/B6：**不再每 Tick 用 homeOf(castlePos) 覆写母港**——母港由 resolveAuxHome
+      //   （:151-152）带 120px 换港迟滞维护；此处的覆写会让迟滞失去"上一次母港"参照，
+      //   使"就近装货/改挂已占中继"的防抖保护实际失效（运输舰在两源间抖动）。
+      old.fleet = a.fleet;
+      out.push(old);
+    } else {
+      // 新运输舰：泊在母港，空载装货（装满后才出航 → 天然的首航延迟）
+      out.push({
+        unit: u, factionId, fleet: a.fleet,
+        x: home?.x ?? a.fleet?.x ?? 0, y: home?.y ?? a.fleet?.y ?? 0,
+        heading: 0, cargo: 0, state: 'loading', targetFleet: null,
+        homeX: home?.x ?? a.fleet?.x ?? 0, homeY: home?.y ?? a.fleet?.y ?? 0,
+      });
+    }
   });
   return out;
 }

@@ -264,5 +264,69 @@ console.log('\n=== [P2 acceptance] slot settle drift (0.3 spacing budget) ===');
     drift3s < BUDGET, `drift3s=${drift3s.toFixed(3)}px, budget=${BUDGET}px, longRun=${driftLong.toFixed(3)}px`);
 }
 
+console.log('\n=== [A/B 档] 运输舰归属基地：基地侧资产池 + factionId 归属真源 ===');
+{
+  // ── ① 收集**只认资产池**：容器（fleet）缺失也必须照收 ──
+  //   旧实现是「扫舰队 → 取 units 里的运输舰」，母队被歼/被移出 globalFleets 后收集为 0
+  //   ⇒ 运输舰随母队消失。新实现消费 AuxAsset[]，容器只是承载引用。
+  const orphan = { hp: 100, classType: '补给', sprite: { x: 0, y: 0 } };
+  const dead = { hp: 0, classType: '补给' };
+  const pooled = S.collectAuxShips(
+    [{ unit: orphan, factionId: 7, fleet: null }, { unit: dead, factionId: 7, fleet: null }],
+    (fid) => (fid === 7 ? { x: 500, y: 400 } : null),
+  );
+  check('asset pool: a transport with NO fleet container is still collected (survival decoupled from fleet)',
+    pooled.length === 1 && pooled[0].unit === orphan, `n=${pooled.length}`);
+  check('asset pool: factionId (ownership truth) is carried onto AuxShip',
+    pooled[0] && pooled[0].factionId === 7, `factionId=${pooled[0] && pooled[0].factionId}`);
+  check('asset pool: new transport spawns at its faction home port (homeOf(factionId))',
+    pooled[0] && pooled[0].homeX === 500 && pooled[0].homeY === 400,
+    `home=(${pooled[0] && pooled[0].homeX},${pooled[0] && pooled[0].homeY})`);
+  check('asset pool: destroyed transports are dropped', pooled.every((a) => a.unit.hp > 0));
+
+  // ── ② 跨 Tick 连续 + 容器可换（归属与坐标都不跟容器走）──
+  const prev = new Map();
+  prev.set(orphan, pooled[0]);
+  pooled[0].x = 123; pooled[0].heading = 0.77; pooled[0].cargo = 42;
+  const host2 = { factionId: 7 };
+  const again = S.collectAuxShips([{ unit: orphan, factionId: 7, fleet: host2 }], () => null, prev);
+  check('asset pool: state/coord/cargo survive a Tick and a container swap (fleet ref refreshed only)',
+    again.length === 1 && again[0] === pooled[0] && again[0].fleet === host2
+    && again[0].x === 123 && again[0].cargo === 42 && again[0].factionId === 7,
+    `x=${again[0].x}, cargo=${again[0].cargo}, fleetSwapped=${again[0].fleet === host2}`);
+
+  // ── ③ 反例自检：旧「扫舰队」收集在容器缺失时必须收不到 ──
+  const legacyCollect = (fleets) => {
+    const out = [];
+    fleets.forEach((fl) => { fl.units.forEach((u) => { if (u.classType === '补给' && u.hp > 0) out.push(u); }); });
+    return out;
+  };
+  check('counterexample: the legacy fleet-scanning collect returns 0 once the container is gone',
+    legacyCollect([]).length === 0 && legacyCollect([{ units: [] }]).length === 0);
+
+  // ── ④ 阵营归属判定必须走 factionId，而不是承载容器 ──
+  //   场景：运输舰被"重新承载"到一支**敌方）容器**（模拟后勤支队/换容器）；
+  //   归属队仍是 factionId=11 的 team 1 ⇒ 应正常认领 team 1 的缺补舰队。
+  const tf = { factionId: 11, x: 1000, y: 0, units: [{ supply: 10 }] };
+  const teamOf = (ref) => (typeof ref === 'number' ? (ref === 11 ? 1 : 2) : (ref && ref.factionId === 11 ? 1 : 2));
+  const mk = (factionId) => ({
+    unit: { hp: 100, classType: '补给' }, factionId,
+    fleet: { factionId: 99 },   // ← 承载容器属于敌对阵营（team 2）
+    x: 0, y: 0, heading: 0, cargo: 100, state: 'outbound', targetFleet: null, homeX: 0, homeY: 0,
+  });
+  const sources = [{ x: 0, y: 0, team: 1, kind: 'castle' }];
+  const own = mk(11);
+  S.updateSupplyChain([tf], sources, [own], 1, teamOf);
+  check('ownership: aux resolves its team from factionId, not from the hosting fleet container',
+    own.targetFleet === tf && own.state !== 'returning',
+    `targetFleet=${own.targetFleet === tf}, state=${own.state}`);
+  // 反例对照：去掉 factionId ⇒ 回退承载容器（team 2）⇒ **认领不到** team 1 的缺补舰队
+  const bad = mk(undefined);
+  S.updateSupplyChain([tf], sources, [bad], 1, teamOf);
+  check('counterexample: without factionId the container-derived team misses the friendly target',
+    bad.targetFleet === null && bad.state === 'returning',
+    `targetFleet=${bad.targetFleet}, state=${bad.state}`);
+}
+
 console.log(`\n${passed + failed} assertions: ${passed} passed / ${failed} failed`);
 process.exitCode = failed === 0 ? 0 : 1;

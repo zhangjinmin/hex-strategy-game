@@ -21,7 +21,7 @@ import { createBandwidthState, updateBandwidthState, getLinkStatus, hasChannel, 
 import { commandBridge } from '../../services/CommandBridge';
 // 3D 战场覆盖层特效桥：只推送事件，2D 特效代码零改动（3D 模式下 2D 层被隐藏）
 import { pushFx3d } from '../battle3dFx';
-import { updateSupplyChain, collectAuxShips, moveAuxShips, syncAuxVisual, isSupplyUnit, SUPPLY_SOURCE_RADIUS, SUPPLY_RELAY_RADIUS, SUPPLY_AUX_RADIUS, type SupplyNode, type FleetSupplyInfo } from '../SupplyChainSystem';
+import { updateSupplyChain, collectAuxShips, moveAuxShips, syncAuxVisual, isSupplyUnit, SUPPLY_SOURCE_RADIUS, SUPPLY_RELAY_RADIUS, SUPPLY_AUX_RADIUS, type SupplyNode, type FleetSupplyInfo, type AuxAsset } from '../SupplyChainSystem';
 import { advanceFormationFacing, headingDistance, leadInterceptPoint, stepShipSlotFollow, UNIT_MOTION_LIMITS, UNIT_VIS_TURN_RATE } from '../fleetKinematics';
 import { pickShip, type ShipTargetCandidate } from '../clusterAI';
 import { buildFocusTable, type FocusEntry } from '../fireCoordinator';
@@ -596,6 +596,11 @@ export class BattleScene extends Phaser.Scene {
         this.scoutRuntimeSeq = 1;
         this.intelArchive = createIntelArchive();
         this.destroyedFleetIds.clear();
+        // [B 档] 基地侧运输舰资产池是**收集来源**，跨局残留会产出"上一场的幽灵运输舰"
+        //   （它们的 hp 仍 > 0 ⇒ 会被当作存活资产收集）。必须在战斗重置时一并清空。
+        this.auxAssetPool = [];
+        this.auxPrevByUnit.clear();
+        this.auxShips = [];
         this.electronicDecoys = [];
         this.battleResolutionStarted = false;
         this.commandCollapsed = false;
@@ -1395,14 +1400,15 @@ export class BattleScene extends Phaser.Scene {
      *   边界：不改运动学、不改数值；复用既有任务执行通道。
      */
     private planFactionBattle(aiFac: any) {
+        // [B 档] 后勤支队（仅剩运输舰）不构成战斗编制 ⇒ 不进 AI 编成/兵力排序
         const fleets = this.globalFleets.filter((fl: any) =>
-            fl.factionId === aiFac.id && fl.units && fl.units.length > 0);
+            fl.factionId === aiFac.id && fl.units && fl.units.length > 0 && !this.isLogisticsOnly(fl));
         if (fleets.length === 0) return;
         const myTeam = this.factionMap.get(aiFac.id)?.team;
         const enemyFleets = this.globalFleets.filter((fl: any) => {
             const ef = this.factionMap.get(fl.factionId);
             const known = getKnownContact(this.intelArchive, myTeam, fl.id);
-            return ef && ef.team !== myTeam && fl.units && fl.units.length > 0
+            return ef && ef.team !== myTeam && fl.units && fl.units.length > 0 && !this.isLogisticsOnly(fl)
                 && !!known && known.reliable !== false;
         });
         // [v31-A] 与战略层**统一口径**：性格判定**优先读提督标签**。
@@ -1960,10 +1966,14 @@ export class BattleScene extends Phaser.Scene {
     private static readonly SUPPLY_BASE_RADIUS = 420;
 
     // ===== 补给链（后勤战）=====
-    /** 运输舰列表（每帧从存活舰队收集） */
+    /** 运输舰列表（每逻辑 Tick 从**基地侧资产池**收集，不再从舰队容器收集 —— 见 collectAuxAssets） */
     private auxShips: any[] = [];
     /** v3 独立往返：unit → AuxShip 跨 Tick 持久化（坐标/货量/状态不因每 Tick 重建而丢失） */
     private auxPrevByUnit: Map<any, any> = new Map();
+    /** [B 档] 基地侧运输舰资产池（上一次 Tick 的快照）。
+     *  作用：`collectAuxAssets` = 「编制侧扫描 ∪ 本池」——即使某帧临时找不到承载容器
+     *  （舰队被拆/并/移出 globalFleets），运输舰仍留在池里被继续收集/推进 ⇒ **存活不依赖舰队容器**。 */
+    private auxAssetPool: AuxAsset[] = [];
     /** 各舰队补给状态：fleet → FleetSupplyInfo */
     private supplyInfo: Map<any, any> = new Map();
     /** 补给链可视化图层（指挥制/2D 通用，画补给圈与链路） */
@@ -2068,14 +2078,51 @@ export class BattleScene extends Phaser.Scene {
         return best;
     }
 
+    /**
+     * [B 档] 采集**基地侧运输舰资产池**（unit 为主体，与舰队容器解耦）。
+     *  = 「编制侧扫描」∪「上一次池内容」：
+     *    · 编制侧扫描：运输舰当前挂在某支舰队（含 `_logisticsOnly` 后勤支队）里 ⇒ 登记其容器引用；
+     *    · ∪ 上一次池：某帧容器临时缺失（被拆/并/换容器）时，运输舰不会从池里掉出去。
+     *  ⇒ `collectAuxShips` 只认这个池，因此**收集与存活都不依赖舰队容器是否存在**。
+     */
+    private collectAuxAssets(): AuxAsset[] {
+        const out: AuxAsset[] = [];
+        const seen = new Set<any>();
+        const push = (fl: any) => {
+            if (!fl) return;
+            for (const u of (fl.units as any[]) || []) {
+                if (!isSupplyUnit(u) || u.hp <= 0 || seen.has(u)) continue;
+                seen.add(u);
+                out.push({ unit: u, factionId: fl.factionId, fleet: fl });
+            }
+        };
+        this.globalFleets.forEach(push);
+        // ∪ 上一池：容器已不在编制里的运输舰（承载引用保留在池项上）
+        for (const a of this.auxAssetPool) {
+            if (!a.unit || a.unit.hp <= 0 || seen.has(a.unit)) continue;
+            seen.add(a.unit);
+            out.push(a);
+        }
+        this.auxAssetPool = out;
+        return out;
+    }
+
+    /** [B 档] 「后勤支队」：编队已无战斗舰、仅剩运输舰 —— 不构成战斗编制，
+     *  不参与舰队级统计/AI/标记/阵型；运输舰（后勤）继续独立存在。 */
+    private isLogisticsOnly(fl: any): boolean { return !!fl?._logisticsOnly; }
+
+    /** [B 档] 编队内是否仍有**存活**运输舰（用于决定"战损后是否保留编队容器"）。 */
+    private hasLivingAux(fl: any): boolean {
+        return !!fl?.units?.some((u: any) => isSupplyUnit(u) && u.hp > 0);
+    }
+
     private processSupplyAndCapture() {
         // ===== 补给链驱动（运输舰 AI + 补给状态计算）=====
         // v3 独立往返制：运输舰从补给源出发 → 前出补给 → 返航装货（不再跟随舰队）。
+        // [B 档] 收集源改为**基地侧资产池**（collectAuxAssets）；母港按**阵营 id** 解析。
         // prevByUnit 跨 Tick 保留坐标/货量/状态（包装对象每 Tick 重建，unit 引用稳定）。
-        const homeOf = (fl: any) => this.store.factions.find((f: any) => f.id === fl.factionId)?.castlePos ?? null;
-        this.auxShips = collectAuxShips(
-            this.globalFleets.filter(f => f.units && f.units.length > 0),
-            homeOf, this.auxPrevByUnit);
+        const homeOf = (factionId: number) => this.factionMap.get(factionId)?.castlePos ?? null;
+        this.auxShips = collectAuxShips(this.collectAuxAssets(), homeOf, this.auxPrevByUnit);
         // 刷新跨 Tick 持久化映射（仅存活运输舰）
         this.auxPrevByUnit.clear();
         this.auxShips.forEach((aux: any) => { if (aux.unit) this.auxPrevByUnit.set(aux.unit, aux); });
@@ -2089,14 +2136,21 @@ export class BattleScene extends Phaser.Scene {
             const tf = this.factionMap.get(t.ownerId);
             if (tf) srcNodes.push({ x: t.x, y: t.y, team: tf.team, kind: t.type });
         });
-        const teamOf = (fl: any) => this.factionMap.get(fl.factionId)?.team;
+        // [A 档] teamOf 入参放宽为「舰队 **或** 阵营 id」：运输舰走 id（真源），舰队走对象。
+        const teamOf = (ref: any) =>
+            typeof ref === 'number' ? this.factionMap.get(ref)?.team : this.factionMap.get(ref?.factionId)?.team;
+        // [B 档] 后勤支队不参与"舰队补给状态"统计（它的 x/y 是陈旧编队锚点，且不含战斗单位）
+        const combatFleets = this.globalFleets.filter(f => f.units && f.units.length > 0 && !this.isLogisticsOnly(f));
         this.supplyInfo = updateSupplyChain(
-            this.globalFleets.filter(f => f.units && f.units.length > 0),
+            combatFleets,
             srcNodes, this.auxShips, this.store.currentSpeedFactor || 1, teamOf);
 
         this.globalFleets.forEach(fl => {
             const fac = this.factionMap.get(fl.factionId);
             if (!fac || fl.units.length === 0) return;
+            // [B 档] 后勤支队没有战斗编制，且 `fl.x/y`（编队锚点）已陈旧 ⇒ 不参与
+            //   补给判定/地块攻占/星球占领等"编队级"动作（运输舰自身由补给链驱动）。
+            if (this.isLogisticsOnly(fl)) return;
 
             // 补给判定基准必须使用旗舰的物理坐标，而非舰队虚拟阵型锚点
             // [W2] 旗舰=持久身份 isFlagship（placeFlagshipAtRear 后 units[0] 不再是旗舰）
@@ -2349,7 +2403,7 @@ export class BattleScene extends Phaser.Scene {
      *  新顺序：选舰队 → 无舰队守卫 → 门控三分支 → 各分支动作；被拒时**不建视觉**（旧信标天然保留）。 */
     private deployFlare(x: number, y: number, factionId: number) {
         // ── 玩家专属命令：只允许发给已选中的己方舰队 ──
-        const myFleets = this.globalFleets.filter(fl => fl.factionId === factionId && fl.units?.length > 0);
+        const myFleets = this.globalFleets.filter(fl => fl.factionId === factionId && fl.units?.length > 0 && !this.isLogisticsOnly(fl));
         const nearest: any = this.battleSelectedFleetId == null ? null
             : myFleets.find((fl: any) => fl.id === this.battleSelectedFleetId) ?? null;
 
@@ -3875,7 +3929,8 @@ export class BattleScene extends Phaser.Scene {
     private checkBattleStage() {
         if (this.store.gameOver || this.store.isPaused) return;
         const pFac = this.store.factions.find((f: any) => f.type === 'player');
-        const pFleet = this.globalFleets.find((f: any) => f.factionId === pFac?.id);
+        // [B 档] 玩家代表编队取**战斗编队**（排除后勤支队）
+        const pFleet = this.globalFleets.find((f: any) => f.factionId === pFac?.id && !this.isLogisticsOnly(f));
         if (!pFac || !pFleet || pFleet.units.length === 0) return;
 
         const myTeam = pFac.team;
@@ -3898,7 +3953,9 @@ export class BattleScene extends Phaser.Scene {
             if (info.inSupply) enemyFleetsInSupply++;
         });
         this.auxShips.forEach((aux: any) => {
-            const tf = this.factionMap.get(aux.fleet?.factionId);
+            // [A/B 档] 归属取 `aux.factionId`（真源）——**不再借 `aux.fleet`**：母队被歼后
+            //   `fleet` 指向后勤支队容器（或缺失），但它与"这是谁家的运输舰"无关。
+            const tf = this.factionMap.get(aux.factionId);
             const playerTeam = this.factionMap.get(this.store.factions.find((f: any) => f.isPlayer)?.id ?? -1)?.team;
             if (!tf || tf.team === playerTeam) return;
             enemyAuxTotal++;
@@ -3931,7 +3988,8 @@ export class BattleScene extends Phaser.Scene {
     private updateScriptPhase() {
         if (this.store.gameOver || this.store.isPaused || this.deployPhase) return;
         const pFac = this.store.factions.find((f: any) => f.type === 'player');
-        const pFleet = this.globalFleets.find((f: any) => f.factionId === pFac?.id);
+        // [B 档] 玩家代表编队取**战斗编队**（排除后勤支队：它没有战斗单位/锚点是陈旧的）
+        const pFleet = this.globalFleets.find((f: any) => f.factionId === pFac?.id && !this.isLogisticsOnly(f));
         if (!pFac || !pFleet || pFleet.units.length === 0) return;
 
         // 统计双方总HP
@@ -4966,7 +5024,9 @@ export class BattleScene extends Phaser.Scene {
      * 规则：
      *   · 第 0 路（通常是 `main`）**留在母队**（不新建对象）—— 旗舰与指挥链不动；
      *   · 其余各路各建一个子编队（新 `id` / 新 `displayId` / 继承 `commanderId`）；
-     *   · 实体按 `splitUnitCounts` 切分；**运输舰留在母队**（走既有补给链，不参与拆分）；
+     *   · 实体按 `splitUnitCounts` 切分；**运输舰不参与拆分**（它不属任何舰队的战斗编制，
+     *     归属在**基地侧资产池** `AuxAsset`，见 SupplyChainSystem 头部注释 ⇒ 拆/并都不影响它）；
+     *     物理上它暂留在母队容器里（渲染/情报承载），母队被歼时由 B 档转为后勤支队独立存活。
      *   · 子编队的 `formationSlot` **必须重编号**（否则阵位枚举错位 ⇒ 单位瞬移）；
      *   · 初始位置 = 母队位置 + `lateral × DETACH_SPACING`，随后由战法航路牵引。
      *
@@ -4976,6 +5036,8 @@ export class BattleScene extends Phaser.Scene {
      */
     private splitFleet(parent: any, specs: DetachmentSpec[]): any[] {
         if (!parent || !parent.units || !specs || specs.length < 2) return [];
+        // [A/B 档] 运输舰**不属于舰队战斗编制**（归属基地侧资产池）⇒ 拆分完全不计入它：
+        //   既不出现在战斗舰切片里，也不会被划到子编队（否则会出现"同一艘运输舰被两队引用"）。
         const isSup = (u: any) => u.classType === '补给' || u.classType === 'supply';
         const combat = parent.units.filter((u: any) => !isSup(u));
         if (combat.length < specs.length) return [];   // 兵力不足以拆分
@@ -5055,7 +5117,8 @@ export class BattleScene extends Phaser.Scene {
         // ① 敌方运输舰（正在往返补给的补给链）
         for (const a of this.auxShips) {
             if (!a.unit || a.unit.hp <= 0) continue;
-            const af = this.factionMap.get(a.fleet?.factionId);
+            // [A/B 档] 归属取 `a.factionId`（真源），不借 `a.fleet`
+            const af = this.factionMap.get(a.factionId);
             if (!af || af.team === myTeam) continue;
             const d = Phaser.Math.Distance.Between(fleet.x, fleet.y, a.x, a.y);
             if (d < bestD) { bestD = d; best = { x: a.x, y: a.y }; }
@@ -5096,10 +5159,10 @@ export class BattleScene extends Phaser.Scene {
             maxRoutes: maxRoutesFor(myFleets.map((f: any) => f.units?.length ?? 0)),
             forceRatio: ePower > 0 ? myPower / ePower : 999,
             enemySupplyPresent: this.auxShips.some((a: any) => {
-                const af = this.factionMap.get(a.fleet?.factionId);
+                const af = this.factionMap.get(a.factionId);
                 return !!af && af.team !== myTeam;
             }),
-            ownSupplyPresent: this.auxShips.some((a: any) => a.fleet?.factionId === fac.id),
+            ownSupplyPresent: this.auxShips.some((a: any) => a.factionId === fac.id),
         });
 
         const need = requiredFleets(maneuver);
@@ -5188,10 +5251,11 @@ export class BattleScene extends Phaser.Scene {
         // [v32] 可编成路数 = **被点的这一支**能拆出几路（分兵是对这一支的操作，不看该阵营其它舰队）
         const routes = maxRoutesFor([fleet.units?.length ?? 0]);
         if (!maneuver || requiredFleets(maneuver) <= 1) {
-            const myFleets = this.globalFleets.filter((f: any) => f.factionId === fac.id && f.units?.length > 0);
+            // [B 档] 后勤支队不参与战法编成/兵力比（它没有战斗编制）
+            const myFleets = this.globalFleets.filter((f: any) => f.factionId === fac.id && f.units?.length > 0 && !this.isLogisticsOnly(f));
             const enemyFleets = this.globalFleets.filter((f: any) => {
                 const ef = this.factionMap.get(f.factionId);
-                return !!ef && ef.team !== fac.team && f.units?.length > 0;
+                return !!ef && ef.team !== fac.team && f.units?.length > 0 && !this.isLogisticsOnly(f);
             });
             const myPower = myFleets.reduce((s: number, f: any) => s + this.calculateFleetPower(f), 0);
             const ePower = enemyFleets.reduce((s: number, f: any) => s + this.calculateFleetPower(f), 0);
@@ -5202,10 +5266,10 @@ export class BattleScene extends Phaser.Scene {
                 // [v32 修] 原先恒为 false ⇒ 「后勤猎杀」「补给护航」在玩家侧**永远不可行**
                 //   （`feasible('raid')` 要求敌方有补给在场）⇒ 重后勤提督点分兵也只会退化到正面突击。
                 enemySupplyPresent: this.auxShips.some((a: any) => {
-                    const af = this.factionMap.get(a.fleet?.factionId);
+                    const af = this.factionMap.get(a.factionId);
                     return !!af && af.team !== fac.team;
                 }),
-                ownSupplyPresent: this.auxShips.some((a: any) => a.fleet?.factionId === fac.id),
+                ownSupplyPresent: this.auxShips.some((a: any) => a.factionId === fac.id),
             });
             // [v32] 玩家**主动**分兵时，教范若给单路战法而兵力足够多路 ⇒ 升到通用多路战法（一翼迂回）。
             //   理由：玩家点"分兵"这个动作本身就是在要求多路 ⇒ 玩家意图优先于教范（否则按钮被性格挡死）。
@@ -5308,6 +5372,13 @@ export class BattleScene extends Phaser.Scene {
      *  槽位全队重排 + 旗舰回后方指挥席；无母队（已被歼灭）时就地解散。 */
     private rejoinDetachment(kid: any, parent: any, reason: 'timeout' | 'attrition' | 'objective_done') {
         if (parent && parent.units) {
+            // [B 档] 母队此前已战损（转为"后勤支队"）而此刻分队归队 ⇒ **恢复了战斗编制**：
+            //   必须摘掉 `_logisticsOnly`（否则归队后的战斗舰会被舰队级逻辑/AI/标记全部忽略），
+            //   并复位 `_lossSettled`（否则它再次被歼时不再结账 ⇒ 阵营永远不失活、战斗不结束）。
+            if ((parent as any)._logisticsOnly) {
+                (parent as any)._logisticsOnly = false;
+                (parent as any)._lossSettled = false;
+            }
             parent.units.push(...kid.units);
             // [v66] 槽位重排必须与部署期口径一致（对照 splitFleet :4206 的母队重建）：
             //   ① 运输舰 formationSlot = -1 不占阵位号（旧实现按数组下标全量编号，运输舰也占号）；
@@ -5831,6 +5902,8 @@ export class BattleScene extends Phaser.Scene {
     /** 计算舰队战斗力（HP × DPS 估值） */
     private calculateFleetPower(fleet: any): number {
         if (!fleet || !fleet.units) return 0;
+        // [B 档] 后勤支队无战斗编制 ⇒ 兵力计 0（不影响各方兵力比）
+        if (this.isLogisticsOnly(fleet)) return 0;
         let total = 0;
         fleet.units.forEach((u: any) => {
             const effectiveHp = Math.max(0, u.hp);
@@ -6236,16 +6309,39 @@ export class BattleScene extends Phaser.Scene {
             // 后勤舰不构成战斗编制；最后一艘战斗舰沉没即视为该舰队失能，
             // 不要求玩家继续击沉补给运输舰才能结束战斗。
             if (!hasCombatUnits(fleet)) {
-                this.destroyedFleetIds.add(fleet.id);   // [W1] 追踪档案 destroyed 判据（direct attack 收口）
-                const fac = this.factionMap.get(fleet.factionId);
-                if (fac) {
-                    // ── 舰队全灭：提督诀别台词（isDefeat=true 固定坐标气泡）──
-                    this.showFleetDialogue({ ...fleet, factionId: fleet.factionId, x: fleet.x, y: fleet.y }, 'defeat', true);
-                    if (shouldDeactivateFactionAfterFleetLoss(this.globalFleets, fleet.factionId, fleet.id)) {
-                        fac.active = false;
+                // 战损账（台词 / 追踪档案 / 阵营失活）**只结一次** ——
+                // [B 档] 下面会保留"仍有存活运输舰"的编队容器（转后勤支队），故必须显式防重入。
+                if (!(fleet as any)._lossSettled) {
+                    (fleet as any)._lossSettled = true;
+                    this.destroyedFleetIds.add(fleet.id);   // [W1] 追踪档案 destroyed 判据（direct attack 收口）
+                    const fac = this.factionMap.get(fleet.factionId);
+                    if (fac) {
+                        // ── 舰队全灭：提督诀别台词（isDefeat=true 固定坐标气泡）──
+                        this.showFleetDialogue({ ...fleet, factionId: fleet.factionId, x: fleet.x, y: fleet.y }, 'defeat', true);
+                        if (shouldDeactivateFactionAfterFleetLoss(this.globalFleets, fleet.factionId, fleet.id)) {
+                            fac.active = false;
+                        }
+                        // 【待改6】此处不再判定 gameOver——胜负统一由 checkGameEnd 按 team 计算，
+                        // 消除"filter 按 team 置 gameOver → checkGameEnd 提前 return → 演习战损率奖励被跳过"的双轨矛盾。
                     }
-                    // 【待改6】此处不再判定 gameOver——胜负统一由 checkGameEnd 按 team 计算，
-                    // 消除"filter 按 team 置 gameOver → checkGameEnd 提前 return → 演习战损率奖励被跳过"的双轨矛盾。
+                }
+                // ★ [B 档] 编队尚有存活运输舰 ⇒ 不整队移除，转为「后勤支队」（`_logisticsOnly`）：
+                //   运输舰因此**独立于原舰队容器存活**，继续返航/装货/再出航（"舰队被歼后仍存活"）。
+                //   ⚠ 阵营失活判定**不受影响**：后勤舰不构成战斗编制（hasLivingCombatUnit 口径），
+                //     故该侧若无其它战斗舰队仍会 fac.active=false ⇒ 下一帧按既有"战败清场"清除残余。
+                //   ⚠ 该容器在舰队级统计/AI/标记/阵型处一律按 `_logisticsOnly` 排除（见各处守卫）。
+                if (this.hasLivingAux(fleet)) {
+                    (fleet as any)._logisticsOnly = true;
+                    // 编队级指令/战法一律清空：后勤支队不再受命、不再参与战法编成与分兵；
+                    // 姿态压到 defend（运输舰本身由补给链 AI 驱动，编队姿态仅作情报/渲染承载）。
+                    fleet.mission = null;
+                    (fleet as any).targetFlare = null;
+                    (fleet as any)._maneuver = 'hold';
+                    (fleet as any)._maneuverCommitted = false;
+                    (fleet as any)._maneuverRole = null;
+                    (fleet as any)._maneuverIntent = '';
+                    fleet.stance = 'defend';
+                    return true;
                 }
                 return false;
             }
@@ -6316,7 +6412,10 @@ export class BattleScene extends Phaser.Scene {
             // 视野内敌人按距离分级：近(<50%视野)=完全可见，中(50-80%)=识别类型，远(80-100%)=模糊
             let visibleEnemies: { ef: any; dist: number; clarity: 'full' | 'partial' | 'fuzzy' }[] = [];
             this.globalFleets.forEach(ef => {
-                if (hasCombatUnits(ef)) {
+                // [B 档] 可交战判据放宽到"仍有存活运输舰"：母队被歼后运输舰转为后勤支队，
+                //   若仍按 hasCombatUnits 过滤 ⇒ 它既不被看见也打不着 ⇒ 运输舰变成无敌，
+                //   **"切断补给链"这一核心玩法会被破坏**。故后勤支队仍是合法火力目标。
+                if (hasCombatUnits(ef) || this.hasLivingAux(ef)) {
                     const efFac = this.factionMap.get(ef.factionId);
                     if (efFac && efFac.team !== myFac.team && efFac.active) {
                         const d = Phaser.Math.Distance.Between(fleet.x, fleet.y, ef.x, ef.y);

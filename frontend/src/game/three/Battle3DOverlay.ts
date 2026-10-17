@@ -204,6 +204,22 @@ const FLAGSHIP_DOT_GAIN = 2.4;
 const FLAGSHIP_RING_K = 1.35;
 /** 指挥光环自转角速度（弧度/秒）——慢转，读作"指挥中"而不是特效刷屏 */
 const FLAGSHIP_RING_SPIN = 0.55;
+/** ==================== [任务3] 补给舰「舰首可读性」标记 ====================
+ *  背景（实机取证，_probe_auxtop.mjs + _glb_shape_audit.py）：
+ *    · 数学朝向**正确**（`mesh.rotation.y == yaw(visHeading)`、航迹与舰首同向，偏差 < 0.01°）；
+ *    · 但 **帝国补给舰 `empire_supply.glb` 俯视下近乎方形盒**（原始包围盒 X=0.868 / Z=0.910
+ *      ⇒ 长宽比 0.95，等效于没有可读长轴；Z 分桶截面全程 ~0.80，无收缩端）
+ *      ⇒ 玩家在 3D 俯视里**看不出它朝哪**，把"看不出舰首"读成「横着飞」。
+ *  方案（不引入任何新模型；纯几何/材质层标记，与本工程"线条化舰体"语言一致）：
+ *    · 舰首甲板画一枚**双人字箭标**（两条细线折线，指向局部 -Z = 舰首）+ 一枚**舰首实心箭头带**
+ *    · 全部是 ship group 的**子对象** ⇒ 位置/朝向/缩放/销毁随舰体自动同步（不存在"无主体特效"）；
+ *      材质透明度再按 LOD `grow` 同步淡入淡出（见 syncShips 第三遍）。
+ *  回退：把本常量改 false，或运行时 `window.__auxBowMarker = false`（一键回退，零其它改动）。
+ *  ==================================================================== */
+export const AUX_BOW_MARKER_ENABLED = true;
+/** 箭标颜色（与补给圈/补给连线同色系 = 后勤橙；提亮后保证在深空底上可读） */
+const AUX_BOW_MARK_0 = 0xffb066;
+const AUX_BOW_MARK_1 = 0xff7a1a;
 /** 复用的纯白（旗舰点/光环的提亮端），避免逐帧 new Color */
 const WHITE = new THREE.Color(0xffffff);
 const BOAT_OUT = 1.15;
@@ -280,6 +296,9 @@ interface ShipEntry {
   /** [切片传送入场 v2] 本舰所属**舰队的门**的 5 个裁剪平面（**同队共享同一数组实例**：
    *  1 个推进面 + 上下左右 4 个侧面 = 无限长方柱）。入场结束置空。 */
   entryPlanes?: THREE.Plane[];
+  /** [任务3] 补给舰舰首标记（双人字箭标 + 舰首箭头带；挂 ship group 下随舰体缩放/销毁）。
+   *  透明度每帧按 LOD `grow` 同步（见 syncShips 第三遍）⇒ 与光点/实体淡化同源。 */
+  bowMarker?: THREE.Group;
 }
 
 /**
@@ -3182,6 +3201,9 @@ export class Battle3DOverlay {
     for (const v of this.unitVis.values()) {
       const fl = v.fleet;
       if (!fl) continue;
+      // [B 档] 后勤支队（编队仅剩运输舰）不画舰队托盘：它没有阵位/战斗编制，
+      //   编队锚点是陈旧值 ⇒ 画出来就是一块悬空的"幽灵底框"。
+      if ((fl as any)._logisticsOnly) continue;
       const fid: number = fl.id !== undefined ? fl.id : fl.factionId;
       const a = agg.get(fid);
       if (a) {
@@ -3353,6 +3375,7 @@ export class Battle3DOverlay {
     if (reg && reg.status === 'ready' && reg.geo) {
       const built = this.buildShipFromModel(reg, d, facColor);
       built.modelVer = reg.version;
+      this.maybeAttachAuxBowMarker(built.group, cls, d);
       return built;
     }
 
@@ -3366,7 +3389,91 @@ export class Battle3DOverlay {
         ? this.buildEmpireBattleship(d, facColor)
         : this.buildGenericShip(d, facColor, classType);
     if (reg) built.pendingModel = reg;
+    // [任务3] GLB 未就绪时的程序化兜底同样挂舰首标记（换装时随重建再挂一次）
+    this.maybeAttachAuxBowMarker(built.group, cls, d);
     return built;
+  }
+
+  /** [任务3] 补给舰舰首标记挂载（见 `AUX_BOW_MARKER_ENABLED` 的推导注释）。
+   *  ⚠ 只作用于补给舰（`supply`）：其余舰型的朝向语义由舰队姿态统一表达，不在本次改动范围内。
+   *  ⚠ 挂成 ship group 的**子对象**：位置/朝向/缩放/销毁全部随舰体自动同步
+   *     —— 满足本工程"面片类特效必须随 LOD 淡入淡出、不得出现无主体特效"的约定。 */
+  private maybeAttachAuxBowMarker(group: THREE.Group, cls: string | null, d: { L: number; W: number; H: number }): void {
+    if (!AUX_BOW_MARKER_ENABLED) return;
+    const w: any = (typeof window !== 'undefined') ? window : undefined;
+    if (w && w.__auxBowMarker === false) return;
+    if (cls !== 'supply') return;
+    const marker = this.buildAuxBowMarker(group, d);
+    if (!marker) return;
+    group.add(marker);
+    (group.userData as any).bowMarker = marker;
+  }
+
+  /**
+   * [任务3] 补给舰舰首标记几何：**双人字箭标**（LineSegments，指向局部 -Z = 舰首）
+   *  + **舰首实心箭头带**（三角形面片，AdditiveBlending，与补给圈/链路同色系）。
+   *
+   * 为什么用"甲板上的方向箭标"而不是改模型：
+   *   · 帝国补给舰俯视轮廓近方形（原始 X=0.868 / Z=0.910，长宽比 0.95）且沿线截面无收缩端，
+   *     模型本身**没有可读的舰首长轴**；再加大模型也不解决"从上方看不出朝哪"。
+   *   · 箭标是**渲染层叠加**：不动 GLB、不动缩放入口、不动任何战斗数值，且可一键回退。
+   *
+   * ⚠ **位置必须按真实几何包围盒算，不能用 `dimsOf` 的 d**：
+   *   GLB 模型按"最长边 = L×0.96"归一化，**横截面跟随模型自身比例**——
+   *   帝国补给舰真实高 ≈ 0.50×长，而 `d.H` 只有 0.105×长 ⇒ 拿 d.H 摆标记会埋进舰体内部，
+   *   被舰体（不透明深度写入的 Phong 体）挡住 ⇒ 完全看不见（首版实测即此）。
+   */
+  private buildAuxBowMarker(group: THREE.Group, d: { L: number; W: number; H: number }): THREE.Group | null {
+    // 以**已建好的舰体子对象**求包围盒（此时标记尚未加入 ⇒ 不会被自身污染）
+    group.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(group);
+    if (box.isEmpty()) return null;
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    const L = Math.max(size.z, d.L * 0.5);
+    const W = Math.max(size.x, d.W * 0.4);
+    const halfW = Math.max(W * 0.36, L * 0.055);
+    // 摆在舰体最高面之上（略抬）⇒ 正俯视清晰可见，且不与舰体线框 z-fighting
+    const y = box.max.y + Math.max(L * 0.012, W * 0.05);
+    const zBow = box.min.z;   // 局部 -Z 端 = 舰首
+    const g = new THREE.Group();
+    // ① 双人字箭标（指向 -Z；两枚错开 ⇒ 读作"方向箭头"而不是"一条折线"）
+    const pts: number[] = [];
+    const chev = (zBack: number, zTip: number, hw: number) => {
+      pts.push(-hw, y, zBack, 0, y, zTip);
+      pts.push(hw, y, zBack, 0, y, zTip);
+    };
+    chev(zBow + L * 0.240, zBow + L * 0.120, halfW);
+    chev(zBow + L * 0.335, zBow + L * 0.215, halfW * 0.80);
+    const lineGeo = new THREE.BufferGeometry();
+    lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    const lineMat = new THREE.LineBasicMaterial({
+      color: AUX_BOW_MARK_0, transparent: true, opacity: 0.95, depthWrite: false,
+    });
+    const lines = new THREE.LineSegments(lineGeo, lineMat);
+    lines.renderOrder = 6;
+    g.add(lines);
+    // ② 舰首实心箭头带（面片；AdditiveBlending 与既有特效语言一致）
+    const triGeo = new THREE.BufferGeometry();
+    triGeo.setAttribute('position', new THREE.Float32BufferAttribute([
+      -halfW * 0.92, y, zBow + L * 0.225,
+      halfW * 0.92, y, zBow + L * 0.225,
+      0, y, zBow + L * 0.035,
+    ], 3));
+    const triMat = new THREE.MeshBasicMaterial({
+      color: AUX_BOW_MARK_1, transparent: true, opacity: 0.55,
+      side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
+    });
+    const tri = new THREE.Mesh(triGeo, triMat);
+    tri.renderOrder = 6;
+    g.add(tri);
+    // 供逐帧按 LOD grow 调透明度（材质每舰独立 ⇒ 可按舰调，不串扰）
+    g.userData.markLineMat = lineMat;
+    g.userData.markTriMat = triMat;
+    // 取证用（真机探针读它核对标记是否落在舰体之上）
+    g.name = 'auxBowMarker';
+    g.userData.markDebug = { y, L, W, halfW, zBow, hullTopY: box.max.y };
+    return g;
   }
 
   /** 通用程序化造型（无模型的舰种兜底）：三层材质 + 分件线框 */
@@ -3891,7 +3998,11 @@ export class Battle3DOverlay {
     //      "分出来的舰队漂浮在最上面一层"。真源与推导见 config/fleetTierLayout.assignFleetTiers。
     //    ⚠ 只施加在 3D 视觉层：BattleScene 的 2D 逻辑/命中/寻路保持平面，高度不参与命中判定。
     const aliveFleets: any[] = [];
-    for (const fleet of fleets) if ((fleet.units || []).length > 0) aliveFleets.push(fleet);
+    for (const fleet of fleets) {
+      // [B 档] 后勤支队不占高度档（它没有阵位，若计入档数会推移其它编队的层高）
+      if ((fleet as any)._logisticsOnly) continue;
+      if ((fleet.units || []).length > 0) aliveFleets.push(fleet);
+    }
     const fleetTierY = assignFleetTiers(aliveFleets, (f: any) => {
       const v = this.fleetVLayout(f);
       return teamGapFor(v.spacing, v.layerGap, v.maxH, v.layers);
@@ -3911,7 +4022,8 @@ export class Battle3DOverlay {
     this.flagshipSet.clear();
     for (const fleet of fleets) {
       const units = (fleet.units as any[]) || [];
-      const flagship = ((fleet as any)._scout || (fleet as any)._scoutFlight) ? null : (units.find((u: any) => u.isFlagship === true) || units[0]);
+      const flagship = ((fleet as any)._scout || (fleet as any)._scoutFlight || (fleet as any)._logisticsOnly)
+        ? null : (units.find((u: any) => u.isFlagship === true) || units[0]);
       if (flagship) this.flagshipSet.add(flagship);
     }
     for (const fleet of fleets) {
@@ -4255,6 +4367,13 @@ export class Battle3DOverlay {
       // [切片传送入场] 入场期强制 grow = 1：实体"已在场"，**光点让位**（否则远景强制建实体时
       //   会同时画出"点 + 半切舰"，正是 v79~v81 反复修掉的"点模共存"观感）。
       v.grow = this.entryActiveOf(v.key) ? 1 : sstep(this.lodLo, this.lodHi, v.fleetPx);
+      // [任务3] 舰首标记随 LOD `grow` 同步淡入淡出（与光点/光晕/实体淡化同源）——
+      //   否则中景下"舰体线框已淡出、箭标还亮着"就是本工程反复修过的"无主体特效"。
+      if (entry.bowMarker) {
+        const ud = entry.bowMarker.userData as any;
+        if (ud.markLineMat) ud.markLineMat.opacity = 0.95 * v.grow;
+        if (ud.markTriMat) ud.markTriMat.opacity = 0.55 * v.grow;
+      }
       // [v83] **引擎特效随 LOD `grow` 同步淡入**（用户实报「金色尾焰，只有尾焰没有舰船」）。
       //   根因：舰体是**线条化渲染**（Line），缩小时线宽变细直至不可见；
       //     而 `glow`（引擎暖晕，`color=0xffcc66` 琥珀金）是**面片 + AdditiveBlending**
@@ -5458,6 +5577,8 @@ export class Battle3DOverlay {
     const color = factionColor(this.getFac(u.factionId) || {});
     const units = (fleet.units as any[]) || [];
     const isFlagshipUnit = !(fleet as any)._scout && !(fleet as any)._scoutFlight
+      // [B 档] 后勤支队里 units[0] 就是运输舰 ⇒ 不得当成旗舰（否则孤零零的运输舰会戴上指挥光环）
+      && !(fleet as any)._logisticsOnly
       && u === (units.find((candidate: any) => candidate.isFlagship === true) || units[0]);
     const flagshipKey = isFlagshipUnit ? this.flagshipKeyOf(u, fleet) : null;
     const built = this.buildShip(String(u.classType || 'destroyer'), color, this.isEmpireSideOf(u), flagshipKey ?? undefined);
@@ -5495,6 +5616,8 @@ export class Battle3DOverlay {
       pendingModel: built.pendingModel, modelVer: built.modelVer ?? 0,
       isFlagship: isFlagshipUnit, flagshipKey: flagshipKey ?? undefined,
       cmdRing,
+      // [任务3] 补给舰舰首标记（挂在 group 下；透明度每帧按 grow 同步）
+      bowMarker: (built.group.userData as any).bowMarker,
       meshT: entryActive ? MESH_GROW_DUR : 0, baseScale: built.group.scale.x || 1,
       sliceMats, entryPlanes,
       // [v12.1 C2] 记录本次构建所用档位（分帧迁移据此淘汰旧档实体）
@@ -5928,6 +6051,21 @@ export class Battle3DOverlay {
     return this.isFleetIntelVisible(fleet);
   }
 
+  /** [A/B 档] **运输舰**的迷雾可见性（不借 `aux.fleet` 作归属）。
+   *    · 归属阵营取 `aux.factionId`（真源）：己方/友方恒可见；
+   *    · 敌方：情报档位取**自身承载容器**（容器由 BattleScene 每帧写 `_intelDisplayMode`）——
+   *      后勤支队同样是合法容器，故母队被歼后运输舰的情报仍正确；
+   *    · 容器缺失（极端帧）：按"未确认"处理（宁可隐藏，也不越迷雾泄漏位置）。 */
+  private isAuxIntelVisible(aux: any): boolean {
+    const fac: any = this.getFac(aux?.factionId) || {};
+    const player = ((this.store as any).factions || []).find((f: any) => f.type === 'player');
+    const playerTeam = player?.team ?? 1;
+    if (fac.team === playerTeam) return true;
+    const host = aux?.fleet;
+    if (host && typeof host === 'object') return this.isFleetIntelVisible(host);
+    return false;
+  }
+
   /** 迷雾情报：敌方 castle 标记（信标柱/模型）未发现前隐藏，正向确认后永久常驻 */
   private updateCastleIntelVisibility() {
     if (this.castleMarkers.size === 0) return;
@@ -5957,6 +6095,8 @@ export class Battle3DOverlay {
     this.unitVis.forEach((v) => {
       const fleet = v.fleet;
       if (!fleet) return;
+      // [B 档] 后勤支队不出舰队名牌：它没有战斗编制，名牌只会显示"幽灵舰队"（名字 + 运输舰 HP）
+      if ((fleet as any)._logisticsOnly) return;
       const fid = fleet.id !== undefined ? fleet.id : fleet.factionId;
       const key = `f${fid}`;
       let a = acc.get(key);
@@ -6322,7 +6462,8 @@ export class Battle3DOverlay {
     auxShips.forEach((aux: any) => {
       if (!aux?.unit || aux.unit.hp <= 0) return;
       // 敌方运输舰既是可攻击目标，也必须先被识别；补给圈和航线不能越过迷雾泄漏其位置。
-      if (!this.isFleetIntelVisible(aux.fleet)) return;
+      // [A/B 档] 归属取 `aux.factionId`（真源），**不再借 `aux.fleet`**（母队被歼后它指向后勤支队）。
+      if (!this.isAuxIntelVisible(aux)) return;
       const key = aux.unit;   // aux 包装对象每帧重建，unit 引用稳定
       seenAux.add(key);
       const ax = aux.x;       // 独立坐标（不再 fleet.x + 偏移）
@@ -6394,6 +6535,8 @@ export class Battle3DOverlay {
     const seen = new Set<any>();
     fleets.forEach((fl: any) => {
       if (!fl?.units || fl.units.length === 0) return;
+      // [B 档] 后勤支队没有任务/意图（已被清空）⇒ 不画意图线
+      if ((fl as any)._logisticsOnly) return;
       if (!this.isFleetIntelVisible(fl)) return;
       const fac = this.getFac(fl.factionId);
       if (!fac) return;
