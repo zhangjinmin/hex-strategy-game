@@ -1091,6 +1091,13 @@ onMounted(() => {
   startPolling();
   animate();
 
+  // [QA 取证] 仅 dev：把场景/相机/已摆放舰船表挂到 window，供探针（_probe_gallery.mjs）
+  //   读取"巡览里这个模型的实际变换"并与 3D 战场逐项对照。
+  //   ⚠ 生产构建（vite build）下 `import.meta.env.DEV === false` ⇒ 整段被摇掉，零运行时开销。
+  if (import.meta.env.DEV) {
+    (window as any).__gallery = { scene, camera, controls, shipGroups, labels };
+  }
+
   // 档位热更新：watch 注册放最后（失败也只是没有热更新，不影响打开）
   try {
     const st = useSettingsStore();

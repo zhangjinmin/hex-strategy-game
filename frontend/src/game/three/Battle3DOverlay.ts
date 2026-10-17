@@ -32,6 +32,9 @@ import {
 } from './battleFx';
 import { drainFx3d, type Fx3dEvent } from '../battle3dFx';
 import { projectFleetRepresentation, projectFleetRepresentationBySlot } from '../combatRepresentation';
+// [v96] 补给运输舰的朝向兜底要用同一个"是否补给舰"判据（舰种 'supply' / '补给'）——
+//   运输舰独立往返、不参与舰队阵位，朝向语义与战舰不同（见 syncShips 第三遍 v96 注释）。
+import { isSupplyUnit } from '../SupplyChainSystem';
 // [切片传送入场] 纯逻辑层（零 three 依赖，可被离线台架真跑）—— 见 docs/design/3d-tactical-battle/35-*
 import {
   ENTRY_CFG_DEFAULT, ENTRY_REG_WINDOW_SEC,
@@ -4105,7 +4108,8 @@ export class Battle3DOverlay {
         // grow 每帧显式归零：第三遍只对"拿到实体"的舰重设 grow；未获实体者须保持纯光点（0），
         // 否则会残留上一帧实体期的暗化值 → 光点被 (1−grow) 压暗甚至不可见。
         vv.grow = 0;
-        // [v47] 逐舰显示航向 visHeading 为真源（2D 层每舰物理朝向）；缺失回退舰队朝向（运输舰/旧帧）
+        // [v47] 逐舰显示航向 visHeading 为真源（2D 层每舰物理朝向）；缺失回退舰队朝向（旧帧）
+        // ⚠ 光点层仅 1~2px，"朝向"不可辨 ⇒ 补给舰的定向兜底只做在第三遍（实体层，见下方 v96）。
         const _faU = (typeof u.visHeading === 'number' ? u.visHeading : fa);
         vv.yaw = Math.atan2(-Math.cos(_faU), Math.sin(_faU));
       }
@@ -4310,17 +4314,30 @@ export class Battle3DOverlay {
       //  舰首局部 -z，rotation.y=θ 后鼻向 = (-sinθ, -cosθ)；像素 forward=(cos fa, sin fa) → 世界 (cos fa, -sin fa)
       let targetYaw: number;
       // [v47] 真源 = 逐舰 visHeading（2D 层限速后的物理航迹朝向）；缺失回退舰队朝向
-      const fa = (typeof (u as any).visHeading === 'number' ? (u as any).visHeading : (fleet.facingSmooth ?? fleet.facingAngle));
+      const _vh = (u as any).visHeading;
+      const fa = (typeof _vh === 'number' ? _vh : (fleet.facingSmooth ?? fleet.facingAngle));
       const hasFacing = (typeof fa === 'number' && Number.isFinite(fa));
-      if (hasFacing) {
+      // 本帧位移（世界 XZ）：像素 (dx,dy) → 世界 (dx,-dy)。兜底分支与 v96 共用。
+      const mvX = u.sprite.x - entry.lastX;
+      const mvZ = -(u.sprite.y - entry.lastY);
+      const moving = mvX * mvX + mvZ * mvZ > 0.01;
+      // [v96] **补给运输舰的舰首必须跟自己的航迹**：
+      //   运输舰走 `moveAuxShips` 独立往返（不参与舰队阵位），它的位移方向由 `aux.heading` 决定，
+      //   与所属舰队的 `facingSmooth` **毫无关系**。旧实现里 visHeading 缺失就回退舰队朝向
+      //   ⇒ 位置沿自身航迹走、舰首却按舰队摆 = 用户实报的「横着在高速移动」。
+      //   因此这里对运输舰**禁用**舰队朝向兜底，改用「本帧位移方向」（与屏幕所见同一真源）。
+      //   ⚠ visHeading 存在时（正常路径，由 SupplyChainSystem.syncAuxVisual 无条件写入）
+      //     行为与改动前**逐位一致** —— 本分支只在异常/旧帧路径生效。
+      const auxNoVis = isSupplyUnit(u) && typeof _vh !== 'number';
+      if (auxNoVis) {
+        targetYaw = moving ? Math.atan2(-mvX, -mvZ) : entry.yaw;
+      } else if (hasFacing) {
         targetYaw = Math.atan2(-Math.cos(fa), Math.sin(fa));
       } else {
         // 兜底：无朝向时退回"移动向量优先"（保持旧语义，静止则维持当前朝向）
-        const dx = u.sprite.x - entry.lastX;
-        const dz = -(u.sprite.y - entry.lastY);
-        targetYaw = (dx * dx + dz * dz > 0.01) ? Math.atan2(-dx, -dz) : entry.yaw;
+        targetYaw = moving ? Math.atan2(-mvX, -mvZ) : entry.yaw;
       }
-      entry.yaw = hasFacing ? targetYaw : approachAngle(entry.yaw, targetYaw, SHIP_TURN_RATE * dt);
+      entry.yaw = (hasFacing && !auxNoVis) ? targetYaw : approachAngle(entry.yaw, targetYaw, SHIP_TURN_RATE * dt);
       g.rotation.y = entry.yaw;
       entry.lastX = u.sprite.x;
       entry.lastY = u.sprite.y;
