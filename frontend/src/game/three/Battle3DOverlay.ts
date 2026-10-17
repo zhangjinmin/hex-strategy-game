@@ -203,52 +203,74 @@ const FLAGSHIP_VISUAL_GAIN = 1.7;
 /** 【旗舰方案·第 2 层：远景档】旗舰那颗光点相对同伴的放大倍数（1 舰 1 点，靠大小区分） */
 const FLAGSHIP_DOT_GAIN = 2.4;
 /**
- * 【旗舰标识 v2】三个可选**线化**方案 —— 用户反馈「旗舰这个圆框太出戏，标注要更精致、小一点、
- * 有设计感，别这么简单粗暴」。
+ * 【旗舰标识 v3】**让舰体本身凸显**的五个方案。
  *
- * 旧实现的病根：`RingGeometry(r*0.90, r)` 是一圈**面片环带**（带宽 0.10r ⇒ 视觉很粗），半径
- * `1.35×舰长`（**直径 2.7 倍舰长**，比旗舰本身体量还大）、45% 提白 + opacity 0.72 + 加色混合
- * ⇒ 读作"又大又白又粗的圆管子"。
+ * v1（`RingGeometry` 面片环带）/ v2（三段 1px 线环）都被用户否掉：「都还挺丑的，没什么设计感，
+ * 缺少特点」。根因不在参数，而在**语言**：两个版本都是「在舰体外面额外加一个几何体」——
+ * 符号和舰船是两回事，无论怎么调都像"贴上去的"。用户点名的方向是**描边**：
+ * 游戏里"选中单位"的视觉语言（outline / rim light / 全息高亮）。
  *
- * 三方案共同点（与本工程既有视觉语言同源）：
- *   · 全部 `LineSegments`（舰体本来就是线化渲染 ⇒ 线标识不是"异物"，1px 天然精致，无面片环带）；
- *   · 尺寸按**实测舰体足迹**定（环直径 ≈ 1.16~1.3 倍舰体长度；旧实现是 2.7 倍舰长），
- *     椭圆长轴对齐舰体、**不自转**（自转会让长轴周期性偏离舰体）；阵营色几乎不提白（8%），
- *     opacity 0.42~0.55；
- *   · 每旗舰一份几何/材质（`disposeShipGroup` 逐对象释放 ⇒ 共享单例会被第一艘旗舰连带销毁）；
- *   · 随 LOD `grow` 淡入淡出（线条特效同样不许在"线框已消失"的中景独立存在）。
+ * 五方案（`window.__flagshipRingStyle = 'a'|'b'|'c'|'d'|'e'` 热切换）：
+ *   a 描边壳   —— 复制舰体几何、顶点沿法线外扩 ≈1.6% 半长，`BackSide` + 加色 + 深度预渲染
+ *                 ⇒ 只有轮廓**外缘**那一条贴着舰体的发光边（唯一"加几何"但读作描边的方案）。
+ *   b 边缘光   —— 不改几何，给舰体 Phong 材质注入 fresnel（`onBeforeCompile`）
+ *                 ⇒ 只有朝向侧面/边缘的部分发光，是"光"而不是"图形"（唯一零新增对象）。
+ *   c 自发光脉冲 —— 只改舰体材质的 `emissive` + 轮廓线亮度，6s 极慢呼吸
+ *                 ⇒ 舰自己"呼吸"，不增加任何对象。
+ *   d 底部柔光 —— 舰体下方一张**柔边径向渐变**椭圆（不是 RingGeometry 的硬边环）
+ *                 ⇒ "地面打光"的 RTS 选中语言，完全不碰舰体。
+ *   e 复合     —— a 的淡化描边 + 舰首"双人字"指挥徽标 / 舰尾三格信号条（**不包围舰体**）。
  *
- * 切换：编译期改 `FLAGSHIP_FX_STYLE`；运行期 `window.__flagshipRingStyle = 'a'|'b'|'c'`
- *   （逐帧检测 ⇒ **热切换**：旧标识就地 dispose、新标识挂回同一 group，裁剪材质同帧重挂）。
+ * 共同约束（与 v2 一致，不重复踩坑）：
+ *   · 全部挂在 ship group 下、**局部单位**、随 LOD `grow` 淡入淡出、每旗舰独立材质；
+ *   · 新增材质必须能被 `collectSliceMats` 收集（否则 5 个入场裁剪面处会"漏出"）；
+ *   · 尺寸一律取**实测足迹** `shipFootprintLocal()`（GLB 按最长轴归一化 ⇒ `dims.L` 不可信）。
+ *
+ * ⚠ `LineBasicMaterial.linewidth` 在 WebGL 里恒定 1px ⇒ "把线加粗"这条路走不通：
+ *   要"更醒目"只能走**面**（描边壳的 BackSide 面片 / fresnel 面片 / 柔光贴图）。
+ * ⚠ a/e 的描边壳**必须排在舰体之后渲染**（`renderOrder = 5`）：舰体是不透明的（`depthWrite`
+ *   仍为 true，只是 alpha 0.62），先写深度，描边壳内圈才会被深度剔除、只剩外缘一圈。
  */
-type FlagshipFxStyle = 'a' | 'b' | 'c';
-/** 默认方案（编译期）：a 分段刻度环 / b 四角定位框 / c 断续细环 + 内圈微光 */
+type FlagshipFxStyle = 'a' | 'b' | 'c' | 'd' | 'e';
+/** 默认方案（编译期）：a 描边壳 */
 const FLAGSHIP_FX_STYLE: FlagshipFxStyle = 'a';
-/** 标识**半轴**系数：`b` = 沿舰长方向的半轴 ÷ 舰体半长，`aMin` = 沿舰宽方向的下限倍数（× 舰体半宽），
- *  `aRatio` = 沿舰宽方向的扁平下限（× b，避免椭圆扁成"两条平行线"）。
- *  a ⇒ 环直径 ≈ 1.16 倍舰体长度（贴舰体）；c 略外扩以容纳内圈；b 是四角框的角点外扩量。 */
-const FLAGSHIP_FX_AXES: Record<FlagshipFxStyle, { b: number; aMin: number; aRatio: number }> = {
-  a: { b: 1.16, aMin: 1.75, aRatio: 0.40 },
-  b: { b: 1.10, aMin: 1.50, aRatio: 0.36 },
-  c: { b: 1.30, aMin: 1.95, aRatio: 0.42 },
-};
-/** 自转角速度（弧度/秒）：**三方案都为 0**。环是椭圆（长轴对齐舰体），自转会让长轴周期性
- *  偏离舰体、读作"歪了"；改用 `breathe`（极慢明暗）表达"仍在指挥"。保留本表是为了
- *  今后若要"扫描弧"直接改一处。 */
-const FLAGSHIP_FX_SPIN: Record<FlagshipFxStyle, number> = { a: 0, b: 0, c: 0 };
-/** 标识色相对阵营色的提白比例（旧值 0.45 ⇒ 发白；现在 0.08，保住阵营辨识度）。 */
+/** 标识色相对阵营色的提白比例（0.08：保住阵营辨识度，只把颜色提亮一档）。 */
 const FLAGSHIP_FX_WHITEN = 0.08;
-/** 挂在标识 Group `userData.fx` 上的运行期数据（呼吸/淡出/热切换都从这一份读，避免逐帧 new）。 */
+/** [a/e] 描边壳厚度系数：沿法线外扩量 = 舰体半长 × 本值（实测 0.022 ⇒ 贴脸约 3px，中景自然消失）。 */
+const FX_OUTLINE_K = 0.016;
+/** [b] fresnel 边缘光：功率（越大 ⇒ 亮边越窄越锐）与峰值增益。 */
+const FX_RIM_POW = 3.2;
+const FX_RIM_GAIN = 1.2;
+/** [b] 注入到 Phong 片元着色器尾部的 fresnel 项（`normal` / `vViewPosition` 均已在作用域内，视图空间）。 */
+const FX_RIM_GLSL = `
+{
+  float fxRim = 1.0 - clamp( dot( normalize( normal ), normalize( vViewPosition ) ), 0.0, 1.0 );
+  fxRim = pow( fxRim, uFxRimPow );
+  gl_FragColor.rgb += uFxRimColor * ( fxRim * uFxRimGain );
+}`;
+/** [c] 自发光脉冲：周期（秒）与 `emissiveIntensity` 峰值。 */
+const FX_PULSE_SEC = 6.0;
+const FX_PULSE_GAIN = 0.35;
+/** [d] 底部柔光：椭圆半轴相对舰体足迹（半宽/半长）的倍数 + 下压量（× 半长）。 */
+const FX_GROUND_W = 1.6;
+const FX_GROUND_L = 0.95;
+const FX_GROUND_DROP = 0.10;
+/** 各方案呼吸频率（弧度/秒）：0 = 不呼吸（c 自带 6s 脉冲）。 */
+const FX_BREATHE: Record<FlagshipFxStyle, number> = { a: 0.45, b: 0.55, c: 0, d: 0.35, e: 0.45 };
+/** 挂在标识 Group `userData.fx` 上的运行期数据（淡出/呼吸/热切换都从这一份读，避免逐帧 new）。 */
 interface FlagshipFxData {
   style: FlagshipFxStyle;
-  /** 自转角速度（弧度/秒），0 = 不转 */
+  /** 自转角速度（弧度/秒），0 = 不转（五方案全为 0：任何"转动的环"都会读成装饰而非标识） */
   spin: number;
-  /** 呼吸角频率（弧度/秒），0 = 不呼吸（三方案统一用极慢明暗表达"仍在指挥"） */
+  /** 呼吸角频率（弧度/秒），0 = 不呼吸（c 自带 6s 脉冲） */
   breathe: number;
-  mats: THREE.LineBasicMaterial[];
-  /** 与 `mats` 一一对应的**基准**不透明度（淡出/呼吸都乘在它上面） */
-  opacity: number[];
-  /** 实际用的椭圆半轴与舰体足迹（局部单位）—— 供取证/调试读取，不参与渲染 */
+  /** 每帧：`k` = LOD `grow` × 呼吸系数（0~1），`t` = now（秒）。各方案自持材质清单。 */
+  update: (k: number, t: number) => void;
+  /** 摘除时还原被**就地改写**的舰体本体材质（b/c）；纯附加对象方案留空。 */
+  restore?: () => void;
+  /** 本方案涉及的材质（取证/调试；b/c 为被改写的舰体材质） */
+  mats: THREE.Material[];
+  /** 实测舰体足迹（局部单位）—— 供取证/调试读取，不参与渲染 */
   axes: { a: number; b: number; hl: number; hw: number; hh: number; cx: number; cz: number };
 }
 /** 复用的纯白（旗舰点/光环的提亮端），避免逐帧 new Color */
@@ -311,7 +333,7 @@ interface ShipEntry {
   pendingModel?: ShipModelReg;
   /** 构建时的模型版本（0 = 程序化兜底） */
   modelVer?: number;
-  /** 【旗舰方案】指挥标识（v2 起是**线化 Group**：分段刻度环/四角框/断续细环；随舰体移动缩放，仅旗舰持有） */
+  /** 【旗舰方案】指挥标识（v3 起是"让舰体本身凸显"的五方案句柄：描边壳/边缘光/自发光/柔光/复合） */
   cmdRing?: THREE.Group;
   /** 【旗舰标识 v2】本实体标识所用的方案（`window.__flagshipRingStyle` 改变时据此就地重建） */
   fxStyle?: FlagshipFxStyle;
@@ -4428,12 +4450,13 @@ export class Battle3DOverlay {
         ? 1
         : (_isAux ? auxGrowK(v.fleetPx, this.lodLo, this.lodHi) : sstep(this.lodLo, this.lodHi, v.fleetPx));
 
-      // 【旗舰标识 v2】呼吸 / 随 LOD `grow` 淡入淡出 + 方案热切换（都只改材质或删除/新建标识，不动舰体）。
-      //   ① 热切换：`window.__flagshipRingStyle` 变了 ⇒ 旧标识就地 dispose、新标识挂回同一 group；
-      //      **沿用旧的实测足迹**（`prevAxes`）⇒ 切方案时环的大小绝不跳变；
-      //      入场期还要把新材质补进裁剪集合（否则新线会在裁剪面处"漏出"）。
-      //   ② `grow` 淡出：线条特效和面片特效同一约束——不许在"线框已消失"的中景独立存在
-      //      （旧实现只转不淡，中景会剩一圈孤立的环，与 v83 的引擎光晕同一病根）。
+      // 【旗舰标识 v3】呼吸 / 随 LOD `grow` 淡入淡出 + 方案热切换（都只改材质或删除/新建标识，不动舰体）。
+      //   ① 热切换：`window.__flagshipRingStyle` 变了 ⇒ 旧标识就地 dispose（b/c 还会还原被改写的舰体材质）、
+      //      新标识挂回同一 group；**沿用旧的实测足迹**（`prevAxes`）⇒ 切方案时尺寸绝不跳变；
+      //      入场期还要把新材质补进裁剪集合（否则新线/新面会在裁剪面处"漏出"）。
+      //   ② `grow` 淡出：任何特效都同一约束——不许在"线框已消失"的中景独立存在。
+      //   ③ 具体怎么淡由各方案自持的 `update(k, t)` 决定（a/d/e 改 opacity，b 改 rim uniform，
+      //      c 改 emissiveIntensity / 线色）—— 不再要求"所有方案都是一组 LineBasicMaterial"。
       if (entry.isFlagship && entry.fxStyle !== fxStyleNow) {
         const prevAxes = (entry.cmdRing?.userData?.fx as FlagshipFxData | undefined)?.axes;
         this.detachFlagshipFx(entry);
@@ -4452,7 +4475,7 @@ export class Battle3DOverlay {
           entry.cmdRing.rotation.z += dt * fxd.spin;
           const pulse = fxd.breathe > 0 ? 0.915 + 0.085 * Math.sin(now * fxd.breathe) : 1;
           const k = (v.grow >= 0.999 ? 1 : v.grow) * pulse;
-          for (let mi = 0; mi < fxd.mats.length; mi++) fxd.mats[mi].opacity = fxd.opacity[mi] * k;
+          fxd.update(k, now);
         }
       }
       // [v83] **引擎特效随 LOD `grow` 同步淡入**（用户实报「金色尾焰，只有尾焰没有舰船」）。
@@ -4482,27 +4505,16 @@ export class Battle3DOverlay {
   }
 
   /**
-   * 【旗舰标识 v2】给一艘已建好的舰挂"指挥标识"：**线化**（`LineSegments`），三方案见 `FlagshipFxStyle`。
-   * v12 已移除原竖直柱（用户实报"那道竖柱太丑"）；v2 再移除原**面片环带**——用户实报"这个圆框太出戏"。
+   * 【旗舰标识 v3】给一艘已建好的舰挂"**让舰体本身凸显**"的指挥标识（五方案见 `FlagshipFxStyle`）。
+   * v1 的面片环带、v2 的三段线环都被用户否掉 —— 病根是"在舰体外面额外加一个几何体"。
    *
    * 为什么挂在 ship group 下：group 每帧被同步位置/朝向/缩放，子对象自动跟随，
    * 不需要为旗舰单开一条每帧通道（少一处状态、少一处不同步的可能）。
-   * ⚠ 尺寸必须换算成**局部单位**：世界尺寸 ÷ group.scale。
-   * ⚠ 几何/材质**每旗舰一份**（非共享单例）：`disposeShipGroup` 会遍历释放子对象，
-   *   共享单例会因第一艘旗舰销毁而连带释放，其余旗舰的标识就消失了。每场至多 8~16 艘，代价可忽略。
-   *
-   * ⚠ 尺寸**不能直接吃 `dims.L`**：实测 GLB 按"最长轴归一化"后，舰体投影长度只有 `dims.L` 的
-   *   0.55~1.0 倍（取决于模型里最长的是不是舰长轴）。照 `dims.L × 1.35` 给半径 ⇒ 旧环直径
-   *   达到**舰体的 3~4 倍**（正是"太出戏"的量化主因）。故改用**实测包围盒**（`shipFootprintLocal`）
-   *   定半轴，环直径 ≈ 1.16~1.3 倍**舰体实际长度**。
-   * ⚠ 环是**椭圆**而不是正圆：舰体长宽比 ~3:1，正圆会在两舷留出 1.3 倍舰宽的空档（"套个呼啦圈"）。
-   *   椭圆沿舰长/舰宽各自留 10~35% 余量 ⇒ 读作"贴着舰体的 HUD 框"，且**不自转**
-   *   （椭圆自转 = 长轴周期性偏离舰体，读作"歪了"）；取而代之的是极慢呼吸明暗。
-   *
-   * 三方案：
-   *   a 分段刻度环：4 段 64° 弧 + 26° 缺口，缺口中心各一道朝外短刻度（落在四个基准方向）
-   *   b 四角定位框：舰体四角外侧各一组 L 形折角，沿舰体长/宽轴对齐
-   *   c 断续细环：8 段 36° 弧 + 9° 缺口，内圈 0.72 倍更暗一档（错开半格 ⇒ 层次）
+   * ⚠ 尺寸必须是**局部单位**（`shipFootprintLocal` 已是局部单位，不要再 ÷ group.scale 两次）。
+   * ⚠ 几何/材质**每旗舰一份**：`disposeShipGroup` 会遍历释放子对象，共享单例会因第一艘旗舰销毁
+   *   而连带释放。每场至多 8~16 艘，代价可忽略。
+   * ⚠ b/c 方案下 `root` 是**空 Group**（只作为句柄挂在 `entry.cmdRing` 上，让热切换/淡出代码
+   *   不需要按方案分叉）；真正被改的是**舰体自己的材质**，`restore()` 负责还原。
    */
   private attachFlagshipFx(
     group: THREE.Group, color: number, shipLen: number, style: FlagshipFxStyle,
@@ -4510,103 +4522,283 @@ export class Battle3DOverlay {
   ): THREE.Group {
     const bs = group.scale.x || 1;
     const { hl, hw, hh, cx, cz } = foot || this.shipFootprintLocal(group, bs, shipLen);
-    const axes = FLAGSHIP_FX_AXES[style];
-    // b = 沿舰长方向的半轴，a = 沿舰宽方向的半轴（扁平下限 0.40b：太扁会读成"两条平行线"）
-    const b = hl * axes.b;
-    const a = Math.max(hw * axes.aMin, b * axes.aRatio);
-    const D2R = Math.PI / 180;
+    const tint = new THREE.Color(color).lerp(WHITE, FLAGSHIP_FX_WHITEN);
 
-    const tint = new THREE.Color(color).lerp(WHITE, FLAGSHIP_FX_WHITEN).getHex();
     const root = new THREE.Group();
-    root.rotation.x = -Math.PI / 2;
-    // 抬到**舰体最高点之上** + 对齐**包围盒中心**：标识平面若与舰体同高，俯视时"远端半圈"会被
-    // 舰体挡掉（实测只剩两段月牙）；若钉在 group 原点，轴心偏心的模型会让环"套在空处"。
-    root.position.set(cx, hh * 1.12, cz);
+    const mats: THREE.Material[] = [];
+    /** 需要按 `基准 × k` 淡出的附加材质（a/d/e）—— 与 `mats` 分开：b/c 会把**舰体材质**也放进
+     *  `mats`（供取证），那些材质的 opacity 绝不能被淡出逻辑改写。 */
+    const fadeList: { m: any; base: number }[] = [];
+    let restore: (() => void) | undefined;
+    let update: (k: number, t: number) => void = () => { /* 无可淡出材质（b/c 自有实现） */ };
 
-    const mats: THREE.LineBasicMaterial[] = [];
-    const opacity: number[] = [];
-    /** 建一条 LineSegments 并登记材质（基准不透明度进 `opacity`，淡出/呼吸都乘它） */
-    const addLines = (pos: number[], o: number): void => {
-      if (!pos.length) return;
-      const g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-      const m = new THREE.LineBasicMaterial({
-        color: tint, transparent: true, opacity: o,
+    // 舰体本体（排除标识自身）：只有 Phong 面片算"舰体"，线框 / 引擎光斑不是。
+    const hulls: THREE.Mesh[] = [];
+    group.traverse((o) => {
+      const anyO = o as any;
+      if (!anyO.isMesh || (anyO.userData && anyO.userData.b3dFxPart)) return;
+      const m = anyO.material as any;
+      if (!m || !m.isMeshPhongMaterial) return;
+      hulls.push(anyO as THREE.Mesh);
+    });
+
+    /** a/d/e 共用：附加的加色材质统一按 `基准 × k` 淡出 */
+    const fadeAll = (k: number): void => {
+      for (let i = 0; i < fadeList.length; i++) fadeList[i].m.opacity = fadeList[i].base * k;
+    };
+    /** 登记一个"要淡出"的附加材质（同时进 `mats` 供取证） */
+    const pushFade = (m: any, base: number): void => {
+      mats.push(m);
+      fadeList.push({ m, base });
+    };
+
+    /**
+     * a / e 共用：**描边壳**。
+     * 复制舰体几何（同型舰共享几何 ⇒ 必须 clone，且 clone 不带 `__b3dShared` ⇒ 销毁时正常释放），
+     * 顶点沿法线外扩 `hl × k`，用 `BackSide` + 加色 + `renderOrder = 5` 渲染。
+     *
+     * ⚠ 只靠"舰体自己写的深度"来剔除内圈**不成立**（实测：描边壳染红后整个舰体是红的）：
+     *   这些 GLB 的舰体面片是**视觉道具**，绕序/法线并不水密，很多区域根本不写深度
+     *   ⇒ 反壳的背面从洞/反绕序处整片漏出来，读作"发光填充"而不是"描边"。
+     *   故每个舰体额外挂一个 **depth-only 预渲染**（`colorWrite:false` + `DoubleSide` + 不透明），
+     *   它在**不透明队列**里天然先于所有透明对象，把舰体轮廓的深度填实；描边壳随后被深度裁到只剩外缘。
+     *   代价：每旗舰多 1 个 draw call；副作用是旗舰的**远端轮廓线被实心舰体挡住**（读作更"实"的船）。
+     */
+    const addOutline = (k: number, op: number): void => {
+      const t = Math.max(0.10, Math.min(1.4, hl * k));
+      for (const hm of hulls) {
+        const src = hm.geometry as THREE.BufferGeometry | undefined;
+        if (!src || !src.attributes || !src.attributes.position) continue;
+        hm.updateMatrix();
+        const lm = new THREE.Matrix4();
+        if (hm.parent === group) lm.copy(hm.matrix);
+        else {
+          group.updateWorldMatrix(true, true);
+          lm.copy(group.matrixWorld).invert().multiply(hm.matrixWorld);
+        }
+        // ① 深度预渲染（不写颜色，只填深度）
+        //   ⚠ 必须带 `polygonOffset` 把深度**往后推一点**：舰体的轮廓线就贴在面片上（同一深度），
+        //     不推的话整艘船的线框会被自己的深度预渲染判负 ⇒ 旗舰变成一个黑洞洞的剪影。
+        const dm = new THREE.MeshBasicMaterial({
+          colorWrite: false, depthWrite: true, depthTest: true,
+          side: THREE.DoubleSide, transparent: false,
+          polygonOffset: true, polygonOffsetFactor: 2, polygonOffsetUnits: 4,
+        });
+        const dmesh = new THREE.Mesh(src, dm);
+        lm.decompose(dmesh.position, dmesh.quaternion, dmesh.scale);
+        dmesh.renderOrder = 1;
+        dmesh.userData.b3dFxPart = true;
+        dmesh.userData.b3dFxBorrowGeo = true;   // 借用舰体几何（可能不是 __b3dShared 的程序化几何）⇒ 不可释放
+        root.add(dmesh);
+
+        // ② 外扩壳
+        const g = src.clone();
+        if (!g.attributes.normal) g.computeVertexNormals();
+        const pos = g.attributes.position as THREE.BufferAttribute;
+        const nor = g.attributes.normal as THREE.BufferAttribute | undefined;
+        if (!nor || nor.count !== pos.count) { g.dispose(); continue; }
+        // 外扩量是 **group 局部单位**；几何是模型原始单位（舰体 mesh 自带归一化缩放 s）
+        const s = Math.max(1e-6, (Math.abs(hm.scale.x) + Math.abs(hm.scale.y) + Math.abs(hm.scale.z)) / 3);
+        const e = t / s;
+        for (let i = 0; i < pos.count; i++) {
+          pos.setXYZ(i,
+            pos.getX(i) + nor.getX(i) * e,
+            pos.getY(i) + nor.getY(i) * e,
+            pos.getZ(i) + nor.getZ(i) * e);
+        }
+        pos.needsUpdate = true;
+        g.computeBoundingBox();
+        g.computeBoundingSphere();
+        const m = new THREE.MeshBasicMaterial({
+          color: tint, side: THREE.BackSide, transparent: true, opacity: op,
+          blending: THREE.AdditiveBlending, depthWrite: false, depthTest: true,
+        });
+        m.toneMapped = false;
+        const om = new THREE.Mesh(g, m);
+        lm.decompose(om.position, om.quaternion, om.scale);
+        om.renderOrder = 5;
+        om.userData.b3dFxPart = true;
+        root.add(om);
+        pushFade(m, op);
+      }
+    };
+
+    /**
+     * c / e 共用：**舰体自发光脉冲**（唯一"零新增对象"的表达）。
+     * 只改舰体 Phong 的 `emissive` + 轮廓线颜色；`undo()` 干净还原（热切换/销毁时必须调）。
+     * `scale` = 脉冲强度倍率（e 用 0.6 ⇒ 与描边叠加时不至于过曝）。
+     */
+    const pulseKit = (scale: number): { step: (k: number, t: number) => void; undo: () => void } => {
+      const emColor = new THREE.Color(color).lerp(WHITE, 0.20);
+      const seen = new Set<THREE.Material>();
+      const savedEm: { m: THREE.MeshPhongMaterial; col: number; k: number }[] = [];
+      for (const hm of hulls) {
+        const m = hm.material as THREE.MeshPhongMaterial;
+        if (!m || seen.has(m)) continue;
+        seen.add(m);
+        savedEm.push({ m, col: m.emissive.getHex(), k: m.emissiveIntensity });
+        m.emissive.copy(emColor);
+        m.emissiveIntensity = 0;
+        mats.push(m);
+      }
+      // 舰体的"亮"主要来自轮廓线 ⇒ 线色一起呼吸（只亮面片的话观感几乎看不出来）
+      const wires: THREE.LineBasicMaterial[] = [];
+      const seenL = new Set<THREE.Material>();
+      group.traverse((o) => {
+        const anyO = o as any;
+        if (!anyO.isLineSegments || (anyO.userData && anyO.userData.b3dFxPart)) return;
+        const m = anyO.material as any;
+        if (!m || !m.isLineBasicMaterial || seenL.has(m)) return;
+        seenL.add(m);
+        wires.push(m);
+        mats.push(m);
+      });
+      const wireBase = wires.map((m) => m.color.clone());
+      return {
+        step: (k, t) => {
+          const ph = 0.5 - 0.5 * Math.cos((t / FX_PULSE_SEC) * Math.PI * 2);   // 0 → 1 → 0，6s 一轮
+          const a = ph * FX_PULSE_GAIN * scale * k;
+          for (const s of savedEm) s.m.emissiveIntensity = a;
+          const mul = 1 + 0.5 * ph * scale * k;
+          for (let i = 0; i < wires.length; i++) wires[i].color.copy(wireBase[i]).multiplyScalar(mul);
+        },
+        undo: () => {
+          for (const s of savedEm) { s.m.emissive.setHex(s.col); s.m.emissiveIntensity = s.k; }
+          for (let i = 0; i < wires.length; i++) wires[i].color.copy(wireBase[i]);
+        },
+      };
+    };
+
+    if (style === 'a') {
+      // ── a 描边壳：贴着舰体的发光轮廓边（用户点名的方向）──
+      addOutline(FX_OUTLINE_K, 0.95);
+      update = fadeAll;
+    } else if (style === 'b') {
+      // ── b fresnel 边缘光：不改几何，给舰体 Phong 材质注入 rim 项 ──
+      const gain = { value: FX_RIM_GAIN };   // 初值 = 满亮（首帧 update 之前也不至于"看不见"）
+      const rimColor = new THREE.Color(color).lerp(WHITE, 0.22);
+      const seen = new Set<THREE.Material>();
+      const touched: THREE.MeshPhongMaterial[] = [];
+      for (const hm of hulls) {
+        const m = hm.material as THREE.MeshPhongMaterial;
+        if (!m || seen.has(m)) continue;
+        seen.add(m);
+        const prev = m.onBeforeCompile;
+        m.onBeforeCompile = ((shader: any) => {
+          (prev as any).call(m, shader);
+          shader.uniforms.uFxRimColor = { value: rimColor };
+          shader.uniforms.uFxRimPow = { value: FX_RIM_POW };
+          shader.uniforms.uFxRimGain = gain;
+          shader.fragmentShader = 'uniform vec3 uFxRimColor;\nuniform float uFxRimPow;\nuniform float uFxRimGain;\n'
+            + shader.fragmentShader;
+          shader.fragmentShader = shader.fragmentShader.replace(
+            '#include <dithering_fragment>',
+            FX_RIM_GLSL + '\n\t#include <dithering_fragment>',
+          );
+        }) as any;
+        m.needsUpdate = true;
+        touched.push(m);
+        mats.push(m);
+      }
+      update = (k) => { gain.value = FX_RIM_GAIN * k; };
+      restore = () => {
+        for (const m of touched) {
+          m.onBeforeCompile = () => { /* v3-b 还原：清掉 fresnel 注入 */ };
+          m.needsUpdate = true;
+        }
+        gain.value = 0;
+      };
+    } else if (style === 'c') {
+      // ── c 自发光脉冲：只改舰体材质的 emissive（+ 轮廓线亮度），不新增任何对象 ──
+      const pk = pulseKit(1);
+      update = (k, t) => pk.step(k, t);
+      restore = pk.undo;
+    } else if (style === 'd') {
+      // ── d 底部柔光：舰体下方一张柔边椭圆（径向渐变贴图，不是硬边 RingGeometry）──
+      const tex = this.makeFlagshipGlowTexture();
+      const base = 0.62;
+      const m = new THREE.MeshBasicMaterial({
+        map: tex, color: new THREE.Color(color).lerp(WHITE, 0.10),
+        transparent: true, opacity: base, blending: THREE.AdditiveBlending,
+        depthWrite: false, depthTest: true,
+      });
+      m.toneMapped = false;
+      m.userData.fxTex = tex;                 // 摘除时随材质一起释放
+      const pm = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), m);
+      pm.rotation.x = -Math.PI / 2;
+      // 平面局部 X = 舷宽、局部 Y = 舰长（旋转后落到世界 Z）；柔光比舰体略"胖"一圈
+      pm.scale.set(hw * 2 * FX_GROUND_W, hl * 2 * FX_GROUND_L, 1);
+      pm.position.set(cx, -hl * FX_GROUND_DROP, cz);
+      pm.renderOrder = 2;
+      pm.userData.b3dFxPart = true;
+      root.add(pm);
+      pushFade(m, base);
+      update = (k) => { (m as any).opacity = base * k; };
+    } else {
+      // ── e 复合：淡化描边 + 极慢自发光 + 舰首"双人字" / 舰尾三格信号条（HUD 徽标，**不包围舰体**）──
+      addOutline(FX_OUTLINE_K * 0.7, 0.60);
+      const hud = new THREE.Group();
+      hud.rotation.x = -Math.PI / 2;
+      hud.position.set(cx, hh * 1.14, cz);    // 抬到舰体最高点之上（俯视时不被舰体挡）
+      const seg: number[] = [];
+      const chev = (y0: number, half: number, rise: number): void => {
+        seg.push(-half, y0, 0, 0, y0 + rise, 0, 0, y0 + rise, 0, half, y0, 0);
+      };
+      // 双人字（rank insignia）：够大才读得出是"徽标"，太小就只是一道噪点
+      chev(hl * 0.30, hw * 1.45, hl * 0.10);
+      chev(hl * 0.44, hw * 1.45, hl * 0.10);
+      // 舰尾三格信号条
+      for (let i = 0; i < 3; i++) {
+        const y = -hl * (0.34 + i * 0.085);
+        seg.push(-hw * 0.85, y, 0, hw * 0.85, y, 0);
+      }
+      const gm = new THREE.LineBasicMaterial({
+        color: tint.getHex(), transparent: true, opacity: 0.86,
         blending: THREE.AdditiveBlending, depthWrite: false,
       });
-      const ls = new THREE.LineSegments(g, m);
-      ls.renderOrder = 4;
-      ls.userData.b3dFxPart = true;   // 标记：量舰体足迹时必须跳过标识自身（否则热切换会自我放大）
-      mats.push(m); opacity.push(o);
-      root.add(ls);
-    };
-    /** 椭圆弧 → 顶点对（`k` = 半轴倍率；LineSegments 要成对，1px 线 6~10 段足够顺） */
-    const arc = (out: number[], k: number, a0: number, a1: number, segs: number): void => {
-      for (let i = 0; i < segs; i++) {
-        const t0 = a0 + (a1 - a0) * (i / segs);
-        const t1 = a0 + (a1 - a0) * ((i + 1) / segs);
-        out.push(a * k * Math.cos(t0), b * k * Math.sin(t0), 0,
-          a * k * Math.cos(t1), b * k * Math.sin(t1), 0);
-      }
-    };
-
-    // 局部坐标：+Y = 舰首方向（椭圆长轴），+X = 右舷；`root.rotation.x = -π/2` 把该平面放平。
-    if (style === 'a') {
-      // ── a 分段刻度环：缺口落在**四个基准方向**（舰首/舰尾/左右舷），剩下的弧读作"四角弧" ──
-      const ARC = 64 * D2R, GAP = 26 * D2R;
-      const ring: number[] = [];
-      for (let k = 0; k < 4; k++) {
-        const a0 = k * (Math.PI / 2) + GAP / 2;
-        arc(ring, 1, a0, a0 + ARC, 12);
-      }
-      addLines(ring, 0.50);
-      // 刻度：每个缺口一道朝外短径向线（HUD 瞄准刻度；比弧段略亮 ⇒ 有层次但不刺眼）
-      const ticks: number[] = [];
-      for (let k = 0; k < 4; k++) {
-        const t = k * (Math.PI / 2), c = Math.cos(t), s = Math.sin(t);
-        ticks.push(a * 1.02 * c, b * 1.02 * s, 0, a * 1.10 * c, b * 1.10 * s, 0);
-      }
-      addLines(ticks, 0.62);
-    } else if (style === 'b') {
-      // ── b 四角定位框：四个 L 形折角，明确"这是旗舰"但不抢镜 ──
-      const cornerX = Math.max(hw * 2.6, b * 0.42);   // 角点横向：明显出舷（否则被舰体挡住）
-      const cornerZ = hl * axes.b;                    // 角点纵向：略出艏艉
-      const armX = cornerX * 0.42;                    // 横向臂长（指向舰中线）
-      const armZ = cornerZ * 0.20;                    // 纵向臂长（指向舰中段）
-      const pos: number[] = [];
-      for (const sz of [-1, 1]) {
-        for (const sx of [-1, 1]) {
-          const x = sx * cornerX, z = sz * cornerZ;
-          pos.push(x, z, 0, x - sx * armX, z, 0);
-          pos.push(x, z, 0, x, z - sz * armZ, 0);
-        }
-      }
-      addLines(pos, 0.55);
-    } else {
-      // ── c 断续细环 + 内圈微光：外 8 段 36°（缺 9°），内 8 段 30°（缺 15°、错开半格） ──
-      const GAP = 9 * D2R;
-      const outer: number[] = [];
-      for (let k = 0; k < 8; k++) {
-        const a0 = k * (Math.PI / 4) + GAP / 2;
-        arc(outer, 1, a0, a0 + (45 * D2R - GAP), 9);
-      }
-      addLines(outer, 0.42);
-      const inner: number[] = [];
-      for (let k = 0; k < 8; k++) {
-        const a0 = k * (Math.PI / 4) + (Math.PI / 8) + 7.5 * D2R;
-        arc(inner, 0.72, a0, a0 + 30 * D2R, 7);
-      }
-      addLines(inner, 0.22);
+      const gg = new THREE.BufferGeometry();
+      gg.setAttribute('position', new THREE.Float32BufferAttribute(seg, 3));
+      const gl = new THREE.LineSegments(gg, gm);
+      gl.renderOrder = 6;
+      gl.userData.b3dFxPart = true;
+      hud.add(gl);
+      root.add(hud);
+      pushFade(gm, 0.86);
+      const pkE = pulseKit(0.55);
+      update = (k, t) => { fadeAll(k); pkE.step(k, t); };
+      restore = pkE.undo;
     }
 
     group.add(root);
     const fx: FlagshipFxData = {
-      style, spin: FLAGSHIP_FX_SPIN[style],
-      breathe: 0.55,                       // 三个方案统一：~11s 周期的极慢明暗（0.915~1.0），替代"自转"
-      mats, opacity, axes: { a, b, hl, hw, hh, cx, cz },
+      style, spin: 0, breathe: FX_BREATHE[style], update, restore, mats,
+      axes: { a: hw, b: hl, hl, hw, hh, cx, cz },
     };
     root.userData.fx = fx;
     return root;
+  }
+
+  /** [v3-d] 旗舰底部**柔边**光斑贴图：中心最亮、边缘指数收掉（无硬边 ⇒ 不会读成"又一道环"）。 */
+  private makeFlagshipGlowTexture(): THREE.CanvasTexture {
+    const S = 128;
+    const cv = document.createElement('canvas');
+    cv.width = S; cv.height = S;
+    const ctx = cv.getContext('2d');
+    if (ctx) {
+      ctx.clearRect(0, 0, S, S);
+      const c = S / 2;
+      const g = ctx.createRadialGradient(c, c, 0, c, c, c);
+      g.addColorStop(0, 'rgba(255,255,255,0.95)');
+      g.addColorStop(0.28, 'rgba(255,255,255,0.55)');
+      g.addColorStop(0.55, 'rgba(255,255,255,0.22)');
+      g.addColorStop(0.78, 'rgba(255,255,255,0.06)');
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, S, S);
+    }
+    const tex = new THREE.CanvasTexture(cv);
+    tex.needsUpdate = true;
+    return tex;
   }
 
   /**
@@ -4662,27 +4854,43 @@ export class Battle3DOverlay {
     return { hl: L0 * 0.5, hw: L0 / 6, hh: L0 * 0.06, cx: 0, cz: 0 };
   }
 
-  /** 【旗舰标识 v2】摘掉并释放一艘舰的标识（热切换/销毁走这一条：几何+材质逐条释放） */
+  /**
+   * 【旗舰标识 v3】摘掉并释放一艘舰的标识（热切换/销毁走这一条）。
+   * ⚠ b/c 没有附加对象，改的是**舰体本体材质** ⇒ 必须先 `restore()` 再释放句柄，
+   *   否则热切换后会残留 fresnel 注入 / 一直呼吸的自发光。
+   */
   private detachFlagshipFx(entry: ShipEntry): void {
     const fx = entry.cmdRing;
     entry.cmdRing = undefined;
     entry.fxStyle = undefined;
     if (!fx) return;
+    const fxd = fx.userData.fx as FlagshipFxData | undefined;
+    try { fxd?.restore?.(); } catch { /* 材质已被换装释放 ⇒ 还原失败可忽略 */ }
     fx.parent?.remove(fx);
     fx.traverse((o) => {
       const anyO = o as any;
       if (!anyO.isLineSegments && !anyO.isMesh) return;
-      (anyO.geometry as THREE.BufferGeometry | undefined)?.dispose();
+      const gg = anyO.geometry as THREE.BufferGeometry | undefined;
+      // ⚠ 深度预渲染的几何是**借来的**舰体几何（GLB 共享几何 / 程序化私有几何都可能）⇒ 一律不释放，
+      //   否则热切换一次就把舰体自身几何毁了（程序化舰种必现"舰体消失"）。
+      if (gg && !(gg as any).__b3dShared && !anyO.userData?.b3dFxBorrowGeo) gg.dispose();
       const m = anyO.material as THREE.Material | THREE.Material[] | undefined;
-      if (Array.isArray(m)) m.forEach((mm) => mm.dispose()); else m?.dispose();
+      const kill = (mm: THREE.Material | undefined): void => {
+        if (!mm) return;
+        const tex = (mm as any).userData?.fxTex as THREE.Texture | undefined;
+        tex?.dispose();
+        mm.dispose();
+      };
+      if (Array.isArray(m)) m.forEach((mm) => kill(mm)); else kill(m as THREE.Material | undefined);
     });
   }
 
-  /** 【旗舰标识 v2】当前方案：编译期默认 + 运行时一键覆盖 `window.__flagshipRingStyle` */
+  /** 【旗舰标识 v3】当前方案：编译期默认 + 运行时一键覆盖 `window.__flagshipRingStyle` */
   private flagshipFxStyle(): FlagshipFxStyle {
     const w: any = (typeof window !== 'undefined') ? window : undefined;
     const raw = w && w.__flagshipRingStyle;
-    return (raw === 'a' || raw === 'b' || raw === 'c') ? raw : FLAGSHIP_FX_STYLE;
+    return (raw === 'a' || raw === 'b' || raw === 'c' || raw === 'd' || raw === 'e')
+      ? raw : FLAGSHIP_FX_STYLE;
   }
 
   // ════════════════════════════════════════════════════════════════════════
