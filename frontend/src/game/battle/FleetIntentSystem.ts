@@ -99,24 +99,20 @@ export interface MissionRecordLike {
 export interface MissionMoveInput {
   /** 任务（null = 无任务） */
   mission: { type: string; targetId?: number | string } | null;
-  myTeam: number;
   myPos: IntentPoint;
-  myPower: number;
-  myFleetCount: number;
   /**
    * ⚠ **调用方必须先过滤**：只传入 `isKnownTrackReliable(...) === true` 的档案。
    *   本函数**不判可靠性**（否则会引入"第三套可靠判定"——见下）。
    *   `tier === 'cold'` 与坐标非有限仍由本函数兜底（那是"能不能用"，不是"可不可信"）。
    */
   records: readonly MissionRecordLike[];
-  enemyLiveFactionCount: number;
   /** 已知敌基地位置（无则 null） */
   enemyBaseRec: IntentPoint | null;
-  /** 情报线索方位（rad）——供第 6 步的扇区扫掠使用 */
-  clueBearing: number;
-  /** 搜索航点（第 6 步用；本步不写进 dest） */
-  searchPoint: IntentPoint | null;
-  nowMs: number;
+  // ⚠ 刻意**不收** myTeam / myPower / myFleetCount / enemyLiveFactionCount /
+  //   clueBearing / searchPoint / nowMs：
+  //   它们分别属于 `computeForceRatio` / `canCommitSiege`（另两个纯函数）与**第 6 步的调用方**，
+  //   本函数一个都不读 —— 签名里留着"传了但不允许影响输出"的参数，等于邀请误用
+  //   （与 `SweepAim.fleetId` 被删是同一条规矩）。
 }
 
 /**
