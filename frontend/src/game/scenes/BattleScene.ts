@@ -246,6 +246,20 @@ const TURN_RATE_ACCEL = HEADING_TURN_RATE / 21;
  *    改为制动律 + 死区吸附后回到 **0° / 0 次**，同时保留惯量（建立 ~0.3s）。 */
 const BRAKE_SAFETY = 0.85;
 
+/**
+ * [B2] 任务目标排序里"**没有情报**"的哨兵基值。
+ *
+ * 语义：未知目标的排序键 = `本值 + 到它的真实距离` ⇒ **已知目标（档案距离）永远排在未知之前**，
+ * 而未知组内部仍按真实距离"就近"（不会退化成输入序）。
+ *
+ * 取值依据：必须**远大于任何可能的真实距离**。
+ *   地图跨度上限 = `hexRadius × 50 ≤ 2500`（hexRadius 上限 50）⇒ 真实距离上界 ≈ 对角线 3536；
+ *   `1e9 ≈ 2.8×10^5 倍对角线` ⇒ "已知/未知"的分界永远落在地图之外。
+ * ⚠ 若把它改小到 1e3~1e4 量级，分界会落进地图内部 ⇒ **"已知优先"当场失效，且不报错**
+ *   （所有目标都会被当成"未知"，排序退化为纯距离）。
+ */
+const UNKNOWN_TARGET_DIST_BASE = 1e9;
+
 /** [v30 / v34b] **推力对齐下限**：主引擎只能沿舰首方向推进 ⇒ 舰首与目标方向的夹角越大，前进越慢。
  *  对齐度 = `cos(目标方向 − 舰首朝向)`，取 `max(0, ·)^0.5`（**平方根** ⇒ 小幅航向修正更快恢复全速）。
  *
@@ -3592,7 +3606,7 @@ export class BattleScene extends Phaser.Scene {
                 distanceOf: (fl: any) => {
                     const rec = getKnownContact(this.intelArchive, myTeamV64 ?? -1, fl.id);
                     const real = Phaser.Math.Distance.Between(fleet.x, fleet.y, fl.x ?? 0, fl.y ?? 0);
-                    if (!rec || rec.reliable === false) return 1e9 + real;
+                    if (!rec || rec.reliable === false) return UNKNOWN_TARGET_DIST_BASE + real;
                     return Phaser.Math.Distance.Between(fleet.x, fleet.y, rec.x, rec.y);
                 },
             });
