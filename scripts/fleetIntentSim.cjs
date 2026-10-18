@@ -2,6 +2,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { resolveFleetIntent } = require('../frontend/src/game/battle/FleetIntentSystem.ts');
+const { resolveAuthority } = require('../frontend/src/game/battle/CommandAuthority.ts');
 
 let passed = 0;
 function check(name, fn) {
@@ -130,6 +131,43 @@ check('engaging re-aim stays rate-limited (no instant re-bind to the enemy)', ()
 check('capture mission ignores objectives already owned by an allied faction', () => {
   const missionBody = sceneSource.slice(sceneSource.indexOf("m.type === 'capture_planet'"), sceneSource.indexOf("m.type === 'hold_point'"));
   assert.match(missionBody, /ownerFac[^\n]*team[^\n]*fac\.team/);
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// [FIX-⑭] kind:'move' 直接指令「到位即完成」
+//
+// 改前：`DirectMoveOrder` 只有 {x,y,issuedAt}，**无完成条件、无超时**；全仓清 directOrder
+//   只有「溃散拒令」与「下一条指令覆盖」两处 ⇒ 玩家点一次"机动到某点"就永久占领最高权威：
+//   mission 解算被挂起（`_missionDest` 在 directOrder 存在时 early-return）、看门狗被挡、
+//   自主姿态压掉 ⇒ 到位后只剩"停船 + 朝向冻结"。
+// 改后：到指令点 ≤ 到位阈值 ⇒ 同帧清槽位并把本帧入参置空 ⇒ 权威层立刻让位。
+// 下面用**纯逻辑**证明"层切换"，用**源码断言**证明"清槽位发生在 resolveAuthority 之前"
+//   （到位判定本身是 update 内联的几行，没有可注入的纯函数边界 ⇒ 不做伪运行时断言）。
+// ══════════════════════════════════════════════════════════════════════
+check('[FIX-⑭] clearing the move order drops the authority layer in the same call', () => {
+  const base = {
+    destroyed: false, retreatState: 'none', direct: null, attack: null, planRole: null,
+    mission: null, localCombat: null, playerControlled: true, directJustIssued: false,
+  };
+  assert.equal(
+    resolveAuthority({ ...base, direct: { kind: 'move', x: 0, y: 0, issuedAt: 0 } }).layer,
+    'direct_order',
+    '带 move 指令时权威层必须是 direct_order（改前的"永久"状态）',
+  );
+  assert.notEqual(resolveAuthority(base).layer, 'direct_order',
+    '入参置空后不得仍停在 direct_order（改后的"一次性"状态）');
+});
+check('[FIX-⑭] move completion is wired before resolveAuthority and clears the slot', () => {
+  const completion = sceneSource.indexOf("w1DOrder.kind === 'move'");
+  const authCall = sceneSource.indexOf('resolveAuthority({');
+  assert.ok(completion > 0, 'move 完成判定必须存在（防被回滚）');
+  assert.ok(completion < authCall, '完成判定必须早于 resolveAuthority，否则"到位即完成"晚一帧');
+  const block = sceneSource.slice(completion, completion + 1600);
+  assert.match(block, /\(fleet as any\)\.directOrder = null;/, '必须清槽位');
+  assert.match(block, /w1Direct = null;/, '必须同帧把入参置空（否则权威层不变）');
+  assert.match(block, /_combatControl = \{ phase: 'cruise'/, '必须复位相位机（防残留 hold 定格）');
+  // 反向守卫：不得顺手改 attack 的完成语义（它归 tickDirectAttack 管）
+  assert.doesNotMatch(block, /kind === 'attack'[\s\S]{0,200}directOrder = null/);
 });
 
 console.log(`\n${passed} fleet-intent assertions passed`);

@@ -348,6 +348,15 @@ const ARC_OPEN_DWELL_SEC = 0.3;
  *   太长则舰队已经绕了半个圆、损失不可逆。**用时间不用帧数**（帧率会变）。
  */
 const FLANK_NOFIRE_GIVEUP_SEC = 1;
+/**
+ * [FIX-⑭] `kind:'move'` 直接指令的**到位判定**（px）。
+ * 与 `exploreTarget` 的到位判定**同源**（探索航点用 `< 25`）—— 两者语义相同：
+ *   "点到点机动的完成 = 已抵达该点"，不应出现第二套口径。
+ * 为什么不用朝向/停船分支的 `distToTarget <= 5`：那是**火控与停船**的死区，
+ *   贴到 5px 才算完成会让指令长期挂着（抵达误差本就在几十 px 量级，
+ *   且 `[v85]` 制动律是渐近的，永远"差一点点"）。
+ */
+const DIRECT_MOVE_ARRIVE_PX = 25;
 
 
 // [v21 JIT] 阵位跟随的除零保护阈值（px）已随 P2 的 `stepShipSlotFollow` 收进
@@ -6827,6 +6836,44 @@ export class BattleScene extends Phaser.Scene {
             //   火控在开火门处消费（authGateOk）。autonomous_posture 层玩家舰队无指令 ⇒ 保持部署。
             // ══════════════════════════════════════════════════════════════════
             const w1DOrder = (((fleet as any).directOrder ?? null)) as DirectOrder | null;
+            // [FIX-⑭] 本帧**仍然有效**的指令。与 `w1DOrder` 分开是为了保住 TS 对 `w1DOrder`
+            //   的窄化（它被下面的 find 闭包捕获；改成 `let` 会让 `kind==='attack'` 的窄化失效）。
+            let w1Direct: DirectOrder | null = w1DOrder;
+            // [FIX-⑭] **`kind:'move'` 到位即完成** —— 否则这条指令永久生效。
+            //
+            //   病灶：`DirectMoveOrder` 只有 `{x,y,issuedAt}`，**没有完成条件、没有超时**；
+            //   全仓清 `directOrder` 只有两处（溃散拒令 / 下一条指令覆盖）⇒ 玩家点一次
+            //   "机动到某点"，该指令就永久是最高权威 ⇒ mission 解算被永久挂起
+            //   （`_missionDest` 在 directOrder 存在时直接 return）、看门狗被 `!w1DOrder` 挡住、
+            //   自主姿态分支全部被压掉。到位后只剩"停船 + 朝向冻结"，即用户实报的
+            //   "停在舷侧挨打"。
+            //
+            //   完成判据：到指令点的距离 ≤ 到位阈值（**与探索航点同源**，见常量注释）。
+            //   ⚠ 必须在 `resolveAuthority` **之前**清，并把局部量一起置空 ——
+            //     否则本帧的权威层仍是 direct_order（"到位即完成"就会晚一帧生效，
+            //     而这一帧恰好是朝向冻结的入口）。
+            //   ⚠ 只清 move，**不碰 attack**：attack 的完成语义由 `tickDirectAttack`
+            //     的 `target_destroyed` / `track_lost` 负责，另有其一致口径。
+            if (w1DOrder && w1DOrder.kind === 'move') {
+                const _arriveD = Phaser.Math.Distance.Between(fleet.x, fleet.y, w1DOrder.x, w1DOrder.y);
+                if (_arriveD <= DIRECT_MOVE_ARRIVE_PX) {
+                    (fleet as any).directOrder = null;
+                    // move 与 attack 互斥（同一 `directOrder` 槽位）⇒ 一并清，保持"两件套"一致。
+                    (fleet as any).attackState = null;
+                    // 相位机残留：`commitDirectOrder` 在下令时把 `_combatControl` 复位为 cruise；
+                    //   完成时若不复位，可能停在 brake/turn 相（`motion='hold'` ⇒ 速度被清零）
+                    //   ⇒ 指令结束后舰队继续定格。注意 `authDecision.clearMotionState` **不能**
+                    //   复用：它只驱动撤退运行时三态迁移，不是相位机复位。
+                    (fleet as any)._combatControl = { phase: 'cruise', phaseSeconds: 0 };
+                    (fleet as any)._uturn = false;
+                    (fleet as any)._directJustIssued = false;
+                    // 清掉后谁接管：① `_missionDest` 的 1Hz 解算恢复写入（不再 early-return）；
+                    //   ② per-frame 的交战/探索/撤退分支本来就在写 `fleetTargetX/Y`，
+                    //   只是此前被"权威运动落地"的 direct_order 覆盖 ⇒ 现在重新生效；
+                    //   ③ 若此刻有敌在射程内 ⇒ 落进"已抵达射位"分支，由 [FIX-⑫] 回瞄接管。
+                    w1Direct = null;
+                }
+            }
             // —— direct attack tick：组装目标可靠追踪档案 ——
             if (w1DOrder && w1DOrder.kind === 'attack') {
                 const w1Tgt = this.globalFleets.find((ef: any) => ef.id === w1DOrder.targetFleetId) ?? null;
@@ -6858,7 +6905,7 @@ export class BattleScene extends Phaser.Scene {
             const authDecision = resolveAuthority({
                 destroyed: !hasCombatUnits(fleet),
                 retreatState: (((fleet as any).retreatState ?? 'none')) as RetreatState,
-                direct: w1DOrder,
+                direct: w1Direct,
                 attack: (((fleet as any).attackState ?? null)) as DirectAttackState | null,
                 planRole: w1PlanRoleSource
                     ? {
@@ -6874,7 +6921,8 @@ export class BattleScene extends Phaser.Scene {
                 directJustIssued: w1JustIssued,
             });
             // —— ack / 拒收：仅 rout 可拒绝直接指令；毁灭层不产生 ack ——
-            if (w1DOrder && authDecision.rejectReason === 'rout') {
+            // [FIX-⑭] 用 `w1Direct`（本帧仍有效者）：刚到位完成的 move 不该再弹"溃散中无法接令"。
+            if (w1Direct && authDecision.rejectReason === 'rout') {
                 // 溃散中无法接令：清 directOrder + attackState，浮泡告知（§"Only a true rout may reject"）
                 (fleet as any).directOrder = null;
                 (fleet as any).attackState = null;
