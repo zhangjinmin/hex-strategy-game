@@ -111,6 +111,8 @@ const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const SRC = path.join(ROOT, 'frontend', 'src');
 const BATTLE = path.join(SRC, 'game', 'battle');
+/** SectorSweep 源文件路径（S2-08 静态断言用；定义在顶部避免 TDZ） */
+const SECTOR_SWEEP_PATH = path.join(BATTLE, 'SectorSweep.ts');
 
 let pass = 0;
 const failures = [];
@@ -271,7 +273,8 @@ if (INTEL.__missing || INTEL.CONTACT_TARGET_MAX_AGE_MS === undefined) {
 
 // ══════════════════════════════════════════════════════════════════════
 // S2 · SectorSweep 几何（6 条）
-// 规格要求导出：sweepWaypoints({fleetId, sectorIndex, origin, clueBearing, R}) → Point[4]
+// 规格要求导出：sweepWaypoints({sectorIndex, origin, clueBearing, R}) → Point[4]
+// ⚠ 无 fleetId：几何是纯的；每舰的"从哪个扇区开始"由 defaultSectorIndex 决定（签名即契约）。
 // ══════════════════════════════════════════════════════════════════════
 section('S2 SectorSweep 四腿几何');
 
@@ -283,7 +286,7 @@ if (!SWEEP_FN) {
 } else {
   const R = 1000;
   const origin = { x: 0, y: 0 };
-  const aim = { fleetId: 7, sectorIndex: 1, origin, clueBearing: 0, R };
+  const aim = { sectorIndex: 1, origin, clueBearing: 0, R };
   const wp = SWEEP_FN(aim);
 
   check('S2-01 返回 4 个航点', () => assert.equal(wp.length, 4));
@@ -309,6 +312,28 @@ if (!SWEEP_FN) {
     approx(Math.hypot(wp[2].x - wp[1].x, wp[2].y - wp[1].y), 1000, 1e-6);
     approx(Math.hypot(wp[3].x - wp[2].x, wp[3].y - wp[2].y), 500, 1e-6);
   });
+
+  // ── 接口面断言：行为断言看不见「模块暴露了什么」──────────────
+  // ── S2-07 / S2-08：**契约型静态断言**（验收方重写版）──────────────────
+  // 来源：实施方提出"导出面与签名也应当被锁"（提案），验收方评估后在此落地并重写。
+  // 为什么必须是静态断言：
+  //   · 导出面是**代码被写下的那一刻**就生效的性质，跑任何东西都不会"变坏"；
+  //   · `SweepAim` 是 TS interface，**运行时被擦除** ⇒ 行为断言根本看不见它。
+  // ⇒ 这正是"行为断言天生看不见形状"那条的实例（第 9 条）。
+  check('S2-07 导出面恰好 4 项（多导出=邀请第二套派生）', () => {
+    const EXPECTED = ['SECTOR_OFFSET_RAD', 'SWEEP_GEOMETRY', 'defaultSectorIndex', 'sweepWaypoints'];
+    const actual = Object.keys(SWEEP).sort();
+    assert.deepEqual(actual, EXPECTED.slice().sort(),
+      `导出面不符；实际 [${actual.join(', ')}]`);
+  });
+  check('S2-08 SweepAim 字段恰好 4 项且不含 fleetId', () => {
+    const src = fs.readFileSync(SECTOR_SWEEP_PATH, 'utf8');
+    const block = src.match(/interface\s+SweepAim\s*\{([\s\S]*?)\n\}/);
+    assert.ok(block, '未找到 interface SweepAim');
+    const fields = [...block[1].matchAll(/^\s{2}(\w+)\s*[?]?:/gm)].map((m) => m[1]).sort();
+    assert.deepEqual(fields, ['R', 'clueBearing', 'origin', 'sectorIndex'],
+      `SweepAim 字段不符；实际 [${fields.join(', ')}]`);
+  });
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -321,8 +346,8 @@ if (!SWEEP_FN) {
   pending('S3-01 同入参两次调用逐位相等', 'sweepWaypoints 缺失');
 } else {
   check('S3-01 同入参两次调用逐位相等', () => {
-    const a = SWEEP_FN({ fleetId: 7, sectorIndex: 1, origin: { x: 3, y: 4 }, clueBearing: 0.7, R: 800 });
-    const b = SWEEP_FN({ fleetId: 7, sectorIndex: 1, origin: { x: 3, y: 4 }, clueBearing: 0.7, R: 800 });
+    const a = SWEEP_FN({ sectorIndex: 1, origin: { x: 3, y: 4 }, clueBearing: 0.7, R: 800 });
+    const b = SWEEP_FN({ sectorIndex: 1, origin: { x: 3, y: 4 }, clueBearing: 0.7, R: 800 });
     assert.deepEqual(a, b);
   });
 }
@@ -334,6 +359,45 @@ if (SWEEP.__missing || typeof SWEEP.defaultSectorIndex !== 'function') {
     const seen = new Set();
     for (let id = 1; id <= 20; id += 1) seen.add(SWEEP.defaultSectorIndex(id));
     assert.equal(seen.size, 3, `实际只出现 ${[...seen].join(',')}`);
+  });
+}
+
+// S3-03：`stableHash32` 必须**纯**——"确定性"是它存在的全部价值。
+//
+// ⚠ 为什么这条必须拆成"静态 + 行为"两半：
+//   · `Math.random()` 能被行为测到（连续调用会变）；
+//   · **`Date.now()` 在同一 tick 内返回值相同 ⇒ 行为测不到**（要到跨帧才漂移）。
+//   ⇒ 所以"体内有没有时钟/随机"是**代码形状**问题，只能读源码静态判；
+//     "同 id 是否恒定"是**可观测后果**，用行为判。
+//   ⇒ 这也是本轮第 9 条：**能静态判的性质用静态断言，行为断言只看得到后果。**
+//
+// ⚠ 此处**不得** require `stableHash32` —— 它是模块私有（不导出），
+//   一旦按导出名探测就会永远 PENDING（"悄悄停止检查"比没有更糟）。
+
+check('S3-03 stableHash32 体内无时钟/随机（静态断言）', () => {
+  const src = fs.readFileSync(SECTOR_SWEEP_PATH, 'utf8');
+  const i = src.indexOf('function stableHash32');
+  assert.ok(i >= 0, '未找到 stableHash32 定义');
+  // 取函数体：从定义处到下一个顶层 `}` 换行
+  const rest = src.slice(i);
+  const end = rest.indexOf('\n}');
+  const body = end >= 0 ? rest.slice(0, end) : rest;
+  assert.ok(
+    !/Date\.now|Math\.random|performance\.now|process\.hrtime/.test(body),
+    'stableHash32 体内出现时钟/随机 —— 扇区分配会逐帧漂移',
+  );
+});
+
+if (SWEEP.__missing || typeof SWEEP.defaultSectorIndex !== 'function') {
+  pending('S3-04 defaultSectorIndex 同 id 多次调用恒定', '导出缺失: defaultSectorIndex');
+} else {
+  check('S3-04 defaultSectorIndex 同 id 连续 200 次恒定（行为断言）', () => {
+    let first = null;
+    for (let i = 0; i < 200; i += 1) {
+      const v = SWEEP.defaultSectorIndex(7);
+      if (first === null) first = v;
+      else assert.equal(v, first, `第 ${i} 次返回 ${v}，与首次 ${first} 不同`);
+    }
   });
 }
 
