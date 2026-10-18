@@ -436,18 +436,15 @@ if (INTENT.__missing || typeof INTENT.resolveMissionMove !== 'function') {
     pending(n, INTENT.__missing ? '模块不存在' : '导出缺失: resolveMissionMove');
   }
 } else {
+  // ⚠ 只传 MissionMoveInput **实际声明**的 4 个字段：
+  //   myTeam/myPower/myFleetCount/enemyLiveFactionCount/clueBearing/searchPoint/nowMs
+  //   属于 computeForceRatio / canCommitSiege 与调用方，**不在这个签名里**。
+  //   （台架也不该演示一个不存在的契约 —— 与删 `SweepAim.fleetId` 同一条规矩。）
   const base = {
     mission: { type: 'attack_fleet', targetId: 11 },
-    myTeam: 1,
     myPos: { x: 0, y: 0 },
-    myPower: 500,
-    myFleetCount: 3,
     records: [],
-    enemyLiveFactionCount: 1,
     enemyBaseRec: null,
-    clueBearing: 0,
-    searchPoint: { x: 900, y: 0 },
-    nowMs: 100000,
   };
   const run = (o) => INTENT.resolveMissionMove(Object.assign({}, base, o));
 
@@ -487,6 +484,21 @@ if (INTENT.__missing || typeof INTENT.resolveMissionMove !== 'function') {
     const d9 = Math.hypot(r.dest.x - 1200, r.dest.y - 0);
     assert.ok(d9 < d5, `应贴近 targetId=9（x=1200），实际 ${JSON.stringify(r.dest)}`);
   });
+
+  // ── S4-11：tie-break 第二级 —— 同 ageMs 时取**离我最近** ────────────────
+  // 第三级（targetId 字典序）**刻意不断言**：它只在"ageMs 相同且坐标完全相同"时才起作用，
+  //   构造需要两支 id 不同、坐标相同的舰队，属于人为极端，且它的存在只为让"完全并列"可判定。
+  //   （但它是真实逻辑：若第二级把 `<` 写成 `<=`，第三级会决定"最后一个赢"还是"第一个赢"。）
+  check('S4-11 同 ageMs 时取离我最近者（tie-break 第二级）', () => {
+    const r = run({
+      records: [
+        rec({ targetId: 5, factionId: 11, x: 900, y: 0, ageMs: 3000, tier: 'fresh' }),
+        rec({ targetId: 9, factionId: 11, x: 100, y: 0, ageMs: 3000, tier: 'fresh' }),
+      ],
+    });
+    const dNear = Math.hypot(r.dest.x - 100, r.dest.y - 0);
+    assert.ok(dNear < 1e-6, `应取更近的 (100,0)；实际 dest=${JSON.stringify(r.dest)}`);
+  });
 }
 
 // —— forceRatio 与 siege 闸：必须由纯函数导出，否则四条防线无法单测 ——
@@ -512,6 +524,20 @@ if (INTENT.__missing || typeof INTENT.canCommitSiege !== 'function') {
     assert.equal(INTENT.canCommitSiege({ forceRatio: 2.5, identifiedCount: 1, enemyLiveFactionCount: 1 }), true);
   });
 }
+
+
+// ── S4-10：`MissionMoveInput` 的字段必须**恰好**是 4 个 ───────────────────
+// 防"传了但不读"的参数回潮（与 SweepAim 删 fleetId 同一条规矩）：
+//   myTeam / myPower / myFleetCount / enemyLiveFactionCount / clueBearing /
+//   searchPoint / nowMs 都不属于本函数 —— 一旦有人"顺手加回来"，这条就红。
+check('S4-10 MissionMoveInput 字段恰好 4 项（无"传了不读"的参数）', () => {
+  const src = fs.readFileSync(path.join(BATTLE, 'FleetIntentSystem.ts'), 'utf8');
+  const blk = src.match(/export interface MissionMoveInput\s*\{([\s\S]*?)\n\}/);
+  assert.ok(blk, '未找到 interface MissionMoveInput');
+  const fields = [...blk[1].matchAll(/^\s{2}(\w+)\s*[?]?:/gm)].map((m) => m[1]).sort();
+  assert.deepEqual(fields, ['enemyBaseRec', 'mission', 'myPos', 'records'],
+    `MissionMoveInput 字段不符；实际 [${fields.join(', ')}]`);
+});
 
 // ══════════════════════════════════════════════════════════════════════
 // S5 · resolveMissionTargets.distanceOf 缺省不变（2 条）
@@ -622,7 +648,7 @@ checkGated(F_MOVE_WIRED, 'S6-05 fuzzy 查证分支不得直赋 fz.ef.x（C-3）'
 // 背景：`resolveMissionMove` 刻意不判 `reliable`（避免第三套约定），
 //   可靠性只在调用方判一次。⇒ 这条把"调用方契约"变成可断言的形状。
 // ⚠ 若第 6 步用了别的过滤形式（例如先拼好数组再传），请告诉验收方改断言，**不要改实现去迁就断言**。
-check('S6-06 接线处用 isKnownTrackReliable 过滤档案（调用方契约）', () => {
+checkGated(F_MOVE_WIRED, 'S6-06 接线处用 isKnownTrackReliable 过滤档案（调用方契约）', () => {
   const src = SCENE_SRC;
   const at = src.search(/resolveMissionMove\s*\(/);
   assert.ok(at >= 0, '未找到 resolveMissionMove 调用点');
