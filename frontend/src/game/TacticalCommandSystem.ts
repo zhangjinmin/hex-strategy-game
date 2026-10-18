@@ -222,16 +222,43 @@ export interface MissionTargetLike {
 export function resolveMissionTargets<T extends MissionTargetLike>(
   fleets: readonly T[],
   targetId: number | undefined,
-  opts: { relation: (fl: T) => boolean; from?: { x: number; y: number } },
+  opts: {
+    relation: (fl: T) => boolean;
+    from?: { x: number; y: number };
+    /**
+     * [C-4] 可选：**排序距离注入**（只影响 `byFac` 分支的排序，不改变返回成员）。
+     *
+     * 为什么需要它：军议面板写的是**阵营 id**，而"该先去打哪一支"应当按**情报档案**判断
+     * （没侦察到的目标不应该排在前面）—— 但档案是团队域数据，本模块（零依赖）读不到。
+     * ⇒ 由调用方注入 `(fleet) => 距离`，缺省仍用"到 from 的真实距离"。
+     *
+     * ⚠ 返回 `Infinity` 表示"没有可用情报"。**不要返回 0** —— 0 会被排在第一位（最优先）。
+     */
+    distanceOf?: (fl: T) => number;
+  },
 ): T[] {
   const live = fleets.filter((fl) => opts.relation(fl) && !!fl.units && fl.units.length > 0);
   const byId = live.filter((fl) => fl.id === targetId);
   if (byId.length > 0) return byId;
   const byFac = live.filter((fl) => fl.factionId === targetId);
   if (byFac.length > 0 && opts.from) {
-    const fx = opts.from.x, fy = opts.from.y;
-    const d2 = (fl: T) => ((fl.x ?? 0) - fx) ** 2 + ((fl.y ?? 0) - fy) ** 2;
-    return byFac.slice().sort((a, b) => d2(a) - d2(b));
+    // ⚠ **缺省路径必须与改动前逐位一致**：这里刻意保留原来的 `d2` 表达式与比较函数，
+    //   不把它"统一"成注入版（统一会引入浮点/顺序差异，且让 missionResolveSim 的 6 条断言失去意义）。
+    if (!opts.distanceOf) {
+      const fx = opts.from.x, fy = opts.from.y;
+      const d2 = (fl: T) => ((fl.x ?? 0) - fx) ** 2 + ((fl.y ?? 0) - fy) ** 2;
+      return byFac.slice().sort((a, b) => d2(a) - d2(b));
+    }
+    // 注入路径。
+    // ⚠ **不能写 `(a, b) => d(a) - d(b)`**：两条都是 `Infinity` 时差是 `NaN`，
+    //   而 `Array.sort` 的比较函数返回 `NaN` 时顺序是**实现定义**的
+    //   ⇒ "两支都没情报"的目标会被排成任意序（且不同引擎可能不同）。
+    //   ⇒ 显式三态比较；且"全部非有限"时直接返回输入序，不依赖稳定排序的隐含假设。
+    const dist = opts.distanceOf;
+    const keyed = byFac.map((fl) => ({ fl, d: dist(fl) }));
+    if (!keyed.some((k) => Number.isFinite(k.d))) return byFac;
+    keyed.sort((a, b) => (a.d === b.d ? 0 : a.d < b.d ? -1 : 1));
+    return keyed.map((k) => k.fl);
   }
   return byFac;
 }

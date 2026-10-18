@@ -3584,6 +3584,17 @@ export class BattleScene extends Phaser.Scene {
                     return !!f && f.team !== myTeamV64;
                 },
                 from: { x: fleet.x, y: fleet.y },
+                // [C-4] 排序改读**情报档案**：军议任务给的是"阵营"，先打哪一支应当看"我知道谁在哪"。
+                //   已确认档案 ⇒ 到档案末次位置的投影距离（档案无 TTL，但 `reliable=false` 表示航迹已失效）；
+                //   无档案 / 航迹失效 ⇒ 排在所有已知目标之后，并在"未知组"内部仍按真实距离排序
+                //   （⚠ 不能用裸 `Infinity`：若全军都无档案，`Infinity` 全等 ⇒ 排序退化、顺序变得不可读，
+                //     等于把"就近选择"这个既有行为悄悄丢掉）。
+                distanceOf: (fl: any) => {
+                    const rec = getKnownContact(this.intelArchive, myTeamV64 ?? -1, fl.id);
+                    const real = Phaser.Math.Distance.Between(fleet.x, fleet.y, fl.x ?? 0, fl.y ?? 0);
+                    if (!rec || rec.reliable === false) return 1e9 + real;
+                    return Phaser.Math.Distance.Between(fleet.x, fleet.y, rec.x, rec.y);
+                },
             });
             if (tgts.length === 0) { clearMission(); return; } // 目标（舰队/阵营）已歼灭 → 任务完成
             const tgt = tgts[0];
