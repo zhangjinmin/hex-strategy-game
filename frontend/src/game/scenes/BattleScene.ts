@@ -31,7 +31,7 @@ import { pickSupremeCommander, isDirectCommandAllowed, isFormalCommandFleet, pic
 import { shouldDeactivateFactionAfterFleetLoss } from '../battle/CommandSystem';
 // 兵力折算：舰种 HP 表（单一真源）与 500:1 比例尺，正反映射共用
 import {
-    SHIP_TYPE_HP, SHIP_SCALE, resolveShipType,
+    SHIP_TYPE_HP, SHIP_SCALE, resolveShipType, resolveClassTypeCn,
     // [大战场] 演习轨道必须走**与战役轨道同一个**兵力折算入口（见 shipScaling.ts 的注释）：
     // 历史上演习用硬编码 deck（simFullDeck = 8 艘）建舰，完全绕过折算 ⇒ 用户看到的恒是 8 艘。
     totalsOfComposition, fleetEntityCount, fleetVisualCount, totalShipsOf,
@@ -2337,7 +2337,7 @@ export class BattleScene extends Phaser.Scene {
                     // R10-A1/B9：记住本舰队的占领目标，供"离圈清零"使用（见下方 else 分支）
                     fl._capTarget = capTarget;
                     // 电子战与特种潜入判定
-                    const hasSpecOps = fl.units.some((u: any) => u.classType === '电子' || u.classType === '突击');
+                    const hasSpecOps = fl.units.some((u: any) => resolveClassTypeCn(u.classType) === '电子' || resolveClassTypeCn(u.classType) === '突击');
                     const isHighIntel = (fac.admiralStats?.intelligence || 0) > 80;
                     const isInfiltration = fl.stance === 'siege' && (hasSpecOps || isHighIntel);
 
@@ -3116,7 +3116,7 @@ export class BattleScene extends Phaser.Scene {
         if (!fleet || !fleet.units) return 0;
         let n = 0;
         for (const u of fleet.units) {
-            if (u.classType === '电子' || u.classType === 'electronic') n++;
+            if (resolveClassTypeCn(u.classType) === '电子' || u.classType === 'electronic') n++;
         }
         return n * EW_JAMMING_PER_SHIP;
     }
@@ -3127,7 +3127,7 @@ export class BattleScene extends Phaser.Scene {
      *  · 隐蔽转换 = 脱离交战窗口后 breakFleetIdentification（航迹失效唯一入口）。 */
     private activateElectronicWarfare(fleet: any, myFac: any) {
         // 需要真实电子舰才可实施干扰
-        const hasEwShip = fleet.units.some((u: any) => u.classType === '电子' || u.classType === 'electronic');
+        const hasEwShip = fleet.units.some((u: any) => resolveClassTypeCn(u.classType) === '电子' || u.classType === 'electronic');
         if (!hasEwShip || this.battleResolutionStarted) return;
         const now = this.time.now;
         // 欺骗：周期性假目标（expiresAt 过期自动清；fuzzy ⇒ 可查证不可开火）
@@ -7398,7 +7398,19 @@ export class BattleScene extends Phaser.Scene {
                     const flankAngle = (fleet as any)._flankAngleLock as number;
                     const approachAngle = Math.atan2(closestEnemyFleet.y - fleet.y, closestEnemyFleet.x - fleet.x);
                     // 夹角越小越接近正面，夹角越大越接近侧后
-                    const angleDiff = Math.abs(Math.atan2(Math.sin(approachAngle - enemyAngle), Math.cos(approachAngle - enemyAngle)));
+                    // [FIX-⑪] **参考系统一**。`approachAngle` 以**我方**为原点（我→敌），
+                    //   而 `enemyAngle` 是敌方舰首（以**敌方**为原点）⇒ 两者直接相减是跨坐标系运算：
+                    //   敌舰首朝我 ⇒ 夹角≈π；敌舰首背我 ⇒ 夹角≈0 —— 与上一句注释以及下方
+                    //   `_flankPhase` 的三档语义**整体反相**（正面被判成侧后，包抄支因此只在我
+                    //   已在他背后时才触发，正面互射永远落进 `else` 里的"标准接近"支）。
+                    //   同块的 `_flankAngleLock = enemyAngleRaw + Math.PI ± π/4` 是**加了 π** 的
+                    //   ⇒ 作者本就知道要用敌后方位，只有这里漏了。
+                    //   现在把「我→敌」翻成「敌→我」再比 ⇒ 夹角 = 敌舰首与我所在方位的偏离角，
+                    //   语义回到注释：小=正面、中=侧翼、大=侧后。
+                    const angleDiff = Math.abs(Math.atan2(
+                        Math.sin(approachAngle + Math.PI - enemyAngle),
+                        Math.cos(approachAngle + Math.PI - enemyAngle),
+                    ));
                     // [v46-B] **侧后相位滞回**（双阈值）：原单阈值 `angleDiff > 0.6π` 在阈值附近逐帧
                     //   翻面，而 `isBehind` 一变目标点就跳到敌人另一侧 ⇒ 与 v46-A 同源的另一半振荡。
                     //   相位 0=正面 / 1=侧翼 / 2=侧后；**进入用严阈值、退出用松阈值** ⇒ 阈值处不再抖动。
@@ -7431,7 +7443,11 @@ export class BattleScene extends Phaser.Scene {
                         //   （`_probe_v47` 钉敌实测：mfd=278 ⇒ 进拉开 ⇒ 目标点跳 1470px ⇒ 掉头，
                         //   拉开态持续 254 帧；用户视频同一现象）。
                         //   且战术上等于把逃跑窗口送给敌人（doctrine S6「敌露背后 ⇒ 追击」打架）。
-                        const _foeFleeing = angleDiff <= Math.PI * 0.3 || closestEnemyFleet.state === 'retreating';
+                        // [FIX-⑪] 本式口径随 `angleDiff` 的参考系修正**一并翻转**（逐处判断，不机械替换）：
+                        //   旧口径下"敌背对我"落在 `angleDiff ≤ 0.3π`；新口径下它落在 `angleDiff ≥ 0.7π`
+                        //   （= π − 旧阈值）。若照抄旧式，则"敌正对我"会被当成"敌在逃"，
+                        //   拉开相位永远不会进入 ⇒ 近战被贴脸时不再脱离。
+                        const _foeFleeing = angleDiff >= Math.PI * 0.7 || closestEnemyFleet.state === 'retreating';
                         if (_mp === 2) { if (minFleetDist > dOut || _foeFleeing) _mp = 1; }
                         else if (_mp === 1) { if (minFleetDist < dIn && !_foeFleeing) _mp = 2; else if (minFleetDist > eOut) _mp = 0; }
                         else { if (minFleetDist < dIn && !_foeFleeing) _mp = 2; else if (minFleetDist < eIn) _mp = 1; }
@@ -7785,7 +7801,12 @@ export class BattleScene extends Phaser.Scene {
                 if (closestEnemyFleet) {
                     const efa = closestEnemyFleet.facingAngle || 0;
                     const ap2 = Math.atan2(closestEnemyFleet.y - fleet.y, closestEnemyFleet.x - fleet.x);
-                    const ad = Math.abs(Math.atan2(Math.sin(ap2 - efa), Math.cos(ap2 - efa)));
+                    // [FIX-⑪] 与分支解算**同一口径**：`+π` 把「我→敌」翻成「敌→我」再比，
+                    //   否则探针读到的 `adiff/behind/flank` 与真正参与判定的 `angleDiff` 恰好互补，
+                    //   会把"正面互射"读成"侧后包抄"（诊断方向反了比没有诊断更坏）。
+                    const ad = Math.abs(Math.atan2(
+                        Math.sin(ap2 + Math.PI - efa), Math.cos(ap2 + Math.PI - efa),
+                    ));
                     d.ex = closestEnemyFleet.x; d.ey = closestEnemyFleet.y; d.efa = efa;
                     d.adiff = ad;
                     d.behind = ad > Math.PI * 0.6 ? 1 : 0;
