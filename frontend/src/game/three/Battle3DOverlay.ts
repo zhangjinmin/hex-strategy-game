@@ -238,6 +238,25 @@ const FLAGSHIP_FX_STYLE: FlagshipFxStyle = 'a';
 const FLAGSHIP_FX_WHITEN = 0.08;
 /** [a/e] 描边壳厚度系数：沿法线外扩量 = 舰体半长 × 本值（实测 0.022 ⇒ 贴脸约 3px，中景自然消失）。 */
 const FX_OUTLINE_K = 0.016;
+/**
+ * 【旗舰标识·定稿 a】描边壳的**三档强度**（用户定案：只用方案 A，但"稍微有一点点辨识度就足够"
+ * ⇒ 原 0.016 / 0.95 偏强，要能调弱）。
+ *
+ *   weak   外扩 0.9% 半长 / 不透明度 0.45 —— 贴脸与中近景可见，中景几乎消失（"一点点"的落点）
+ *   mid    外扩 1.3% 半长 / 不透明度 0.62 —— 比现状弱一档，中景仍看得出
+ *   strong 外扩 1.6% 半长 / 不透明度 0.95 —— **等于定稿前的现状**，仅作对照基线
+ *
+ * 只动"外扩量 + 不透明度"两个量，**不动颜色/提白**（三档同一色相 ⇒ 切换强度不会改变阵营辨识）。
+ * ⚠ 三档都必须保留 depth-only 预渲染 + polygonOffset：那是"只有外缘一圈"的前提，不是强度参数。
+ */
+type FlagshipFxALevel = 'weak' | 'mid' | 'strong';
+const FLAGSHIP_FX_A_LEVEL: Record<FlagshipFxALevel, { k: number; op: number }> = {
+  weak:   { k: 0.009, op: 0.45 },
+  mid:    { k: 0.013, op: 0.62 },
+  strong: { k: FX_OUTLINE_K, op: 0.95 },
+};
+/** 编译期默认档：weak（用户原话"一点点辨识度就够"） */
+const FLAGSHIP_FX_A_LEVEL_DEFAULT: FlagshipFxALevel = 'weak';
 /** [b] fresnel 边缘光：功率（越大 ⇒ 亮边越窄越锐）与峰值增益。 */
 const FX_RIM_POW = 3.2;
 const FX_RIM_GAIN = 1.2;
@@ -260,6 +279,8 @@ const FX_BREATHE: Record<FlagshipFxStyle, number> = { a: 0.45, b: 0.55, c: 0, d:
 /** 挂在标识 Group `userData.fx` 上的运行期数据（淡出/呼吸/热切换都从这一份读，避免逐帧 new）。 */
 interface FlagshipFxData {
   style: FlagshipFxStyle;
+  /** [a] 本标识所用的强度档（热切换判据 / 取证读取；非 a 方案为 undefined） */
+  level?: FlagshipFxALevel;
   /** 自转角速度（弧度/秒），0 = 不转（五方案全为 0：任何"转动的环"都会读成装饰而非标识） */
   spin: number;
   /** 呼吸角频率（弧度/秒），0 = 不呼吸（c 自带 6s 脉冲） */
@@ -4001,6 +4022,8 @@ export class Battle3DOverlay {
     const now = performance.now() / 1000;
     // 【旗舰标识 v2】本帧方案（一键对比：`window.__flagshipRingStyle` 改动 ⇒ 本帧就地换装，无需重开战）
     const fxStyleNow = this.flagshipFxStyle();
+    // 【旗舰标识·定稿 a】本帧强度档（`window.__flagshipOutlineLevel` 改动 ⇒ 同一条热切换通道换装）
+    const fxA = fxStyleNow === 'a' ? this.flagshipFxALevel() : undefined;
 
     // ── 第零遍：队间高度档（WS3）。每方（= factionId，1v1 会战里攻守各一方）的各支分舰队
     //    按**编制血缘**分档：档数只由**根舰队数**决定（根 = 无 `_detachedFrom`），分舰队继承其根的
@@ -4457,8 +4480,11 @@ export class Battle3DOverlay {
       //   ② `grow` 淡出：任何特效都同一约束——不许在"线框已消失"的中景独立存在。
       //   ③ 具体怎么淡由各方案自持的 `update(k, t)` 决定（a/d/e 改 opacity，b 改 rim uniform，
       //      c 改 emissiveIntensity / 线色）—— 不再要求"所有方案都是一组 LineBasicMaterial"。
-      if (entry.isFlagship && entry.fxStyle !== fxStyleNow) {
-        const prevAxes = (entry.cmdRing?.userData?.fx as FlagshipFxData | undefined)?.axes;
+      const prevFx = entry.cmdRing?.userData?.fx as FlagshipFxData | undefined;
+      // [定稿 a] 档位变化与方案变化走同一条重建通道（只在 a 方案下比较档位）
+      const levelChanged = !!fxA && !!prevFx && prevFx.level !== fxA;
+      if (entry.isFlagship && (entry.fxStyle !== fxStyleNow || levelChanged)) {
+        const prevAxes = prevFx?.axes;
         this.detachFlagshipFx(entry);
         entry.cmdRing = this.attachFlagshipFx(entry.group,
           factionColor(this.getFac(u.factionId) || {}), this.shipLenOf(u, fleet), fxStyleNow,
@@ -4530,6 +4556,8 @@ export class Battle3DOverlay {
      *  `mats`（供取证），那些材质的 opacity 绝不能被淡出逻辑改写。 */
     const fadeList: { m: any; base: number }[] = [];
     let restore: (() => void) | undefined;
+    /** [a] 本次挂载所用的强度档（写进 `userData.fx` ⇒ 热切换时据此判断"档位变了没有"） */
+    let fxLevel: FlagshipFxALevel | undefined;
     let update: (k: number, t: number) => void = () => { /* 无可淡出材质（b/c 自有实现） */ };
 
     // 舰体本体（排除标识自身）：只有 Phong 面片算"舰体"，线框 / 引擎光斑不是。
@@ -4671,7 +4699,11 @@ export class Battle3DOverlay {
 
     if (style === 'a') {
       // ── a 描边壳：贴着舰体的发光轮廓边（用户点名的方向）──
-      addOutline(FX_OUTLINE_K, 0.95);
+      //   强度档（weak/mid/strong）只改「外扩量 + 不透明度」，见 `FLAGSHIP_FX_A_LEVEL`
+      const lv = this.flagshipFxALevel();
+      const lvp = FLAGSHIP_FX_A_LEVEL[lv];
+      addOutline(lvp.k, lvp.op);
+      fxLevel = lv;
       update = fadeAll;
     } else if (style === 'b') {
       // ── b fresnel 边缘光：不改几何，给舰体 Phong 材质注入 rim 项 ──
@@ -4771,7 +4803,7 @@ export class Battle3DOverlay {
 
     group.add(root);
     const fx: FlagshipFxData = {
-      style, spin: 0, breathe: FX_BREATHE[style], update, restore, mats,
+      style, level: fxLevel, spin: 0, breathe: FX_BREATHE[style], update, restore, mats,
       axes: { a: hw, b: hl, hl, hw, hh, cx, cz },
     };
     root.userData.fx = fx;
@@ -4891,6 +4923,14 @@ export class Battle3DOverlay {
     const raw = w && w.__flagshipRingStyle;
     return (raw === 'a' || raw === 'b' || raw === 'c' || raw === 'd' || raw === 'e')
       ? raw : FLAGSHIP_FX_STYLE;
+  }
+
+  /** 【旗舰标识·定稿 a】描边壳强度档：编译期默认 + 运行时覆盖 `window.__flagshipOutlineLevel` */
+  private flagshipFxALevel(): FlagshipFxALevel {
+    const w: any = (typeof window !== 'undefined') ? window : undefined;
+    const raw = w && w.__flagshipOutlineLevel;
+    return (raw === 'weak' || raw === 'mid' || raw === 'strong')
+      ? raw : FLAGSHIP_FX_A_LEVEL_DEFAULT;
   }
 
   // ════════════════════════════════════════════════════════════════════════
