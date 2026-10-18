@@ -7681,6 +7681,13 @@ export class BattleScene extends Phaser.Scene {
                     if (fzRec) {
                         fleetTargetX = fzRec.x; fleetTargetY = fzRec.y;
                     } else {
+                        // ① 为什么读：无档案时仍需"朝大致方向查证"，否则会回到 v6 的
+                        //    "双方互判模糊 ⇒ 双双驻守 ⇒ 永远打不起来"。
+                        // ② 读多少：只吸附到 `2×hexRadius` 的**格心**（误差 ≤ hexRadius）。
+                        // ③ 契约：这是"**去掉精确值**"而非"**去掉位置**" ——
+                        //    本项目的口径是「AI 只知道**档案位置**或**格级大致位置**」，
+                        //    不是"AI 不知道你在哪"。对外表述不要越过这条。
+                        // ⚠ 不要"顺手修正"成"不查证"：那会复活 v6 的互啃问题（见 ①）。
                         const cell = Math.max(1, this.hexRadius * 2);
                         fleetTargetX = Math.round(fz.ef.x / cell) * cell;
                         fleetTargetY = Math.round(fz.ef.y / cell) * cell;
