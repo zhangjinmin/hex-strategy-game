@@ -6770,7 +6770,15 @@ export class BattleScene extends Phaser.Scene {
             let isRetreating = false;
             // [FIX-2.1 · #73] 非接战帧清「接战」标记；engaging 分支内再置真 ⇒
             //   仅"脱战→重新接战"会重掷侧翼选边（连同首次 / 目标 id 变化两种情形）。
-            if (fleet.state !== 'engaging') (fleet as any)._flankEngaged = false;
+            if (fleet.state !== 'engaging') {
+                (fleet as any)._flankEngaged = false;
+                // [v99] 脱战即清距离保持的滞回记忆（与 `_mPhase` 同生命周期口径）。
+                (fleet as any)._standoffKind = null;
+            }
+            // [v99] 倒车标志是**逐帧**语义：只有本帧标准接近支判定为 reverse 才置真。
+            //   不能让它跨帧残留 —— 否则上一帧的 reverse 会污染本帧的包抄/相位 1 分支
+            //   （`_backing` 会把舰首钉在敌向，导致包抄时横向平移）。
+            (fleet as any)._standoffBacking = false;
 
             if (fleet.state !== fleet.lastState) {
                 if (fleet.state === 'engaging') this.showFleetDialogue(fleet, 'engage');
@@ -7491,6 +7499,10 @@ export class BattleScene extends Phaser.Scene {
                         //   换目标 / 脱战重接战 ⇒ 允许重新尝试一次包抄。不新增状态机。
                         (fleet as any)._flankBlocked = false;
                         (fleet as any)._flankNoFireSince = null;
+                        // [v99] 距离保持三态的滞回记忆也挂同一生命周期：
+                        //   换目标/脱战重接战必须从"无记忆"起步，否则上一目标的 reverse/hold
+                        //   会带着陈旧 prevKind 进入新目标的首帧。
+                        (fleet as any)._standoffKind = null;
                         // [v47·P1] _mPhase 与 flank 组**同生命周期**清零：它只在通用 search 分支更新，
                         //   换目标/脱战重接战若不清 → 陈旧 2 会误武装 _backing（攻坚直冲变 55% 倒退速）。
                     }
@@ -7694,11 +7706,12 @@ export class BattleScene extends Phaser.Scene {
                             // 同款通道钉在敌向（位移 ≠ 舰首）。
                             // ⚠ 这里的"目标在身后"是**预期**（探针里表现为 dot<0），与旧 bug 的
                             //   区别在于：旧写法没有配套的舰首锁定，所以连舰首都跟着转过去。
-                            const _escAngle = Math.atan2(
-                                fleet.y - closestEnemyFleet.y, fleet.x - closestEnemyFleet.x,
-                            );
-                            fleetTargetX = fleet.x + Math.cos(_escAngle) * idealDist * 0.5;
-                            fleetTargetY = fleet.y + Math.sin(_escAngle) * idealDist * 0.5;
+                            // ⚠ 倒退量 = `idealDist − d`（只补足缺的那一点），**不是**相位 2 的
+                            //   `0.5·idealDist`：那是"被贴脸后脱离"的大退，而本支只是 5% 死区外的
+                            //   小修正；用 0.5·idealDist 会把 42px 的误差放大成数百 px 的来回冲刺。
+                            //   公式与"标准接近"同一条 —— `d < idealDist` 时它自然落在身后。
+                            fleetTargetX = _lead.x - Math.cos(approachAngle) * idealDist;
+                            fleetTargetY = _lead.y - Math.sin(approachAngle) * idealDist;
                         } else if (_standoff.kind === 'hold') {
                             // 悬停：不生成任何 waypoint（停在原地）。舰首**不由本分支写**，
                             //   沿用既有朝向（v72 契约：交战中不把舰首重绑到敌向）。
