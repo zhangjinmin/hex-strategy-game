@@ -219,6 +219,8 @@ const F_DISTOF = (() => {
  *     ⇒ 函数存在但还没接线时，旧代码当然还留着旧写法 ⇒ 此时报红是**误红**（"还没做"被当成"做错了"）。
  *   ⇒ 旗标必须对齐断言的真实依赖，而不是复用"同类功能"的旗标。
  */
+/** `canCommitSiege` 是否已接线到 BattleScene（决定调用侧口径能否被检查） */
+const F_SIEGE_WIRED = /\bcanCommitSiege\s*\(/.test(SCENE_SRC);
 /** `countLiveEnemyFactions` 是否已导出（僵尸阵营口径的唯一真源） */
 const F_LIVE_FACTIONS = !!INTENT && !INTENT.__missing && typeof INTENT.countLiveEnemyFactions === 'function';
 const F_MOVE_WIRED = !!INTENT && !INTENT.__missing
@@ -618,7 +620,7 @@ if (INTENT.__missing || typeof INTENT.canCommitSiege !== 'function') {
   // 僵尸阵营 = `active: true` 但 `combatFleetCount === 0`（已被打光、尚未置 inactive）
   //   ⇒ 若把它数进去，`need` 会被抬到永远达不成 ⇒ **终盘永不攻坚**。
   // 三种情形都要覆盖，缺一条都会留下一个死闸方向。
-  checkGated(F_LIVE_FACTIONS, 'S4-19 countLiveEnemyFactions 排除僵尸 / 未参战 / 空数组', () => {
+  checkGated(F_LIVE_FACTIONS, 'S4-20 countLiveEnemyFactions 排除僵尸/未参战/空/NaN/缺active', () => {
     const f = INTENT.countLiveEnemyFactions;
     // ① 僵尸阵营不计（active 但无战斗舰队）
     assert.equal(f({ factions: [
@@ -628,14 +630,38 @@ if (INTENT.__missing || typeof INTENT.canCommitSiege !== 'function') {
     // ② 未参战阵营不计（active=false 但仍有舰队）
     assert.equal(f({ factions: [{ id: 'c', active: false, combatFleetCount: 3 }] }), 0,
       '未参战阵营被计入');
+    // ④ NaN / 负数一律不计（实现用 `!(combatFleetCount > 0)`，比 `=== 0` 更严）
+    assert.equal(f({ factions: [
+      { id: 'd', active: true, combatFleetCount: NaN },
+      { id: 'e', active: true, combatFleetCount: -1 },
+    ] }), 0, 'NaN/负数被计入 ⇒ 计数虚增');
     // ③ 空数组 ⇒ 0；且 0 经 canCommitSiege 的 max(1,·) 兜底后仍**允许**攻坚
     //    ← 这条防"空 ⇒ 永远不许"的死闸（若有人把 need 写成 max(0,·) 或对 0 特判）
     assert.equal(f({ factions: [] }), 0, '空数组结果应为 0');
+    // ⑤ 缺 `active` 字段 ⇒ 不计（严格 `active !== true`；若写成"只要不是 false"就会虚增）
+    assert.equal(f({ factions: [{ id: 'x', combatFleetCount: 3 }] }), 0, '缺 active 字段被当成参战');
     assert.equal(
       INTENT.canCommitSiege({ forceRatio: 3, identifiedCount: 1, enemyLiveFactionCount: 0 }),
       true,
       'enemyLiveFactionCount=0 时被闸死 ⇒ 终盘永不攻坚',
     );
+  });
+
+  // ── S4-19：B3 接线处必须「先数有舰队的阵营，再喂给闸」──────────────────
+  // 为什么这条不能靠纯函数：`countLiveEnemyFactions` 只锁"僵尸不计"，
+  //   但 `combatFleetCount` 从哪来是**调用侧的事实**（`active` ≠ 有舰队）。
+  //   ⇒ 若有人图省事写 `store.factions.filter(f => f.active).length`，两个标记都不会出现。
+  // 正确形态（两者必须同时出现在 `canCommitSiege(` 附近）：
+  //   enemyLiveFactionCount: countLiveEnemyFactions({ factions: … combatFleetCount: hasCombatUnits(...) … })
+  // ⚠ 「僵尸是否计入」是**当前选择**，不是真理；若裁决改成"僵尸也算"，本条与 S4-20 需同步改。
+  checkGated(F_SIEGE_WIRED, 'S4-19 接线处同时出现 countLiveEnemyFactions( 与 hasCombatUnits(', () => {
+    const at = SCENE_SRC.search(/\bcanCommitSiege\s*\(/);
+    assert.ok(at >= 0, '未找到 canCommitSiege 调用点');
+    const win = SCENE_SRC.slice(Math.max(0, at - 2500), at + 500);
+    assert.ok(/countLiveEnemyFactions\s*\(/.test(win),
+      '调用处未见 countLiveEnemyFactions —— 敌阵营数可能直接数 active 阵营');
+    assert.ok(/hasCombatUnits\s*\(/.test(win),
+      '调用处未见 hasCombatUnits —— combatFleetCount 的来源不可信（active ≠ 有舰队）');
   });
 }
 
