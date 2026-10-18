@@ -1,0 +1,576 @@
+/**
+ * bcAcceptanceSim.cjs — B+C 切片的**独立验收台架**（作者：general-purpose-5，非实施者）
+ *
+ * ── 这份台架的独立性从哪来 ──────────────────────────────────────────────
+ * 1. **期望值全部是字面量**，禁止 `import` 被测量的常量。
+ *    理由：本轮主要缺陷类型是"常量写错了"。若测试 import 那个常量，"常量被改错"在测试里就
+ *    不可见 —— 测试会跟着一起改、一起绿（即 `f(x) === f(x)` 的自证）。
+ *    ⚠ 这与"生产代码禁止写字面量"**不矛盾**：那条防跨文件漂移，这条防"测试跟着错"。
+ *    ⚠ 禁止有人为了"统一风格"把下面的字面量改成 import。
+ * 2. **夹具全部手写**：records 数组不调用 `recordKnownContact` 生成（否则落库写错会让夹具也错）。
+ * 3. **不复用实施者的断言文件**。
+ *
+ * ── PENDING 与 FAIL 的区别 ───────────────────────────────────────────────
+ * · PENDING = 模块/导出尚不存在（未实现，或导出名与规格不符）——**不计失败**，但会在末尾列出。
+ * · FAIL    = 模块存在但断言不成立 —— **计入退出码**。
+ * 这样本文件在实现落地前也能跑，用于自检台架本身是否可用。
+ *
+ * 用法：node scripts/bcAcceptanceSim.cjs
+ *
+ * ⚠ 口径：**以运行时摘要行 `PASS n / FAIL n / PENDING n` 为唯一口径**。
+ *   不要用 `grep -c PASS` 之类去数（会把摘要行本身算进去，也会漏掉循环内产生的断言）。
+ *   本条是踩过的坑：手抄条数会与实跑长期不一致，而"数字没实测"正是本文件要防的错误本身。
+ *
+ * ⚠ 汇报任何数字时，标注它属于哪一类（**汇报环节的同一类病**）：
+ *   [实测] 夹具跑出来、与实现无关（附命令 + 原始输出行）  → 可作验收依据
+ *   [推导] 由【规格常量】按公式**手算**（任何人代入都能复现） → 可作验收依据
+ *   [基线] 跑被测实现得到的现状值（before/after 对照）      → **只做漂移对照，不可作门槛**
+ *   [推算] 手算估计（"约 260px @0.9px/帧 ≈ 5s"）            → 只能当"该往哪个方向红"的预期
+ *
+ *   两条最容易犯的错：
+ *   · 把 [推算] 当 [实测] 汇报 —— 把"没做"说成"做了"；
+ *   · **把 [基线] 当门槛** —— "偏差 ≤10%" 只证明"没变糟"，不证明"变对了"。
+ *     一个完全没改的实现也能与基线全等 ⇒ 全绿。这是"改了个寂寞"的最优伪装。
+ *   ⇒ 门槛必须**独立于被测实现**：只能来自 [实测] 或 [推导]。
+ *   ⇒ [推导] 的公式里若含被测函数的输出（如先调 `phaseThresholdsFrom` 再断言其值），
+ *     即退化为 #1（抄被测值），应改判为 [基线]。
+ *
+ * ════════════════════════════════════════════════════════════════════════
+ * 验收方法论（**适用于本项目所有台架，不只 B+C**）
+ * ════════════════════════════════════════════════════════════════════════
+ * 一个绿色的断言要同时回答三个问题，缺任何一个，绿色都不可信：
+ *   ① 值对不对      → 期望独立于实现
+ *   ② 在正确输入上测 → 输入跟随实现
+ *   ③ 那个输入还构得成问题吗 → 采样前断言"结构上可采样"
+ *
+ * —— 四种"假绿"（测试通过，但没测到东西）——
+ *  #1 期望抄了被测常量     ：常量写错时测试跟着错     → 期望值用【字面量】
+ *  #2 取样点写死           ：常量改了、取样跑偏       → 输入【跟随】真值函数
+ *  #3 区间宽度为 0         ：实现退化，断言落在空集上 → 【结构前置断言】
+ *     （实例：far === approach 时，"两者之间的中点"退化成一个点）
+ *     ⚠ 结构前置要断言"**分支可达**"（区间宽度 ≥ 下界），不只是"顺序正确"：
+ *       严格不等式链只能拦住"全为 0"，拦不住"有序但极小"（4 > 3 > 2 > 1 px 带宽）。
+ *  #4 分母退化           ：样本没了，指标变成常数     → 【比值/占比型先断言分母 ≥ 下限】
+ *     （实例：空样本兜底成 1 ⇒ `|1/1−1| = 0 ≤ 0.10` 恒真）
+ *  #5 分子恒 0 的上界断言 ：分母正常、但信号永远不出现 → 【正向对照】
+ *     （实例：`翻转 ≤1`；若分档函数恒返回同一档，则 0 次翻转，断言恒真）
+ *     ⚠ #4 与 #5 互补：#4 管"分母没了"，#5 管"分母在、但分子永远是 0"。
+ *       判据方向速查里的 `≤ 配正向对照` 就是 #5 的通用形式。
+ *
+ * —— 判据方向速查 ——
+ *   `≤` 型 → 必须配"该指标能变大"的正向对照（否则恒 0 即恒真）
+ *   `≥` 型 → 必须配上限（防反向退化，如"全部落在同一档"）
+ *   `===` 型 → 不用配（精确等值天然不空转）
+ *   **占比/比值/分布统计型 → 无论方向，先断言分母 ≥ 样本量下限**
+ *     （`0/0 === NaN`，而 NaN 与各比较运算符的结果各不相同，靠它"恰好变成红"是脆的）
+ *
+ * —— #6 容差纪律（最容易破，且破了看不出来）——
+ *   **容差只能吸收"无法消除的噪声"，不能吸收"量错了"。**
+ *   例：把命中距离当 `≤ 射程` 的证据 —— 但 `fireGate` 门控的是**开火瞬间**的距离；
+ *       弹道飞行期间目标会移动，命中距离可以合法越界 ⇒ 你会看到 3~5% 越界，
+ *       以为是插值噪声、给个 0.95 容差 —— **实际上是把"测量点选错了"永久埋掉**。
+ *   ⇒ 先问"这个量的定义与判定时刻一致吗"，再谈给多大容差。
+ *   ⇒ 容差一旦超过 5%，必须在 check 名字里写清"这 5% 是什么"（噪声来源），否则视为掩盖。
+ *
+ * —— #7 同源断言（#1 的延伸）——
+ *   **证据不能取自被判定者本身，否则是同义反复。**
+ *   例：门控写成 `d <= effectiveRange`，记录时也存 `{d, r: effectiveRange}`，再断言 `d <= r`
+ *       ⇒ 恒真，只能抓"有人绕过门控"，抓不到"门控的射程值本身错了"。
+ *   ⇒ 比对对象必须来自**规格常量**（如 `u.range`，地形只会更短）；
+ *      若还想单独锁"没绕过门控"，另写一条**同一性断言**并明确标注它是同一性。
+ *   ⇒ 判据：**"如果这个断言失败，是被测逻辑错了，还是我被自己的记录值骗了？"**
+ *
+ * —— #8 泄漏类断言（测"不该看见的东西有没有漏"）——
+ *   需求是"某档不得泄露 X"时，断言必须写成 **"输出与 X 无关"**，而不是"输出看起来对"。
+ *   例：`fuzzy` 不得泄露兵力 ⇒ 断言"该舰队的**标记数量**与 `units.length` 无关"
+ *       （两个兵力不同的舰队，在 fuzzy 下标记数必须相同；若每单位一个符号，数一下就知道几艘）。
+ *   ⇒ 做法：构造两个仅 `units.length` 不同的夹具，断言该档输出**逐项相等**。
+ *   ⇒ 反例：只断言"标记存在" —— 它无法发现"标记数 = 舰数"这种泄漏。
+ *
+ * —— 哪类数字该字面量 ——
+ *   被测对象的设计常量（阈值/比例/上限） → 期望里【必须字面量】（不能看答案）
+ *   测试自己构造的输入参数（R/span/fleetId/N） → 【应当字面量】（题目要可复现）
+ *     ⚠ 同一 check 用多组参数时，**把参数写进 check 名字**（如 `A2(span=2500,R=880)`），
+ *       否则改夹具后红，会被误读成"实现坏了"。
+ *   同一性断言的两边（`A === B`） → 【必须 import】两边
+ *     （它问的是"两个符号是否指向同一个值"，不关心值等于多少；天然免疫 #1）
+ *   `config/**` 里的常量 → **先问"这个数该不该变"，再决定**：
+ *     承载设计意图（不该变） → 期望里写字面量，并注明"这是意图，不是抄值"
+ *     只是可调参数（允许优化） → **不要断言它的值**，改断言关系/排序
+ *        （写死 ⇒ 以后调参必红；import ⇒ 调参时它跟着动、等于没锁。两者都错）
+ *     仅用于构造输入（取样点/夹具） → 允许 import
+ *     ⚠ 漏掉第二行，人会一律写死当前值，把可调参数冻住 —— 这是"防抄值"的副作用。
+ * ════════════════════════════════════════════════════════════════════════
+ */
+'use strict';
+
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const ROOT = path.join(__dirname, '..');
+const SRC = path.join(ROOT, 'frontend', 'src');
+const BATTLE = path.join(SRC, 'game', 'battle');
+
+let pass = 0;
+const failures = [];
+const pendings = [];
+
+function check(name, fn) {
+  try {
+    fn();
+    pass += 1;
+    process.stdout.write(`  PASS ${name}\n`);
+  } catch (e) {
+    failures.push(`${name}: ${e.message}`);
+    process.stdout.write(`  FAIL ${name}: ${e.message}\n`);
+  }
+}
+function pending(name, why) {
+  pendings.push(`${name}（${why}）`);
+  process.stdout.write(`  PEND ${name}（${why}）\n`);
+}
+function section(t) {
+  process.stdout.write(`\n=== ${t} ===\n`);
+}
+/** 按"该特性是否已落地"决定 PENDING 还是硬断言（细粒度，见下 F_* 旗标） */
+function checkGated(flag, name, fn) {
+  if (!flag) {
+    pending(name, '该特性未落地');
+    return;
+  }
+  check(name, fn);
+}
+function approx(a, b, eps = 1e-6) {
+  assert.ok(Number.isFinite(a), `期望有限数，实际 ${a}`);
+  assert.ok(Math.abs(a - b) <= eps, `期望 ${b}±${eps}，实际 ${a}`);
+}
+/** 角度差（归一化到 (-π, π]） */
+function angDiff(a, b) {
+  let d = (a - b) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d <= -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
+// ── 懒加载：缺失即 PENDING，不抛 ────────────────────────────────────────
+function load(rel) {
+  try {
+    return require(path.join(ROOT, rel));
+  } catch (e) {
+    return { __missing: e.message };
+  }
+}
+const INTEL = load('frontend/src/game/battle/intelFreshness.ts');
+const SWEEP = load('frontend/src/game/battle/SectorSweep.ts');
+const INTENT = load('frontend/src/game/battle/FleetIntentSystem.ts');
+const TACT = load('frontend/src/game/TacticalCommandSystem.ts');
+const INTEL_ARCHIVE = load('frontend/src/game/battle/IntelSystem.js');
+
+/**
+ * 细粒度旗标：**每个特性单独判定"是否已落地"**，而不是一个全局开关。
+ *
+ * 为什么不能用一个全局 IMPL：
+ *   B+C 分 10 个 commit 落地。若 commit 1 建了 `intelFreshness.ts` 就翻全局开关，
+ *   那么"IntelRecord 新字段"（commit 3）、"_searchDest 清理"（commit 6）等**尚未实现**的断言
+ *   会立刻变成硬 FAIL ⇒ 提交后立刻一片红。
+ *   ⇒ 而"提交后立刻一片红"正是"校验消耗信任"的入口：人会学会"刚提交时红是正常的"。
+ * ⇒ 所以按特性分别 gate：只在该特性**声称已落地**之后才硬断言。
+ */
+const F_FRESH = fs.existsSync(path.join(BATTLE, 'intelFreshness.ts'));
+const F_SWEEP = fs.existsSync(path.join(BATTLE, 'SectorSweep.ts'));
+const F_MOVE = !INTENT.__missing && typeof INTENT.resolveMissionMove === 'function';
+
+/** IntelRecord 是否真的落库了新字段（运行时探测，专防"只改 .d.ts"） */
+const F_FIELDS = (() => {
+  if (INTEL_ARCHIVE.__missing || typeof INTEL_ARCHIVE.recordKnownContact !== 'function') return false;
+  try {
+    const a = INTEL_ARCHIVE.createIntelArchive();
+    const r = INTEL_ARCHIVE.recordKnownContact(a, {
+      team: 1, targetId: 4242, kind: 'fleet', x: 0, y: 0, now: 0, strength: 1,
+      factionId: 7, power: 1, vx: 0, vy: 0,
+    });
+    return r && r.factionId === 7;
+  } catch (e) {
+    return false;
+  }
+})();
+
+const SCENE_SRC = (() => {
+  const p = path.join(SRC, 'game', 'scenes', 'BattleScene.ts');
+  return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
+})();
+/** `_searchDest` 通道是否已接线（C1 落地标志） */
+const F_DEST = /_searchDest/.test(SCENE_SRC);
+/** `distanceOf` 注入口是否已存在（B2 落地标志） */
+const F_DISTOF = (() => {
+  const p = path.join(SRC, 'game', 'TacticalCommandSystem.ts');
+  return fs.existsSync(p) && /distanceOf/.test(fs.readFileSync(p, 'utf8'));
+})();
+
+// 旗标可视：PENDING 时说清"是哪个特性还没落地"，避免"为什么这条一直 PEND"的来回问
+process.stdout.write(
+  `旗标 F_FRESH=${F_FRESH} F_SWEEP=${F_SWEEP} F_MOVE=${F_MOVE} F_FIELDS=${F_FIELDS} ` +
+  `F_DEST=${F_DEST} F_DISTOF=${F_DISTOF}\n`,
+);
+
+function missing(mod, name) {
+  if (mod.__missing) return `模块不存在: ${mod.__missing.split('\n')[0]}`;
+  if (typeof mod[name] !== 'function' && mod[name] === undefined) return `导出缺失: ${name}`;
+  return null;
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// S1 · intelFreshness（14 条）
+// ══════════════════════════════════════════════════════════════════════
+section('S1 intelFreshness 分档 / 唯一性 / 同源');
+
+checkGated(F_FRESH, 'S1-01 声明唯一: export const INTEL_FRESH_MS', () => {
+  const hits = walk(SRC).flatMap((f) => {
+    const s = fs.readFileSync(f, 'utf8');
+    return s.match(/export\s+const\s+INTEL_FRESH_MS\b/g) || [];
+  });
+  assert.equal(hits.length, 1, `期望恰好 1 处定义，实际 ${hits.length} 处`);
+});
+checkGated(F_FRESH, 'S1-02 声明唯一: export const INTEL_STALE_MS', () => {
+  const hits = walk(SRC).flatMap((f) => {
+    const s = fs.readFileSync(f, 'utf8');
+    return s.match(/export\s+const\s+INTEL_STALE_MS\b/g) || [];
+  });
+  assert.equal(hits.length, 1, `期望恰好 1 处定义，实际 ${hits.length} 处`);
+});
+
+if (missing(INTEL, 'intelAgeTier')) {
+  for (const n of ['S1-03', 'S1-04', 'S1-05', 'S1-06', 'S1-07', 'S1-08', 'S1-09', 'S1-10', 'S1-11', 'S1-12', 'S1-13']) {
+    pending(n, missing(INTEL, 'intelAgeTier'));
+  }
+} else {
+  const tier = (v) => INTEL.intelAgeTier(v);
+  // 闭区间边界：10_000 / 25_000 归前一档
+  check('S1-03 age=0 ⇒ fresh', () => assert.equal(tier(0), 'fresh'));
+  check('S1-04 age=9999 ⇒ fresh', () => assert.equal(tier(9999), 'fresh'));
+  check('S1-05 age=10000 ⇒ fresh（闭区间）', () => assert.equal(tier(10000), 'fresh'));
+  check('S1-06 age=10001 ⇒ stale', () => assert.equal(tier(10001), 'stale'));
+  check('S1-07 age=24999 ⇒ stale', () => assert.equal(tier(24999), 'stale'));
+  check('S1-08 age=25000 ⇒ stale（闭区间）', () => assert.equal(tier(25000), 'stale'));
+  check('S1-09 age=25001 ⇒ cold', () => assert.equal(tier(25001), 'cold'));
+  // 非有限 / 负值：显式判空，不得依赖 NaN 比较的隐式行为
+  check('S1-10 age=NaN ⇒ cold', () => assert.equal(tier(NaN), 'cold'));
+  check('S1-11 age=Infinity ⇒ cold', () => assert.equal(tier(Infinity), 'cold'));
+  check('S1-12 age=undefined ⇒ cold', () => assert.equal(tier(undefined), 'cold'));
+  check('S1-13 age=-1 ⇒ fresh（时钟回拨：宁可当作刚看见）', () => assert.equal(tier(-1), 'fresh'));
+}
+
+if (INTEL.__missing || INTEL.CONTACT_TARGET_MAX_AGE_MS === undefined) {
+  pending('S1-14 同源: CONTACT_TARGET_MAX_AGE_MS === INTEL_STALE_MS', '导出缺失');
+} else {
+  check('S1-14 同源: CONTACT_TARGET_MAX_AGE_MS === INTEL_STALE_MS', () => {
+    assert.equal(INTEL.CONTACT_TARGET_MAX_AGE_MS, INTEL.INTEL_STALE_MS);
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// S2 · SectorSweep 几何（6 条）
+// 规格要求导出：sweepWaypoints({fleetId, sectorIndex, origin, clueBearing, R}) → Point[4]
+// ══════════════════════════════════════════════════════════════════════
+section('S2 SectorSweep 四腿几何');
+
+const SWEEP_FN = SWEEP.__missing ? null : (SWEEP.sweepWaypoints || null);
+if (!SWEEP_FN) {
+  for (const n of ['S2-01', 'S2-02', 'S2-03', 'S2-04', 'S2-05', 'S2-06']) {
+    pending(n, SWEEP.__missing ? '模块不存在' : '导出缺失: sweepWaypoints');
+  }
+} else {
+  const R = 1000;
+  const origin = { x: 0, y: 0 };
+  const aim = { fleetId: 7, sectorIndex: 1, origin, clueBearing: 0, R };
+  const wp = SWEEP_FN(aim);
+
+  check('S2-01 返回 4 个航点', () => assert.equal(wp.length, 4));
+  // 期望值 0.45 抄自规格，不 import SEARCH_LEG_RATIO
+  check('S2-02 |WP0-origin| = 0.45R = 450', () => {
+    approx(Math.hypot(wp[0].x - origin.x, wp[0].y - origin.y), 450, 1e-6);
+  });
+  check('S2-03 sectorIndex=1 时 WP0 方位 = clueBearing', () => {
+    approx(angDiff(Math.atan2(wp[0].y, wp[0].x), 0), 0, 1e-9);
+  });
+  check('S2-04 sectorIndex=0/2 时偏向 ∓25°', () => {
+    const a = SWEEP_FN({ ...aim, sectorIndex: 0 })[0];
+    const b = SWEEP_FN({ ...aim, sectorIndex: 2 })[0];
+    approx(angDiff(Math.atan2(a.y, a.x), -25 * Math.PI / 180), 0, 1e-9);
+    approx(angDiff(Math.atan2(b.y, b.x), +25 * Math.PI / 180), 0, 1e-9);
+  });
+  check('S2-05 横向腿与轴线垂直（点积≈0）', () => {
+    const d0 = { x: wp[0].x - origin.x, y: wp[0].y - origin.y };
+    const d1 = { x: wp[1].x - wp[0].x, y: wp[1].y - wp[0].y };
+    approx(d0.x * d1.x + d0.y * d1.y, 0, 1e-6);
+  });
+  check('S2-06 横向全宽 = 1.0R、回轴 = 0.5R', () => {
+    approx(Math.hypot(wp[2].x - wp[1].x, wp[2].y - wp[1].y), 1000, 1e-6);
+    approx(Math.hypot(wp[3].x - wp[2].x, wp[3].y - wp[2].y), 500, 1e-6);
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// S3 · 确定性 + 扇区分配（2 条）
+// 规格要求导出：defaultSectorIndex(fleetId) → 0|1|2
+// ══════════════════════════════════════════════════════════════════════
+section('S3 确定性 / 默认扇区分配');
+
+if (!SWEEP_FN) {
+  pending('S3-01 同入参两次调用逐位相等', 'sweepWaypoints 缺失');
+} else {
+  check('S3-01 同入参两次调用逐位相等', () => {
+    const a = SWEEP_FN({ fleetId: 7, sectorIndex: 1, origin: { x: 3, y: 4 }, clueBearing: 0.7, R: 800 });
+    const b = SWEEP_FN({ fleetId: 7, sectorIndex: 1, origin: { x: 3, y: 4 }, clueBearing: 0.7, R: 800 });
+    assert.deepEqual(a, b);
+  });
+}
+
+if (SWEEP.__missing || typeof SWEEP.defaultSectorIndex !== 'function') {
+  pending('S3-02 defaultSectorIndex 覆盖三个扇区', '导出缺失: defaultSectorIndex');
+} else {
+  check('S3-02 defaultSectorIndex 覆盖三个扇区（20 个 fleetId 全出现）', () => {
+    const seen = new Set();
+    for (let id = 1; id <= 20; id += 1) seen.add(SWEEP.defaultSectorIndex(id));
+    assert.equal(seen.size, 3, `实际只出现 ${[...seen].join(',')}`);
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// S4 · settle 闸表（8 条）：computeForceRatio / canCommitSiege / resolveMissionMove
+// ══════════════════════════════════════════════════════════════════════
+section('S4 情报门 / siege 闸表');
+
+/** 手写记录（**不调用** recordKnownContact，避免落库缺陷污染夹具） */
+function rec(o) {
+  return Object.assign(
+    { targetId: 1, factionId: 11, x: 0, y: 0, ageMs: 3000, tier: 'fresh', power: 200, reliable: true },
+    o,
+  );
+}
+
+if (INTENT.__missing || typeof INTENT.resolveMissionMove !== 'function') {
+  for (const n of ['S4-01', 'S4-02', 'S4-03', 'S4-04', 'S4-05']) {
+    pending(n, INTENT.__missing ? '模块不存在' : '导出缺失: resolveMissionMove');
+  }
+} else {
+  const base = {
+    mission: { type: 'attack_fleet', targetId: 11 },
+    myTeam: 1,
+    myPos: { x: 0, y: 0 },
+    myPower: 500,
+    myFleetCount: 3,
+    records: [],
+    enemyLiveFactionCount: 1,
+    enemyBaseRec: null,
+    clueBearing: 0,
+    searchPoint: { x: 900, y: 0 },
+    nowMs: 100000,
+  };
+  const run = (o) => INTENT.resolveMissionMove(Object.assign({}, base, o));
+
+  // A-1：无情报 ⇒ 去搜，不去追
+  check('S4-01 空档案 ⇒ kind=search 且 dest=null', () => {
+    const r = run({ records: [] });
+    assert.equal(r.kind, 'search');
+    assert.equal(r.dest, null);
+  });
+  // A-2a：fresh ⇒ 压上
+  check('S4-02 fresh 档案 ⇒ kind=mission / stance=siege', () => {
+    const r = run({ records: [rec({ x: 1200, y: 0, ageMs: 3000, tier: 'fresh' })] });
+    assert.equal(r.kind, 'mission');
+    assert.equal(r.stance, 'siege');
+  });
+  // A-2b：stale ⇒ 只朝那个方向摸
+  check('S4-03 stale 档案 ⇒ kind=mission / stance=search', () => {
+    const r = run({ records: [rec({ x: 1200, y: 0, ageMs: 18000, tier: 'stale' })] });
+    assert.equal(r.kind, 'mission');
+    assert.equal(r.stance, 'search');
+  });
+  // cold 不得当目标
+  check('S4-04 cold 档案 ⇒ kind=search 且 dest=null', () => {
+    const r = run({ records: [rec({ x: 1200, y: 0, ageMs: 40000, tier: 'cold' })] });
+    assert.equal(r.kind, 'search');
+    assert.equal(r.dest, null);
+  });
+  // 阵营 id 目标：取最新一条（ageMs 最小）
+  check('S4-05 阵营 id 目标 ⇒ 取 ageMs 最小者', () => {
+    const r = run({
+      records: [
+        rec({ targetId: 5, factionId: 11, x: 5000, y: 0, ageMs: 9000, tier: 'stale' }),
+        rec({ targetId: 9, factionId: 11, x: 1200, y: 0, ageMs: 1000, tier: 'fresh' }),
+      ],
+    });
+    const d5 = Math.hypot(r.dest.x - 5000, r.dest.y - 0);
+    const d9 = Math.hypot(r.dest.x - 1200, r.dest.y - 0);
+    assert.ok(d9 < d5, `应贴近 targetId=9（x=1200），实际 ${JSON.stringify(r.dest)}`);
+  });
+}
+
+// —— forceRatio 与 siege 闸：必须由纯函数导出，否则四条防线无法单测 ——
+if (INTENT.__missing || typeof INTENT.computeForceRatio !== 'function') {
+  pending('S4-06 空档案 ⇒ forceRatio = 1（不是 999）', '导出缺失: computeForceRatio');
+} else {
+  check('S4-06 空档案 ⇒ forceRatio = 1（不是 999）', () => {
+    const v = INTENT.computeForceRatio({ myPower: 500, records: [] });
+    assert.equal(v, 1);
+    assert.notEqual(v, 999);
+  });
+}
+
+if (INTENT.__missing || typeof INTENT.canCommitSiege !== 'function') {
+  for (const n of ['S4-07', 'S4-08']) pending(n, '导出缺失: canCommitSiege');
+} else {
+  // B-1：3 个敌阵营、只识别 1 支 ⇒ 拦住
+  check('S4-07 3 敌阵营识 1 支 ⇒ 不许 siege', () => {
+    assert.equal(INTENT.canCommitSiege({ forceRatio: 2.5, identifiedCount: 1, enemyLiveFactionCount: 3 }), false);
+  });
+  // B-2：敌方仅 1 支 ⇒ 允许（防"永不攻坚"）
+  check('S4-08 敌 1 阵营识 1 支 + 2.5 倍 ⇒ 允许 siege', () => {
+    assert.equal(INTENT.canCommitSiege({ forceRatio: 2.5, identifiedCount: 1, enemyLiveFactionCount: 1 }), true);
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// S5 · resolveMissionTargets.distanceOf 缺省不变（2 条）
+// ══════════════════════════════════════════════════════════════════════
+section('S5 resolveMissionTargets distanceOf 缺省语义');
+
+if (TACT.__missing || typeof TACT.resolveMissionTargets !== 'function') {
+  pending('S5-01 缺省 distanceOf ⇒ 仍按真实距离排序', '模块或导出缺失');
+  pending('S5-02 全 Infinity ⇒ 保持输入序（稳定）', '模块或导出缺失');
+} else {
+  const mkFleet = (id, fac, x, units) => ({ id, factionId: fac, x, y: 0, units: new Array(units).fill({}) });
+  const fleets = [mkFleet(5, 11, 5000, 3), mkFleet(9, 11, 1200, 3)];
+  const isEnemy = (f) => f.factionId === 11;
+
+  check('S5-01 缺省 distanceOf ⇒ 仍按真实距离排序（近者在前）', () => {
+    const out = TACT.resolveMissionTargets(fleets, 11, { relation: isEnemy, from: { x: 0, y: 0 } });
+    assert.deepEqual(out.map((f) => f.id), [9, 5]);
+  });
+  checkGated(F_DISTOF, 'S5-02 全 Infinity ⇒ 保持输入序（稳定、不按真距离）', () => {
+    // ⚠ 实现要点：`Infinity - Infinity === NaN`，而 Array.sort 的比较函数返回 NaN 时
+    //   顺序是**实现定义**的（V8 当前当 0，但不可依赖）。
+    //   ⇒ 正确写法不是 `sort((a,b) => distanceOf(a) - distanceOf(b))`，
+    //     而是"全部非有限 ⇒ 直接返回过滤后的数组，不排序"。
+    const out = TACT.resolveMissionTargets(fleets, 11, {
+      relation: isEnemy,
+      from: { x: 0, y: 0 },
+      distanceOf: () => Infinity,
+    });
+    assert.deepEqual(out.map((f) => f.id), [5, 9]);
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// S6 · 源码不变量（5 条）—— 这些只能在源码层锁
+// ══════════════════════════════════════════════════════════════════════
+section('S6 源码不变量（防"顺手改回去"）');
+
+const SCENE = path.join(SRC, 'game', 'scenes', 'BattleScene.ts');
+const sceneSrc = fs.existsSync(SCENE) ? fs.readFileSync(SCENE, 'utf8') : '';
+
+function sliceFn(src, startMarker, endMarker) {
+  const i = src.indexOf(startMarker);
+  if (i < 0) return '';
+  const j = src.indexOf(endMarker, i + startMarker.length);
+  return j < 0 ? src.slice(i) : src.slice(i, j);
+}
+
+check('S6-01 clearEnemies 逐字保留（0.1）', () => {
+  assert.ok(
+    sceneSrc.includes("const clearEnemies = visibleEnemies.filter(v => v.clarity === 'full')"),
+    '那一行被改动了 —— 开火门可能被悄悄放宽',
+  );
+});
+
+checkGated(F_DEST, 'S6-02 resolveFleetIntent 调用点 knownEnemy: null（0.4）', () => {
+  assert.ok(/knownEnemy:\s*null/.test(sceneSrc), '未找到 `knownEnemy: null` —— 读真值的入口可能被填上');
+});
+
+checkGated(F_DEST, 'S6-03 三处 mission=null 均清理 _searchDest（0.6）', () => {
+  const lines = sceneSrc.split('\n');
+  const offenders = [];
+  lines.forEach((l, i) => {
+    if (!/\.mission\s*=\s*null/.test(l)) return;
+    // 同一行或紧邻 3 行内必须出现 _searchDest = null
+    const win = lines.slice(i, i + 4).join('\n');
+    if (!/_searchDest\s*=\s*null/.test(win)) offenders.push(i + 1);
+  });
+  assert.deepEqual(offenders, [], `这些 mission=null 未清理 _searchDest: 行 ${offenders.join(',')}`);
+});
+
+checkGated(F_MOVE, 'S6-04 attack_fleet 分支不得用 tgt.x/tgt.y 直赋 _missionDest（C-1）', () => {
+  const blk = sliceFn(sceneSrc, "if (m.type === 'attack_fleet')", "} else if (m.type === 'capture_planet')");
+  assert.ok(blk.length > 0, '未定位到 attack_fleet 分支');
+  assert.ok(
+    !/_missionDest\s*=\s*\{\s*x:\s*tgt\.x/.test(blk),
+    '仍在用 tgt.x/tgt.y（活坐标）写 _missionDest —— 去全知失效',
+  );
+});
+
+checkGated(F_MOVE, 'S6-05 fuzzy 查证分支不得直赋 fz.ef.x（C-3）', () => {
+  const blk = sliceFn(sceneSrc, "fuzzyTargets.length > 0", '} else if (fleet.stance === \'defend\')');
+  assert.ok(blk.length > 0, '未定位到 fuzzyTargets 分支');
+  assert.ok(
+    !/fleetTargetX\s*=\s*fz\.ef\.x/.test(blk),
+    '仍在直赋 fz.ef.x（活坐标）—— 去全知失效',
+  );
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// S7 · 落库（2 条）：防 .js↔.d.ts 静默
+// ══════════════════════════════════════════════════════════════════════
+section('S7 IntelRecord 新字段落库');
+
+if (INTEL_ARCHIVE.__missing || typeof INTEL_ARCHIVE.recordKnownContact !== 'function') {
+  pending('S7-01 运行时能读到 4 个新字段', 'IntelSystem 模块或导出缺失');
+} else {
+  checkGated(F_FIELDS, 'S7-01 运行时能读到 factionId / power / vx / vy', () => {
+    const arch = INTEL_ARCHIVE.createIntelArchive();
+    const r = INTEL_ARCHIVE.recordKnownContact(arch, {
+      team: 1, targetId: 42, kind: 'fleet', x: 100, y: 200, now: 9000,
+      strength: 8, factionId: 7, power: 123, vx: 1.5, vy: -2.5,
+    });
+    assert.equal(r.factionId, 7, 'factionId 未落库（只改了 .d.ts？）');
+    assert.equal(r.power, 123, 'power 未落库');
+    assert.equal(r.vx, 1.5, 'vx 未落库');
+    assert.equal(r.vy, -2.5, 'vy 未落库');
+  });
+}
+
+checkGated(F_FIELDS, 'S7-02 IntelSystem.d.ts 声明 4 个新字段', () => {
+  const dts = path.join(BATTLE, 'IntelSystem.d.ts');
+  assert.ok(fs.existsSync(dts), 'IntelSystem.d.ts 不存在');
+  const s = fs.readFileSync(dts, 'utf8');
+  for (const f of ['factionId', 'power', 'vx', 'vy']) {
+    assert.ok(new RegExp(`${f}\\s*\\??:`).test(s), `IntelSystem.d.ts 缺字段 ${f}`);
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════
+// 汇总
+// ══════════════════════════════════════════════════════════════════════
+process.stdout.write(`\n──────── 汇总 ────────\nPASS ${pass}   FAIL ${failures.length}   PENDING ${pendings.length}\n`);
+if (pendings.length > 0) {
+  process.stdout.write('\n待实现（不计失败）：\n');
+  pendings.forEach((p) => process.stdout.write(`  · ${p}\n`));
+}
+if (failures.length > 0) {
+  process.stdout.write('\n失败项：\n');
+  failures.forEach((f) => process.stdout.write(`  × ${f}\n`));
+  process.exitCode = 1;
+}
+
+/** 递归列出 dir 下的 .ts/.js（跳过 node_modules / dist） */
+function walk(dir, out = []) {
+  for (const name of fs.readdirSync(dir)) {
+    if (name === 'node_modules' || name === 'dist' || name === 'dist-verify') continue;
+    const p = path.join(dir, name);
+    const st = fs.statSync(p);
+    if (st.isDirectory()) walk(p, out);
+    else if (/\.(ts|js)$/.test(name)) out.push(p);
+  }
+  return out;
+}

@@ -238,5 +238,74 @@ check('phaseChanged 能检出跃迁', P.phaseChanged('far', 'approach') && !P.ph
 check('nominalPhase 与阈值一致（S1 边界）',
   P.nominalPhase(tSmall.far + 1, tSmall) === 'far' && P.nominalPhase(tSmall.far - 1, tSmall) === 'approach');
 
+console.log('\n=== J. [D0] 阶段可见性：相邻档阵型首项必须不同 ===');
+{
+  const A = require('../frontend/src/game/aiDirector.ts');
+  const F = require('../frontend/src/config/formations.ts');
+  const H = P.PHASE_FORMATION_HINT;
+
+  // ① 结构：相邻档首项互不相同（读表比较，零容差）
+  //   ⚠ 这条是**契约型**断言（描述"应该长什么样"）：在 D0 改动之前必然红，
+  //     所以必须与 `far: ['wedge','line']` 同批提交 —— 先加断言会把红灯当基线。
+  check('D0-① HINT 相邻档首项互不相同',
+    H.far[0] !== H.approach[0] && H.approach[0] !== H.assault[0] && H.assault[0] !== H.brawl[0],
+    `${H.far[0]}→${H.approach[0]}→${H.assault[0]}→${H.brawl[0]}`);
+
+  // 灰区判据（与 aiDirector.chooseFormation 的短路顺序同源；字面量手写 = 规格）
+  //   avoiding → spindle / allies≥2 → circle / aggressive && ratio>1.3 → wedge / ratio>0.8 → hint / else spindle
+  const inGray = (ratio, allies, aggressive, avoiding) =>
+    !avoiding && allies < 2 && !(aggressive && ratio > 1.3) && ratio > 0.8;
+
+  // ② 灰区行为：far 与 approach 的裁决结果必须不同
+  //   —— 只锁"表里首项不同"不够：真正的观感来自 chooseFormation 的输出。
+  {
+    const s = { powerRatio: 1.0, alliesOnTarget: 0, aggressive: false, avoiding: false };
+    const f = A.chooseFormation({ ...s, phaseHint: H.far });
+    const a = A.chooseFormation({ ...s, phaseHint: H.approach });
+    check('D0-② 灰区(ratio=1.0,allies=0,aggr=false,avoid=false) 下 far 与 approach 阵型不同',
+      f !== a, `far=${f} approach=${a}`);
+  }
+
+  // ③ 非灰区穷举恒等：hint 改动不得溢出到集火/优势/劣势态
+  {
+    let n = 0, bad = 0, firstBad = '';
+    for (const ratio of [0, 0.5, 0.79, 0.8, 1.3, 2, 5])
+      for (const allies of [0, 1, 2, 3])
+        for (const aggressive of [false, true])
+          for (const avoiding of [false, true]) {
+            if (inGray(ratio, allies, aggressive, avoiding)) continue;
+            n++;
+            const s = { powerRatio: ratio, alliesOnTarget: allies, aggressive, avoiding };
+            const f = A.chooseFormation({ ...s, phaseHint: H.far });
+            const a = A.chooseFormation({ ...s, phaseHint: H.approach });
+            if (f !== a) {
+              bad++;
+              if (!firstBad) firstBad = `ratio=${ratio},allies=${allies},aggr=${aggressive},avoid=${avoiding}: far=${f} / approach=${a}`;
+            }
+          }
+    check(`D0-③ 非灰区 ${n} 组穷举：hint 不影响裁决`, bad === 0, bad ? firstBad : `${n} 组一致`);
+  }
+
+  // ④ 相克乘区（[实测]）：打印数值供报告引用；**门槛只锁方向**，
+  //   因为 1.30 / 0.70 是可调平衡常量（"只锁关系不锁值"）。
+  {
+    const foes = ['wedge', 'line', 'spindle', 'circle', 'square'];
+    const rows = foes.map((d) => ({
+      d, line: F.formationCounterMul('line', d), wedge: F.formationCounterMul('wedge', d),
+    }));
+    console.log('  [D0 影响面·实测] far 从 line 换成 wedge 的相克乘区变化：');
+    for (const r of rows) {
+      console.log(`    对手 ${r.d.padEnd(8)} line=${r.line.toFixed(2)}  wedge=${r.wedge.toFixed(2)}  Δ=${((r.wedge / r.line - 1) * 100).toFixed(0)}%`);
+    }
+    const g = (d) => rows.find((r) => r.d === d);
+    check('D0-④ 换阵方向符合克制表（对楔/横↑，对纺/方↓，对圆不变）',
+      g('wedge').wedge > g('wedge').line
+      && g('line').wedge > g('line').line
+      && g('spindle').wedge < g('spindle').line
+      && g('square').wedge < g('square').line
+      && g('circle').wedge === g('circle').line);
+  }
+}
+
 console.log(`\n=== combatPhaseSim: ${passed} PASS / ${failed} FAIL ===`);
 process.exit(failed > 0 ? 1 : 0);

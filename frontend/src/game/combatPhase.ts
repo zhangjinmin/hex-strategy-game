@@ -69,7 +69,12 @@ export const PHASE_LABEL: Record<CombatPhase, string> = {
  * · brawl   各自机动：阵型已无意义（也是脱离重整的形态）
  */
 export const PHASE_FORMATION_HINT: Record<CombatPhase, readonly string[]> = {
-  far: ['line', 'wedge'],
+  // [D0] 首项必须与相邻档不同 —— `aiDirector.pickFromPhaseHint` 取**第一个合法项**，
+  //   原 `far: ['line', 'wedge']` 与 `approach: ['line', 'spindle']` 首项相同
+  //   ⇒ S1→S2 的阵型在**映射层就恒为 line**，玩家看不到第一次阶段转换（用户实报"阵型转换有问题"）。
+  //   改成 wedge 首项后序列为 `wedge → line → spindle → wedge`（相邻全不同）。
+  //   ⚠ 只改首项，不动 approach/assault/brawl（它们的首项本来就与邻档不同）。
+  far: ['wedge', 'line'],
   approach: ['line', 'spindle'],
   assault: ['spindle', 'circle'],
   brawl: ['wedge'],
