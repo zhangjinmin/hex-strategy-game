@@ -123,7 +123,7 @@ const exitGame = () => { window.close(); };
 
 .title-container { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 12px; z-index: 1; }
 .title-logo { height: 64px; width: auto; margin-bottom: 8px; }
-.title-subtitle { font-size: 16px; color: var(--color-text-disabled); letter-spacing: 3px; margin-bottom: 28px; }
+.title-subtitle { font-size: calc(16px * var(--font-scale)); color: var(--color-text-disabled); letter-spacing: 3px; margin-bottom: 28px; }
 
 .title-menu { display: flex; flex-direction: column; gap: 1px; width: 440px; max-width: 94vw; background: var(--overlay-hover); border: 1px solid var(--overlay-hover); border-radius: 4px; overflow: hidden; }
 .title-btn {
@@ -138,9 +138,9 @@ const exitGame = () => { window.close(); };
 .title-btn:hover .btn-label { color: var(--color-text-primary); letter-spacing: 5px; }
 .title-btn:hover .btn-desc { opacity: 1; }
 .btn-icon { display: flex; align-items: center; width: 24px; color: var(--color-text-disabled); transition: color 0.2s; }
-.btn-label { font-size: 18px; font-weight: 700; color: var(--color-text-secondary); letter-spacing: 3px; transition: letter-spacing 0.2s, color 0.2s; white-space: nowrap; }
+.btn-label { font-size: calc(18px * var(--font-scale)); font-weight: 700; color: var(--color-text-secondary); letter-spacing: 3px; transition: letter-spacing 0.2s, color 0.2s; white-space: nowrap; }
 .btn-rule { flex: 1; height: 1px; background: var(--overlay-hover); margin: 0 6px; }
-.btn-desc { font-size: 13px; color: var(--color-text-disabled); opacity: 0.55; white-space: nowrap; letter-spacing: 1px; transition: opacity 0.2s; }
+.btn-desc { font-size: calc(13px * var(--font-scale)); color: var(--color-text-disabled); opacity: 0.55; white-space: nowrap; letter-spacing: 1px; transition: opacity 0.2s; }
 
 /* 设置外壳（设置面板内容在 SettingsPanel 内部 scoped 样式中） */
 .settings-overlay {
@@ -155,11 +155,11 @@ const exitGame = () => { window.close(); };
   overflow-y: auto;
 }
 .flex-header { display: flex; justify-content: space-between; align-items: center; }
-.m-0 { margin: 0; font-size: 20px; font-weight: 900; }
+.m-0 { margin: 0; font-size: calc(20px * var(--font-scale)); font-weight: 900; }
 .px-3 { padding: 6px 12px; }
 
 .settings-footer { display: flex; justify-content: space-between; gap: 10px; padding-top: 12px; border-top: 1px solid var(--overlay-hover); }
-.btn-confirm { padding: 10px 28px; font-size: 14px; font-weight: 800; }
+.btn-confirm { padding: 10px 28px; font-size: calc(14px * var(--font-scale)); font-weight: 800; }
 .outline { background: transparent; border: 1px solid rgba(255,255,255,0.15); }
 
 .text-gold { color: var(--color-warning); }

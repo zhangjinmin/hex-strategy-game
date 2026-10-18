@@ -67,6 +67,6 @@ const handleAction = (action: string) => {
 }
 .action-btn:hover { border-color: var(--color-cyan); background: rgba(6,182,212,0.05); }
 .action-icon svg { display: block; margin: 0 auto; color: var(--color-cyan); }
-.action-name { font-size: 15px; font-weight: 900; letter-spacing: 2px; }
-.action-desc { font-size: 10px; color: var(--color-text-disabled); line-height: 1.4; }
+.action-name { font-size: calc(15px * var(--font-scale)); font-weight: 900; letter-spacing: 2px; }
+.action-desc { font-size: calc(10px * var(--font-scale)); color: var(--color-text-disabled); line-height: 1.4; }
 </style>

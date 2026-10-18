@@ -60,7 +60,7 @@ const lossText = computed<string>(() => {
 .bb-title {
   display: inline-block;
   font-family: var(--font-family);
-  font-size: 30px;
+  font-size: calc(30px * var(--font-scale));
   font-weight: 900;
   letter-spacing: 3px;
   padding: 8px 24px;
@@ -71,7 +71,7 @@ const lossText = computed<string>(() => {
 .bb-sub {
   margin-top: 10px;
   font-family: var(--font-family);
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   color: #94a3b8;
   letter-spacing: 2px;
 }
@@ -82,7 +82,7 @@ const lossText = computed<string>(() => {
   z-index: 30;
   pointer-events: none;
   font-family: var(--font-family);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 900;
   color: #ef4444;
   background: rgba(0, 0, 0, 0.55);

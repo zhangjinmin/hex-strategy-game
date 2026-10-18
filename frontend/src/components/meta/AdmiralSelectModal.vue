@@ -247,21 +247,22 @@ const confirmSelect = () => {
   backdrop-filter: blur(8px);
 }
 .modal-content {
-  width: 1200px; max-width: 97vw; max-height: 92vh;
+  /* [v66] % 而非 vw/vh：vh/vw 不参与 #game-container 的 zoom(--ui-scale) 折算，放大后会超出屏幕（同 SaveManagerModal 注释） */
+  width: 1200px; max-width: 97%; max-height: 92%;
   display: flex; flex-direction: column; padding: 28px; gap: 14px;
 }
 .flex-header { display: flex; justify-content: space-between; align-items: center; }
-.m-0 { margin: 0; font-size: 22px; font-weight: 900; }
+.m-0 { margin: 0; font-size: calc(22px * var(--font-scale)); font-weight: 900; }
 .px-4 { padding: 8px 16px; }
 
-.select-desc { font-size: 13px; color: var(--color-text-secondary); margin: 0; line-height: 1.5; }
+.select-desc { font-size: calc(13px * var(--font-scale)); color: var(--color-text-secondary); margin: 0; line-height: 1.5; }
 
 /* 阵营按钮 */
 .faction-switch { display: flex; gap: 12px; }
 .faction-btn {
   flex: 1; padding: 12px 16px;
   display: flex; flex-direction: row; align-items: center; justify-content: flex-start; gap: 12px;
-  font-size: 13px; font-weight: 700;
+  font-size: calc(13px * var(--font-scale)); font-weight: 700;
   background: var(--overlay-surface); border: 2px solid var(--overlay-hover);
   transition: all 0.25s; cursor: pointer; text-align: left;
 }
@@ -269,27 +270,27 @@ const confirmSelect = () => {
 .faction-btn.faction-emp.active { border-color: var(--color-empire); background: rgba(239,68,68,0.08); }
 .faction-flag { width: 48px; height: 48px; object-fit: cover; border-radius: 4px; border: 1px solid var(--overlay-border); flex-shrink: 0; }
 .faction-titles { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
-.faction-label { font-size: 15px; font-weight: 900; }
-.faction-count { font-size: 11px; color: var(--color-text-disabled); }
+.faction-label { font-size: calc(15px * var(--font-scale)); font-weight: 900; }
+.faction-count { font-size: calc(11px * var(--font-scale)); color: var(--color-text-disabled); }
 
 /* 搜索 */
 .search-bar { display: flex; align-items: center; gap: 8px; padding: 0; }
-.search-icon { font-size: 14px; opacity: 0.5; }
+.search-icon { font-size: calc(14px * var(--font-scale)); opacity: 0.5; }
 .neo-input {
   flex: 1; padding: 9px 14px;
   background: rgba(0,0,0,0.4); border: 1px solid rgba(6,182,212,0.25);
-  color: var(--color-text-primary); font-size: 13px; font-weight: 600;
+  color: var(--color-text-primary); font-size: calc(13px * var(--font-scale)); font-weight: 600;
   border-radius: 6px; outline: none; transition: border 0.2s;
 }
 .neo-input:focus { border-color: var(--color-cyan); }
-.sort-hint { font-size: 11px; color: var(--color-text-disabled); white-space: nowrap; }
+.sort-hint { font-size: calc(11px * var(--font-scale)); color: var(--color-text-disabled); white-space: nowrap; }
 
 /* 表格 */
 .table-wrapper {
   flex: 1; overflow: auto; border-radius: 8px;
   border: 1px solid var(--overlay-hover);
 }
-.admiral-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.admiral-table { width: 100%; border-collapse: collapse; font-size: calc(12px * var(--font-scale)); }
 .admiral-table thead { position: sticky; top: 0; z-index: 10; background: var(--neo-surface); }
 .admiral-table th {
   padding: 10px 5px; font-weight: 800; color: var(--color-text-secondary);
@@ -297,7 +298,7 @@ const confirmSelect = () => {
 }
 .admiral-table th.sortable { cursor: pointer; }
 .admiral-table th.sortable:hover { color: var(--color-cyan); background: rgba(6,182,212,0.06); }
-.sort-arrow { font-size: 10px; color: var(--color-warning); margin-left: 2px; }
+.sort-arrow { font-size: calc(10px * var(--font-scale)); color: var(--color-warning); margin-left: 2px; }
 .admiral-table td { padding: 4px 5px; border-bottom: 1px solid rgba(255,255,255,0.03); white-space: nowrap; }
 .admiral-row { cursor: pointer; transition: background 0.12s; }
 .admiral-row:hover { background: rgba(6,182,212,0.05); }
@@ -308,8 +309,8 @@ const confirmSelect = () => {
 .col-portrait { width: 44px; text-align: center; }
 .col-name { min-width: 75px; font-weight: 800; }
 .col-rank { min-width: 52px; }
-.col-flagship { min-width: 72px; font-size: 11px; }
-.num-col { text-align: center; font-family: var(--font-family); font-weight: 700; width: 30px; font-size: 11px; }
+.col-flagship { min-width: 72px; font-size: calc(11px * var(--font-scale)); }
+.num-col { text-align: center; font-family: var(--font-family); font-weight: 700; width: 30px; font-size: calc(11px * var(--font-scale)); }
 .col-traits { min-width: 80px; }
 .col-total { width: 42px; }
 
@@ -318,10 +319,10 @@ const confirmSelect = () => {
 .radio-dot { display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--color-border-emphasized); background: transparent; transition: all 0.2s; }
 .radio-dot.checked { border-color: var(--color-green); background: var(--color-green); box-shadow: 0 0 6px rgba(16,185,129,0.5); }
 
-.rank-badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 10px; font-weight: 800; color: var(--color-warning); background: rgba(251,191,36,0.1); border: 1px solid rgba(251,191,36,0.2); }
-.total-badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 900; color: var(--color-cyan); background: rgba(6,182,212,0.1); border: 1px solid rgba(6,182,212,0.2); }
+.rank-badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: calc(10px * var(--font-scale)); font-weight: 800; color: var(--color-warning); background: rgba(251,191,36,0.1); border: 1px solid rgba(251,191,36,0.2); }
+.total-badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: calc(11px * var(--font-scale)); font-weight: 900; color: var(--color-cyan); background: rgba(6,182,212,0.1); border: 1px solid rgba(6,182,212,0.2); }
 
-.trait-tag { display: inline-block; padding: 1px 5px; margin: 1px; border-radius: 3px; font-size: 9px; font-weight: 700; color: #a78bfa; background: rgba(139,92,246,0.1); border: 1px solid rgba(139,92,246,0.2); white-space: nowrap; }
+.trait-tag { display: inline-block; padding: 1px 5px; margin: 1px; border-radius: 3px; font-size: calc(9px * var(--font-scale)); font-weight: 700; color: #a78bfa; background: rgba(139,92,246,0.1); border: 1px solid rgba(139,92,246,0.2); white-space: nowrap; }
 
 /* 属性高亮 */
 .stat-s { color: #fbbf24 !important; }  /* 85+ 金色 */
@@ -335,13 +336,13 @@ const confirmSelect = () => {
 .selected-card { display: flex; gap: 12px; align-items: center; }
 .selected-portrait { width: 48px; height: 60px; object-fit: cover; border-radius: 6px; border: 2px solid var(--color-warning); }
 .selected-details { display: flex; flex-direction: column; gap: 4px; }
-.selected-name { display: flex; gap: 8px; align-items: baseline; font-weight: 900; font-size: 15px; }
-.selected-rank { font-size: 11px; color: var(--color-warning); }
-.selected-meta { font-size: 12px; color: var(--color-text-secondary); display: flex; gap: 12px; }
-.selected-hidden { font-size: 11px; color: var(--color-text-disabled); display: flex; gap: 14px; }
+.selected-name { display: flex; gap: 8px; align-items: baseline; font-weight: 900; font-size: calc(15px * var(--font-scale)); }
+.selected-rank { font-size: calc(11px * var(--font-scale)); color: var(--color-warning); }
+.selected-meta { font-size: calc(12px * var(--font-scale)); color: var(--color-text-secondary); display: flex; gap: 12px; }
+.selected-hidden { font-size: calc(11px * var(--font-scale)); color: var(--color-text-disabled); display: flex; gap: 14px; }
 .hidden-stat { opacity: 0.7; }
 
-.btn-confirm { padding: 14px 36px; font-size: 15px; font-weight: 900; flex-shrink: 0; }
+.btn-confirm { padding: 14px 36px; font-size: calc(15px * var(--font-scale)); font-weight: 900; flex-shrink: 0; }
 .btn-confirm:disabled { opacity: 0.35; cursor: not-allowed; }
 
 .text-cyan { color: var(--color-cyan) !important; }

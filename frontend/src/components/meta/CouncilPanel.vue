@@ -328,14 +328,14 @@ const closePanel = () => {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 900;
   letter-spacing: 0.15em;
   color: var(--color-text-primary);
 }
 
 .header-date {
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-family: var(--font-family);
   color: var(--color-text-disabled);
   flex: 1;
@@ -357,7 +357,7 @@ const closePanel = () => {
 
 .abort-btn {
   color: var(--color-empire);
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   font-weight: 800;
   padding: 4px 8px;
   line-height: 1;
@@ -381,7 +381,7 @@ const closePanel = () => {
 }
 
 .section-label {
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   text-transform: uppercase;
   color: var(--color-text-disabled);
   letter-spacing: 0.15em;
@@ -395,7 +395,7 @@ const closePanel = () => {
 }
 
 .section-meta {
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-family: var(--font-family);
   color: var(--color-text-secondary);
 }
@@ -430,7 +430,7 @@ const closePanel = () => {
 }
 
 .player-name {
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   font-weight: 900;
   color: var(--color-text-primary);
   white-space: nowrap;
@@ -439,7 +439,7 @@ const closePanel = () => {
 }
 
 .player-role {
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   font-weight: 700;
   color: var(--color-cyan);
   margin-top: 2px;
@@ -448,7 +448,7 @@ const closePanel = () => {
 .player-vote {
   display: flex;
   justify-content: space-between;
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   margin-top: 6px;
 }
 
@@ -490,7 +490,7 @@ const closePanel = () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .member-left {
@@ -526,11 +526,11 @@ const closePanel = () => {
 .member-rank {
   color: var(--color-text-disabled);
   font-family: var(--font-family);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
 }
 
 .member-stance {
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale));
   padding: 1px 5px;
   border-radius: 3px;
   font-weight: 700;
@@ -567,7 +567,7 @@ const closePanel = () => {
 }
 
 .proposal-tag {
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale));
   font-family: var(--font-family);
   color: var(--color-text-disabled);
   padding: 2px 8px;
@@ -588,21 +588,21 @@ const closePanel = () => {
 .prop-tag-fortify { color: #a78bfa; background: rgba(167, 139, 250, 0.15); }
 
 .proposal-title {
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   font-weight: 700;
   color: var(--color-text-primary);
   margin: 0;
 }
 
 .proposal-desc {
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   color: var(--color-text-secondary);
   line-height: 1.4;
   margin: 0;
 }
 
 .proposal-risk {
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   color: var(--color-empire);
   font-weight: 600;
   margin-top: 2px;
@@ -610,7 +610,7 @@ const closePanel = () => {
 
 /* 提案人角色化台词 */
 .proposal-dialogue {
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   color: var(--color-cyan);
   font-style: italic;
   line-height: 1.4;
@@ -630,7 +630,7 @@ const closePanel = () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   padding: 3px 8px;
   background: var(--color-overlay-pressed);
   border-radius: 3px;
@@ -650,7 +650,7 @@ const closePanel = () => {
 
 .vote-stance {
   font-weight: 800;
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   flex-shrink: 0;
   width: 34px;
   text-align: center;
@@ -662,7 +662,7 @@ const closePanel = () => {
 .vote-weight {
   color: var(--color-text-disabled);
   font-family: var(--font-family);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   flex-shrink: 0;
   width: 34px;
   text-align: right;
@@ -683,7 +683,7 @@ const closePanel = () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   gap: 8px;
 }
 
@@ -700,7 +700,7 @@ const closePanel = () => {
 
 .history-status {
   font-weight: 900;
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   flex-shrink: 0;
 }
 
@@ -710,14 +710,14 @@ const closePanel = () => {
 .history-date {
   color: var(--color-text-disabled);
   font-family: var(--font-family);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   flex-shrink: 0;
 }
 
 /* ===== 空状态 ===== */
 .empty-state {
   color: var(--color-text-disabled);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-family: var(--font-family);
   text-align: center;
   padding: 12px 0;
@@ -756,14 +756,14 @@ const closePanel = () => {
 }
 
 .detail-title {
-  font-size: 16px;
+  font-size: calc(16px * var(--font-scale));
   font-weight: 900;
   color: var(--color-text-primary);
   margin: 0;
 }
 
 .detail-desc {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   color: var(--color-text-secondary);
   line-height: 1.5;
   margin: 0;
@@ -774,7 +774,7 @@ const closePanel = () => {
 .detail-row {
   display: flex;
   gap: 8px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   line-height: 1.4;
 }
 

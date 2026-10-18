@@ -27,8 +27,8 @@ defineEmits<{ force: []; decline: [] }>();
 <style scoped>
 .fp-overlay { position: fixed; inset: 0; z-index: 1100; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; }
 .fp-modal { width: min(400px, 85vw); padding: 24px; text-align: center; }
-.fp-icon { font-size: 32px; margin-bottom: 8px; }
-.fp-desc { font-size: 14px; color: var(--color-text-primary); margin-bottom: 8px; }
-.fp-detail { font-size: 13px; color: var(--color-text-secondary); margin-bottom: 12px; }
+.fp-icon { font-size: calc(32px * var(--font-scale)); margin-bottom: 8px; }
+.fp-desc { font-size: calc(14px * var(--font-scale)); color: var(--color-text-primary); margin-bottom: 8px; }
+.fp-detail { font-size: calc(13px * var(--font-scale)); color: var(--color-text-secondary); margin-bottom: 12px; }
 .fp-actions { display: flex; justify-content: center; gap: 10px; }
 </style>

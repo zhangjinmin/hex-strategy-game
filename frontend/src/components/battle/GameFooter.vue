@@ -80,13 +80,13 @@ const tacticCn = computed(() => TACTIC_CN[rawDeployTactic.value] || rawDeployTac
 <style scoped>
 .ui-footer { 
   position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
-  padding: 10px 24px; border-radius: 99px; font-size: 12px; color: var(--color-text-secondary); z-index: 10; font-weight: 800;
+  padding: 10px 24px; border-radius: 99px; font-size: calc(12px * var(--font-scale)); color: var(--color-text-secondary); z-index: 10; font-weight: 800;
 }
 .text-pause-blink { color: var(--color-warning); animation: blink 1s infinite; }
 .text-deploy { color: #00ff88; font-weight: 900; letter-spacing: 0.5px; }
 @keyframes blink { 50% { opacity: 0.5; } }
 
 @media (max-width: 768px) {
-  .ui-footer { bottom: 5px; padding: 8px 12px; font-size: 10px; width: 95%; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ui-footer { bottom: 5px; padding: 8px 12px; font-size: calc(10px * var(--font-scale)); width: 95%; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 }
 </style>

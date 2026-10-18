@@ -42,9 +42,9 @@ const politicalTabLabel = computed(() => {
 <style scoped>
 .council-admin-panel { height: 100%; display: flex; flex-direction: column; }
 .hq-subnav { display: flex; gap: 4px; padding: 8px 12px; border-bottom: 1px solid var(--color-border); }
-.hq-tab-btn { display: flex; align-items: center; gap: 4px; padding: 6px 12px; border: none; background: transparent; color: var(--color-text-disabled); font-size: 12px; cursor: pointer; border-radius: 4px; transition: all 0.15s; }
+.hq-tab-btn { display: flex; align-items: center; gap: 4px; padding: 6px 12px; border: none; background: transparent; color: var(--color-text-disabled); font-size: calc(12px * var(--font-scale)); cursor: pointer; border-radius: 4px; transition: all 0.15s; }
 .hq-tab-btn:hover { color: var(--color-text-primary); background: rgba(6,182,212,0.05); }
 .hq-tab-btn.active { color: var(--color-cyan); background: rgba(6,182,212,0.1); }
-.hq-tab-icon { font-size: 14px; }
+.hq-tab-icon { font-size: calc(14px * var(--font-scale)); }
 .hq-content { flex: 1; overflow-y: auto; }
 </style>

@@ -50,6 +50,14 @@
   --dmc-font: 'LeMiPixel', 'Inter', 'Noto Sans SC', system-ui, -apple-system, 'Microsoft YaHei', sans-serif;
   --dmc-font-mono: 'LeMiPixel', 'JetBrains Mono', 'Cascadia Code', 'Microsoft YaHei', monospace;
 
+  /* [v66] 字号独立缩放因子（1 = 100%）。
+     · 页面里所有 `font-size` 都写成 `calc(Npx * var(--font-scale))` —— **只放大文字，不动间距/盒尺寸**，
+       与 `--ui-scale`（zoom，整体等比放大）语义分离，两者可叠加。
+     · 由 settingsStore.fontScale 驱动，App.vue 的 applyFontScale() 写到 <html> 行内样式。
+     · ⚠ 必须始终有值：calc(11px * var(--font-scale)) 在变量缺失时整条声明失效（font-size 变 inherit），
+       所以这里给默认 1，绝不要删。 */
+  --font-scale: 1;
+
   /* 间距（4px基准） */
   --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px;
   --sp-4: 16px; --sp-5: 20px; --sp-6: 24px;
@@ -178,7 +186,7 @@ body {
   border: var(--dmc-border);
   border-radius: var(--radius-sm);
   color: var(--dmc-text-secondary);
-  font-weight: 600; font-size: 13px;
+  font-weight: 600; font-size: calc(13px * var(--font-scale));
   cursor: pointer; padding: 6px 14px;
   transition: all var(--duration-fast) var(--ease-out);
   user-select: none;
@@ -201,8 +209,8 @@ body {
   border: var(--dmc-border);
 }
 
-.neo-btn.btn-sm { padding: 3px 10px; font-size: 12px; }
-.neo-btn.btn-xs { padding: 2px 6px; font-size: 11px; }
+.neo-btn.btn-sm { padding: 3px 10px; font-size: calc(12px * var(--font-scale)); }
+.neo-btn.btn-xs { padding: 2px 6px; font-size: calc(11px * var(--font-scale)); }
 .neo-btn.btn-confirm {
   background: rgba(39, 174, 96, 0.12);
   border-color: rgba(39, 174, 96, 0.3);
@@ -212,7 +220,7 @@ body {
   background: transparent;
   border: none;
   color: var(--dmc-text-muted);
-  padding: 4px 8px; font-size: 16px;
+  padding: 4px 8px; font-size: calc(16px * var(--font-scale));
 }
 .neo-btn.abort-btn:hover {
   color: var(--dmc-danger);
@@ -244,7 +252,7 @@ body {
   background: var(--dmc-bg-raised);
   color: var(--dmc-success);
   padding: 12px 24px; border-radius: 99px;
-  font-weight: 600; font-size: 14px; z-index: 9999;
+  font-weight: 600; font-size: calc(14px * var(--font-scale)); z-index: 9999;
   border: var(--dmc-border);
   box-shadow: var(--shadow-med);
   animation: slideDown 0.4s var(--ease-out);

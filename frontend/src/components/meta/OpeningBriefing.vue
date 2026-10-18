@@ -125,31 +125,32 @@ const close = () => {
   backdrop-filter: blur(6px);
 }
 .briefing-card {
-  width: 540px; max-width: 95vw; max-height: 88vh;
+  /* [v66] % 而非 vw/vh：vh 不参与 #game-container 的 zoom(--ui-scale) 折算（同 SaveManagerModal 注释） */
+  width: 540px; max-width: 95%; max-height: 88%;
   padding: 28px; display: flex; flex-direction: column; gap: 20px;
   overflow-y: auto;
 }
 .briefing-header { text-align: center; }
-.briefing-meta { font-size: 11px; color: var(--color-text-disabled); margin-top: 4px; letter-spacing: 2px; }
+.briefing-meta { font-size: calc(11px * var(--font-scale)); color: var(--color-text-disabled); margin-top: 4px; letter-spacing: 2px; }
 .briefing-body { display: flex; flex-direction: column; gap: 16px; }
 .briefing-section { display: flex; gap: 12px; align-items: flex-start; }
-.section-icon { font-size: 22px; flex-shrink: 0; }
+.section-icon { font-size: calc(22px * var(--font-scale)); flex-shrink: 0; }
 .section-content { flex: 1; }
-.section-title { font-size: 13px; font-weight: 800; color: var(--color-cyan); margin-bottom: 6px; }
-.briefing-text { font-size: 13px; color: var(--color-text-secondary); line-height: 1.6; margin: 0; }
-.briefing-steps { margin: 0; padding-left: 16px; font-size: 12px; color: var(--color-text-secondary); line-height: 1.8; }
+.section-title { font-size: calc(13px * var(--font-scale)); font-weight: 800; color: var(--color-cyan); margin-bottom: 6px; }
+.briefing-text { font-size: calc(13px * var(--font-scale)); color: var(--color-text-secondary); line-height: 1.6; margin: 0; }
+.briefing-steps { margin: 0; padding-left: 16px; font-size: calc(12px * var(--font-scale)); color: var(--color-text-secondary); line-height: 1.8; }
 
 .power-bars { display: flex; flex-direction: column; gap: 8px; }
 .power-row { display: flex; align-items: center; gap: 8px; }
-.power-label { font-size: 12px; font-weight: 700; width: 100px; flex-shrink: 0; }
+.power-label { font-size: calc(12px * var(--font-scale)); font-weight: 700; width: 100px; flex-shrink: 0; }
 .power-bar-bg { flex: 1; height: 8px; background: var(--overlay-hover); border-radius: 4px; overflow: hidden; }
 .power-bar-fill { height: 100%; border-radius: 4px; transition: width 0.5s; }
 .empire-fill { background: var(--color-empire); }
 .ally-fill { background: var(--color-cyan); }
-.power-val { font-size: 12px; font-weight: 800; min-width: 36px; text-align: right; }
+.power-val { font-size: calc(12px * var(--font-scale)); font-weight: 800; min-width: 36px; text-align: right; }
 
 .briefing-footer { display: flex; justify-content: space-between; align-items: center; padding-top: 12px; border-top: 1px solid var(--overlay-hover); }
-.dont-show { font-size: 12px; color: var(--color-text-disabled); display: flex; align-items: center; gap: 6px; cursor: pointer; }
+.dont-show { font-size: calc(12px * var(--font-scale)); color: var(--color-text-disabled); display: flex; align-items: center; gap: 6px; cursor: pointer; }
 
 .text-gold { color: var(--color-warning); }
 .text-empire { color: var(--color-empire) !important; }

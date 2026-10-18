@@ -114,7 +114,7 @@ const formatNum = (n: number): string => {
 }
 
 .confirm-title {
-  font-size: 16px;
+  font-size: calc(16px * var(--font-scale));
   font-weight: 900;
   color: var(--color-text-primary);
   letter-spacing: 0.05em;
@@ -122,7 +122,7 @@ const formatNum = (n: number): string => {
 
 .abort-btn {
   color: var(--color-empire);
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   font-weight: 800;
   padding: 4px 8px;
   line-height: 1;
@@ -133,7 +133,7 @@ const formatNum = (n: number): string => {
 }
 
 .confirm-message {
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   color: var(--color-text-secondary);
   line-height: 1.5;
   margin: 0;
@@ -150,7 +150,7 @@ const formatNum = (n: number): string => {
 }
 
 .cost-label {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   color: var(--color-text-disabled);
   font-weight: 700;
   text-transform: uppercase;
@@ -158,7 +158,7 @@ const formatNum = (n: number): string => {
 }
 
 .cost-value {
-  font-size: 20px;
+  font-size: calc(20px * var(--font-scale));
   font-weight: 900;
   font-family: var(--font-family);
   color: var(--color-warning);

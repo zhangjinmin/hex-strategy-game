@@ -791,7 +791,7 @@ const intelLevels = computed(() => {
   flex-shrink: 0;
 }
 .header-title {
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   font-weight: 900;
   letter-spacing: 0.15em;
   color: var(--color-text-primary);
@@ -811,7 +811,7 @@ const intelLevels = computed(() => {
   flex: 1;
   min-width: 60px;
   padding: 6px 8px;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 700;
   text-align: center;
   white-space: nowrap;
@@ -850,7 +850,7 @@ const intelLevels = computed(() => {
   opacity: 0.6;
 }
 .section-label {
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   text-transform: uppercase;
   color: var(--color-text-disabled);
   letter-spacing: 0.15em;
@@ -859,7 +859,7 @@ const intelLevels = computed(() => {
 
 /* ===== 财政 Tab ===== */
 .treasury-value {
-  font-size: 28px;
+  font-size: calc(28px * var(--font-scale));
   font-weight: 900;
   font-family: var(--font-family);
   color: var(--color-warning);
@@ -880,12 +880,12 @@ const intelLevels = computed(() => {
   align-items: center;
 }
 .cell-label {
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   color: var(--color-text-secondary);
   font-weight: 600;
 }
 .cell-value {
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   font-weight: 800;
   font-family: var(--font-family);
 }
@@ -929,7 +929,7 @@ const intelLevels = computed(() => {
 }
 .tax-slider:disabled { opacity: 0.4; cursor: not-allowed; }
 .tax-value {
-  font-size: 16px;
+  font-size: calc(16px * var(--font-scale));
   font-weight: 900;
   font-family: var(--font-family);
   color: var(--color-cyan);
@@ -944,7 +944,7 @@ const intelLevels = computed(() => {
   align-items: center;
 }
 .war-tax-status {
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   font-weight: 700;
   color: var(--color-text-secondary);
 }
@@ -954,7 +954,7 @@ const intelLevels = computed(() => {
 
 /* 维护费明细 */
 .maint-total {
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   font-weight: 800;
   color: var(--color-warning);
   font-family: var(--font-family);
@@ -973,7 +973,7 @@ const intelLevels = computed(() => {
   padding: 6px 8px;
   background: var(--color-overlay-pressed);
   border-radius: 4px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   gap: 8px;
 }
 .maint-name {
@@ -986,7 +986,7 @@ const intelLevels = computed(() => {
 .maint-detail {
   color: var(--color-text-secondary);
   font-family: var(--font-family);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   flex: 1;
   text-align: center;
 }
@@ -1018,7 +1018,7 @@ const intelLevels = computed(() => {
 .fill-warning { background: var(--color-warning); }
 .fill-good { background: var(--color-green); }
 .loyalty-num {
-  font-size: 16px;
+  font-size: calc(16px * var(--font-scale));
   font-weight: 900;
   font-family: var(--font-family);
   color: var(--color-text-primary);
@@ -1053,12 +1053,12 @@ const intelLevels = computed(() => {
   flex-shrink: 0;
 }
 .adm-name {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 800;
   color: var(--color-text-primary);
 }
 .adm-role {
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   color: var(--color-text-secondary);
 }
 .adm-loyalty {
@@ -1085,13 +1085,13 @@ const intelLevels = computed(() => {
 .mini-label {
   position: absolute;
   left: 4px;
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale));
   font-weight: 700;
   color: var(--color-text-disabled);
   z-index: 1;
 }
 .loyalty-text {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 800;
   font-family: var(--font-family);
   color: var(--color-text-primary);
@@ -1099,7 +1099,7 @@ const intelLevels = computed(() => {
   text-align: right;
 }
 .warn-tag {
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale));
   font-weight: 800;
   color: var(--color-empire);
   padding: 2px 6px;
@@ -1117,7 +1117,7 @@ const intelLevels = computed(() => {
 }
 .btn-reward,
 .btn-promote {
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   padding: 3px 8px;
   border-radius: 4px;
   font-weight: 700;
@@ -1165,21 +1165,21 @@ const intelLevels = computed(() => {
   align-items: center;
   gap: 6px;
 }
-.tech-icon { font-size: 16px; }
+.tech-icon { font-size: calc(16px * var(--font-scale)); }
 .tech-name {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 700;
   color: var(--color-text-primary);
   flex: 1;
 }
 .tech-level {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 900;
   font-family: var(--font-family);
   color: var(--color-cyan);
 }
 .tech-tier-name {
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   color: var(--color-text-secondary);
   padding-top: 2px;
   border-top: 1px solid var(--overlay-border);
@@ -1205,14 +1205,14 @@ const intelLevels = computed(() => {
   background: var(--color-cyan);
 }
 .tech-progress-num {
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   font-family: var(--font-family);
   color: var(--color-text-secondary);
   min-width: 30px;
   text-align: right;
 }
 .focus-badge {
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale));
   font-weight: 800;
   color: var(--color-cyan);
   text-align: center;
@@ -1246,10 +1246,10 @@ const intelLevels = computed(() => {
   gap: 8px;
 }
 .buff-icon {
-  font-size: 18px;
+  font-size: calc(18px * var(--font-scale));
 }
 .buff-text {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 700;
   color: var(--color-green);
 }
@@ -1271,7 +1271,7 @@ const intelLevels = computed(() => {
   border-radius: 6px;
 }
 .node-name {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 700;
   color: var(--color-text-primary);
   min-width: 80px;
@@ -1298,11 +1298,11 @@ const intelLevels = computed(() => {
   gap: 16px;
 }
 .placeholder-icon {
-  font-size: 48px;
+  font-size: calc(48px * var(--font-scale));
   opacity: 0.4;
 }
 .placeholder-text {
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   color: var(--color-text-secondary);
   font-weight: 700;
   letter-spacing: 0.1em;
@@ -1310,13 +1310,13 @@ const intelLevels = computed(() => {
 
 /* ===== 通用辅助 ===== */
 .perm-hint {
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   color: var(--color-empire);
   font-weight: 600;
   font-style: italic;
 }
 .empty-hint {
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   color: var(--color-text-disabled);
   font-family: var(--font-family);
   text-align: center;
@@ -1351,18 +1351,18 @@ const intelLevels = computed(() => {
   flex: 1;
 }
 .action-name {
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   font-weight: 800;
   color: var(--color-text-primary);
 }
 .action-cost {
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-weight: 700;
   color: var(--color-warning);
   font-family: var(--font-family);
 }
 .action-effect {
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   color: var(--color-text-secondary);
 }
 
@@ -1380,7 +1380,7 @@ const intelLevels = computed(() => {
   border-radius: 6px;
 }
 .rel-name, .intel-name {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 700;
   color: var(--color-text-primary);
   min-width: 80px;
@@ -1404,7 +1404,7 @@ const intelLevels = computed(() => {
   transition: width 0.3s;
 }
 .rel-value, .intel-level-text {
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-weight: 800;
   font-family: var(--font-family);
   min-width: 35px;
@@ -1413,7 +1413,7 @@ const intelLevels = computed(() => {
 .rel-btn {
   flex-shrink: 0;
   padding: 4px 10px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 .treaty-row, .revealed-row {
   display: flex;
@@ -1422,15 +1422,15 @@ const intelLevels = computed(() => {
   padding: 6px 8px;
   background: var(--color-overlay-pressed);
   border-radius: 6px;
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
-.treaty-icon, .revealed-icon { font-size: 14px; }
+.treaty-icon, .revealed-icon { font-size: calc(14px * var(--font-scale)); }
 .treaty-type { font-weight: 800; color: var(--color-text-primary); }
 .treaty-target { color: var(--color-text-secondary); flex: 1; }
-.treaty-expiry { color: var(--color-text-disabled); font-family: var(--font-family); font-size: 10px; }
+.treaty-expiry { color: var(--color-text-disabled); font-family: var(--font-family); font-size: calc(10px * var(--font-scale)); }
 .revealed-text { color: var(--color-text-secondary); }
 .intel-hint {
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale));
   color: var(--color-text-disabled);
   font-family: var(--font-family);
   line-height: 1.4;

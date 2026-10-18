@@ -64,18 +64,18 @@ function resolve(approved: boolean) {
 <style scoped>
 .wc-panel { padding: 16px; }
 .wc-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-.wc-title { font-size: 15px; font-weight: 800; color: var(--color-cyan); }
-.wc-date { font-size: 11px; color: var(--color-text-disabled); }
-.wc-desc { font-size: 11px; color: var(--color-text-secondary); margin-bottom: 14px; }
+.wc-title { font-size: calc(15px * var(--font-scale)); font-weight: 800; color: var(--color-cyan); }
+.wc-date { font-size: calc(11px * var(--font-scale)); color: var(--color-text-disabled); }
+.wc-desc { font-size: calc(11px * var(--font-scale)); color: var(--color-text-secondary); margin-bottom: 14px; }
 .proposal-card { padding: 10px; border: 1px solid rgba(6,182,212,0.1); border-radius: 4px; cursor: pointer; margin-bottom: 8px; }
 .proposal-card:hover { border-color: var(--color-cyan); }
-.proposal-card strong { font-size: 13px; color: var(--color-text-primary); display: block; margin: 4px 0; }
-.tag-mil { font-size: 10px; background: rgba(6,182,212,0.15); color: var(--color-cyan); padding: 1px 6px; border-radius: 3px; }
-.desc { font-size: 11px; color: var(--color-text-secondary); margin: 0; }
-.empty { padding: 20px; text-align: center; font-size: 12px; color: var(--color-text-disabled); }
+.proposal-card strong { font-size: calc(13px * var(--font-scale)); color: var(--color-text-primary); display: block; margin: 4px 0; }
+.tag-mil { font-size: calc(10px * var(--font-scale)); background: rgba(6,182,212,0.15); color: var(--color-cyan); padding: 1px 6px; border-radius: 3px; }
+.desc { font-size: calc(11px * var(--font-scale)); color: var(--color-text-secondary); margin: 0; }
+.empty { padding: 20px; text-align: center; font-size: calc(12px * var(--font-scale)); color: var(--color-text-disabled); }
 .overlay { position: fixed; inset: 0; z-index: 1300; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; }
 .vote-card { width: min(380px, 85vw); padding: 24px; text-align: center; }
-.vote-card h3 { font-size: 15px; margin-bottom: 8px; }
-.vote-desc { font-size: 12px; color: var(--color-text-secondary); margin-bottom: 14px; }
+.vote-card h3 { font-size: calc(15px * var(--font-scale)); margin-bottom: 8px; }
+.vote-desc { font-size: calc(12px * var(--font-scale)); color: var(--color-text-secondary); margin-bottom: 14px; }
 .vote-actions { display: flex; justify-content: center; gap: 10px; }
 </style>

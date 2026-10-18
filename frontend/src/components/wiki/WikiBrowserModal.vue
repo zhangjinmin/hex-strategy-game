@@ -151,7 +151,7 @@ const onImgErr = (e: Event) => {
   flex-shrink: 0;
 }
 .wb-title {
-  font-size: 15px;
+  font-size: calc(15px * var(--font-scale));
   font-weight: 800;
   color: var(--color-cyan);
   margin: 0;
@@ -182,7 +182,7 @@ const onImgErr = (e: Event) => {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   color: var(--color-text-primary);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   padding: 6px 24px 6px 9px;
   outline: none;
   font-family: var(--dmc-font);
@@ -196,7 +196,7 @@ const onImgErr = (e: Event) => {
   background: transparent;
   border: none;
   color: var(--color-text-disabled);
-  font-size: 15px;
+  font-size: calc(15px * var(--font-scale));
   cursor: pointer;
   line-height: 1;
   padding: 0 4px;
@@ -216,7 +216,7 @@ const onImgErr = (e: Event) => {
   border: 1px solid var(--color-border);
   border-radius: 3px;
   color: var(--color-text-secondary);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   padding: 3px 8px;
   cursor: pointer;
   transition: all var(--duration-fast) var(--ease-out);
@@ -230,7 +230,7 @@ const onImgErr = (e: Event) => {
 }
 .wb-cat-num {
   font-family: var(--dmc-font-mono);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   opacity: 0.7;
 }
 
@@ -271,7 +271,7 @@ const onImgErr = (e: Event) => {
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   color: var(--color-text-primary);
   font-weight: 700;
 }
@@ -293,7 +293,7 @@ const onImgErr = (e: Event) => {
   text-overflow: ellipsis;
 }
 .wb-linked {
-  font-size: 9px;
+  font-size: calc(9px * var(--font-scale));
   padding: 0 4px;
   border-radius: 6px;
   border: 1px solid var(--color-cyan);
@@ -302,7 +302,7 @@ const onImgErr = (e: Event) => {
   opacity: 0.85;
 }
 .wb-item-sub {
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   color: var(--color-text-disabled);
   white-space: nowrap;
   overflow: hidden;
@@ -313,7 +313,7 @@ const onImgErr = (e: Event) => {
   padding: 20px 0;
   text-align: center;
   color: var(--color-text-disabled);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
 }
 
 /* ---------- 右栏 ---------- */
@@ -329,7 +329,7 @@ const onImgErr = (e: Event) => {
   align-items: center;
   justify-content: center;
   color: var(--color-text-disabled);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
 }
 .wb-main-scroll {
   flex: 1;

@@ -199,7 +199,7 @@ const cycleDialogue = () => {
   overflow-y: auto;
 }
 .flex-header { display: flex; justify-content: space-between; align-items: center; }
-.m-0 { margin: 0; font-size: 18px; font-weight: 900; }
+.m-0 { margin: 0; font-size: calc(18px * var(--font-scale)); font-weight: 900; }
 .px-3 { padding: 6px 12px; }
 
 .network-canvas {
@@ -219,12 +219,12 @@ const cycleDialogue = () => {
 }
 .detail-header { display: flex; gap: 10px; align-items: center; }
 .detail-portrait { width: 40px; height: 48px; object-fit: cover; border-radius: 4px; border: 1px solid var(--color-border); }
-.detail-name { font-size: 14px; font-weight: 800; }
-.detail-relation { font-size: 11px; color: var(--color-text-secondary); margin-top: 2px; }
+.detail-name { font-size: calc(14px * var(--font-scale)); font-weight: 800; }
+.detail-relation { font-size: calc(11px * var(--font-scale)); color: var(--color-text-secondary); margin-top: 2px; }
 .dialogue-box {
   margin-top: 8px; padding: 10px 12px;
   background: rgba(0,0,0,0.3); border-left: 3px solid var(--color-cyan);
-  border-radius: 4px; font-size: 13px; color: var(--color-text-secondary);
+  border-radius: 4px; font-size: calc(13px * var(--font-scale)); color: var(--color-text-secondary);
   font-style: italic; line-height: 1.5;
 }
 .dialogue-actions { margin-top: 6px; display: flex; gap: 6px; }
@@ -235,7 +235,7 @@ const cycleDialogue = () => {
 .text-red { color: var(--color-empire) !important; }
 .text-cyan { color: var(--color-cyan) !important; }
 .text-gold { color: var(--color-warning); }
-.text-muted { color: var(--color-text-disabled); font-size: 12px; text-align: center; }
-.text-xs { font-size: 11px; }
+.text-muted { color: var(--color-text-disabled); font-size: calc(12px * var(--font-scale)); text-align: center; }
+.text-xs { font-size: calc(11px * var(--font-scale)); }
 .text-emerald { color: var(--color-green) !important; }
 </style>

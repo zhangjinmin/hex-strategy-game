@@ -1146,7 +1146,7 @@ onBeforeUnmount(() => {
 
 .gallery-labels :deep(.group-header) {
   position: absolute; top: 0; left: 0; white-space: nowrap;
-  font-size: 15px; font-weight: 900; letter-spacing: 1px; color: #e6fff4;
+  font-size: calc(15px * var(--font-scale)); font-weight: 900; letter-spacing: 1px; color: #e6fff4;
   padding: 4px 12px; border-radius: 6px;
   background: rgba(8, 14, 24, 0.72); border: 1px solid rgba(31, 210, 143, 0.25);
 }
@@ -1156,7 +1156,7 @@ onBeforeUnmount(() => {
   display: flex; align-items: center; gap: 6px;
   padding: 3px 8px; border-radius: 5px;
   background: rgba(8, 14, 24, 0.62); border: 1px solid rgba(31, 210, 143, 0.18);
-  font-size: 11px; line-height: 1.25; text-align: left;
+  font-size: calc(11px * var(--font-scale)); line-height: 1.25; text-align: left;
 }
 .gallery-labels :deep(.sl-portrait) {
   width: 26px; height: 30px; object-fit: cover; border-radius: 3px;
@@ -1164,22 +1164,22 @@ onBeforeUnmount(() => {
 }
 .gallery-labels :deep(.sl-text) { display: flex; flex-direction: column; }
 .gallery-labels :deep(.ship-label b) { color: #e6fff4; font-weight: 800; }
-.gallery-labels :deep(.ship-label em) { color: #94a3b8; font-size: 10px; font-style: normal; }
-.gallery-labels :deep(.ship-label span) { font-size: 10px; }
+.gallery-labels :deep(.ship-label em) { color: #94a3b8; font-size: calc(10px * var(--font-scale)); font-style: normal; }
+.gallery-labels :deep(.ship-label span) { font-size: calc(10px * var(--font-scale)); }
 
 .gallery-hud { position: absolute; top: 14px; left: 16px; pointer-events: none; display: flex; flex-direction: column; gap: 4px; }
-.gh-title { font-size: 15px; font-weight: 900; color: #1fd28f; letter-spacing: 1px; }
-.gh-stat { font-size: 12px; color: #94a3b8; }
+.gh-title { font-size: calc(15px * var(--font-scale)); font-weight: 900; color: #1fd28f; letter-spacing: 1px; }
+.gh-stat { font-size: calc(12px * var(--font-scale)); color: #94a3b8; }
 .gh-fail { color: #f87171; }
 .gh-loading { color: #fbbf24; }
-.gh-legend { display: flex; gap: 12px; font-size: 11px; color: #cbd5e1; }
+.gh-legend { display: flex; gap: 12px; font-size: calc(11px * var(--font-scale)); color: #cbd5e1; }
 .gh-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
-.gh-tip { font-size: 10px; color: #475569; }
+.gh-tip { font-size: calc(10px * var(--font-scale)); color: #475569; }
 
 .gh-fx { display: flex; align-items: center; gap: 6px; pointer-events: auto; margin-top: 2px; }
-.gh-fx-label { font-size: 10px; color: #64748b; }
+.gh-fx-label { font-size: calc(10px * var(--font-scale)); color: #64748b; }
 .gh-fx button {
-  padding: 4px 10px; font-size: 11px; font-weight: 700;
+  padding: 4px 10px; font-size: calc(11px * var(--font-scale)); font-weight: 700;
   color: #cbd5e1; background: rgba(15, 23, 42, 0.85);
   border: 1px solid rgba(31, 210, 143, 0.35); border-radius: 5px; cursor: pointer;
 }
@@ -1188,12 +1188,12 @@ onBeforeUnmount(() => {
 
 /* 朝向修正预览行 */
 .gh-yaw { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; pointer-events: auto; margin-top: 2px; }
-.gh-yaw-name { font-size: 11px; color: #1fd28f; }
+.gh-yaw-name { font-size: calc(11px * var(--font-scale)); color: #1fd28f; }
 .gh-yaw-gap { margin-left: 10px; }
-.gh-yaw-val { font-size: 11px; color: #cbd5e1; }
-.gh-yaw-hint { font-size: 10px; color: #475569; }
+.gh-yaw-val { font-size: calc(11px * var(--font-scale)); color: #cbd5e1; }
+.gh-yaw-hint { font-size: calc(10px * var(--font-scale)); color: #475569; }
 .gh-yaw button {
-  padding: 3px 9px; font-size: 11px; font-weight: 700;
+  padding: 3px 9px; font-size: calc(11px * var(--font-scale)); font-weight: 700;
   color: #cbd5e1; background: rgba(15, 23, 42, 0.85);
   border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 5px; cursor: pointer;
 }
@@ -1204,7 +1204,7 @@ onBeforeUnmount(() => {
 
 .gallery-close {
   position: absolute; top: 14px; right: 16px;
-  padding: 7px 16px; font-size: 12px; font-weight: 700;
+  padding: 7px 16px; font-size: calc(12px * var(--font-scale)); font-weight: 700;
   color: #e2e8f0; background: rgba(15, 23, 42, 0.8);
   border: 1px solid rgba(31, 210, 143, 0.4); border-radius: 6px; cursor: pointer;
 }

@@ -148,13 +148,13 @@ const confirmRetreat = () => {
     pointer-events: auto; 
 }
 .speed-controls { display: flex; gap: 4px; padding: 4px; border-radius: 6px; }
-.btn-speed { background: transparent; border: none; color: var(--color-text-disabled); font-size: 12px; font-weight: 800; padding: 4px 8px; cursor: pointer; transition: all 0.2s; border-radius: 4px; }
+.btn-speed { background: transparent; border: none; color: var(--color-text-disabled); font-size: calc(12px * var(--font-scale)); font-weight: 800; padding: 4px 8px; cursor: pointer; transition: all 0.2s; border-radius: 4px; }
 .btn-speed:hover { color: var(--color-text-secondary); }
 .btn-speed.active { background: var(--color-cyan); color: var(--neo-surface); }
-.btn-ctrl { padding: 6px 12px; font-size: 12px; font-weight: 800; }
+.btn-ctrl { padding: 6px 12px; font-size: calc(12px * var(--font-scale)); font-weight: 800; }
 .active-bomb { border-color: var(--color-empire); color: var(--color-empire); animation: pulse-red 1s infinite; }
 /* [W5.2] 指挥点按钮：面板开启时高亮（与 active-bomb 同风格的常亮态） */
 .active-cp { border-color: var(--color-cyan); color: var(--color-cyan); box-shadow: 0 0 10px rgba(34, 211, 238, 0.55); }
-.cp-key { opacity: 0.6; font-size: 10px; }
+.cp-key { opacity: 0.6; font-size: calc(10px * var(--font-scale)); }
 @keyframes pulse-red { 50% { box-shadow: 0 0 10px var(--color-empire); } }
 </style>

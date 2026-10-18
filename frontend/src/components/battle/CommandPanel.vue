@@ -196,23 +196,23 @@ onUnmounted(() => window.removeEventListener('keydown', onKey));
   border-bottom: 1px solid rgba(6,182,212,0.15);
   display: flex; align-items: center; gap: 10px;
 }
-.cp-title { font-size: 15px; font-weight: 800; color: var(--color-gold, #f59e0b); }
+.cp-title { font-size: calc(15px * var(--font-scale)); font-weight: 800; color: var(--color-gold, #f59e0b); }
 .cp-bar-wrapper { flex: 1; display: flex; align-items: center; gap: 6px; }
 .cp-bar { flex: 1; height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden; }
 .cp-fill { height: 100%; background: var(--color-cyan, #06b6d4); border-radius: 3px; transition: width 0.3s; }
-.cp-text { font-size: 11px; font-weight: 700; color: var(--color-text-secondary); white-space: nowrap; }
-.cp-close { background: none; border: none; color: var(--color-text-disabled); font-size: 16px; cursor: pointer; }
+.cp-text { font-size: calc(11px * var(--font-scale)); font-weight: 700; color: var(--color-text-secondary); white-space: nowrap; }
+.cp-close { background: none; border: none; color: var(--color-text-disabled); font-size: calc(16px * var(--font-scale)); cursor: pointer; }
 
 .staff-briefing {
   margin: 8px 16px 0; padding: 6px 10px;
-  font-size: 11px; font-weight: 600; color: var(--color-gold, #f59e0b);
+  font-size: calc(11px * var(--font-scale)); font-weight: 600; color: var(--color-gold, #f59e0b);
   background: rgba(245,158,11,0.06); border: 1px solid rgba(245,158,11,0.2);
   border-radius: 4px; line-height: 1.5;
 }
 
 .bw-briefing {
   margin: 6px 16px 0; padding: 5px 10px;
-  font-size: 11px; font-weight: 600; color: #00ccff;
+  font-size: calc(11px * var(--font-scale)); font-weight: 600; color: #00ccff;
   background: rgba(0,204,255,0.05); border: 1px solid rgba(0,204,255,0.18);
   border-radius: 4px; line-height: 1.5;
 }
@@ -220,7 +220,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey));
 
 .cp-body { padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
 .cp-section { display: flex; flex-direction: column; gap: 6px; }
-.cp-section-title { font-size: 11px; font-weight: 700; color: var(--color-text-disabled); text-transform: uppercase; letter-spacing: 0.05em; }
+.cp-section-title { font-size: calc(11px * var(--font-scale)); font-weight: 700; color: var(--color-text-disabled); text-transform: uppercase; letter-spacing: 0.05em; }
 
 .cp-command {
   padding: 10px 12px; border: 1px solid rgba(6,182,212,0.12); border-radius: 5px;
@@ -233,22 +233,22 @@ onUnmounted(() => window.removeEventListener('keydown', onKey));
 .cp-command.admiral.selected { border-color: var(--color-gold, #f59e0b); background: rgba(245,158,11,0.08); }
 
 .cmd-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px; }
-.cmd-name { font-size: 13px; font-weight: 700; color: var(--color-text-primary); }
-.cmd-cost { font-size: 11px; font-weight: 700; color: var(--color-cyan); }
-.cmd-desc { font-size: 11px; color: var(--color-text-secondary); }
-.cmd-cd { font-size: 10px; color: var(--color-warning); margin-top: 2px; }
+.cmd-name { font-size: calc(13px * var(--font-scale)); font-weight: 700; color: var(--color-text-primary); }
+.cmd-cost { font-size: calc(11px * var(--font-scale)); font-weight: 700; color: var(--color-cyan); }
+.cmd-desc { font-size: calc(11px * var(--font-scale)); color: var(--color-text-secondary); }
+.cmd-cd { font-size: calc(10px * var(--font-scale)); color: var(--color-warning); margin-top: 2px; }
 
 /* 未实现命令：同样置灰，但 opacity 高于普通 disabled —— 0.4 会让警示徽章难以辨认，
    而这些命令的置灰理由是"永久性"的（效果层不存在），玩家需要看清原因。 */
 .cp-command.unimplemented { opacity: 0.62; }
-.cmd-unimplemented { font-size: 10px; font-weight: 700; color: var(--color-warning); margin-top: 2px; }
-.cmd-partial { font-size: 10px; color: var(--color-text-secondary); margin-top: 2px; font-style: italic; }
+.cmd-unimplemented { font-size: calc(10px * var(--font-scale)); font-weight: 700; color: var(--color-warning); margin-top: 2px; }
+.cmd-partial { font-size: calc(10px * var(--font-scale)); color: var(--color-text-secondary); margin-top: 2px; font-style: italic; }
 /* [2a] 无可见敌方舰队：目标命令置灰原因（07 §6 显式原因文字） */
-.cmd-no-target { font-size: 10px; font-weight: 700; color: var(--color-warning); margin-top: 2px; }
+.cmd-no-target { font-size: calc(10px * var(--font-scale)); font-weight: 700; color: var(--color-warning); margin-top: 2px; }
 
 .cp-footer {
   padding: 10px 16px; border-top: 1px solid rgba(6,182,212,0.15);
 }
-.selected-hint { font-size: 12px; color: var(--color-text-primary); font-weight: 600; }
+.selected-hint { font-size: calc(12px * var(--font-scale)); color: var(--color-text-primary); font-weight: 600; }
 .selected-hint.dim { color: var(--color-text-disabled); }
 </style>

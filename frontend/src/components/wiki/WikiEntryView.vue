@@ -196,7 +196,7 @@ const onImgErr = (e: Event) => {
 
 <style scoped>
 .wiki-view {
-  --wk-fs: 12.5px;
+  --wk-fs: calc(12.5px * var(--font-scale));
   --wk-hero: 118px;
   display: flex;
   flex-direction: column;
@@ -206,7 +206,7 @@ const onImgErr = (e: Event) => {
   line-height: 1.78;
 }
 .wiki-view.compact {
-  --wk-fs: 11px;
+  --wk-fs: calc(11px * var(--font-scale));
   --wk-hero: 82px;
   gap: 9px;
   line-height: 1.7;
@@ -217,7 +217,7 @@ const onImgErr = (e: Event) => {
   padding: 24px 0;
   text-align: center;
   color: var(--color-text-disabled);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
 }
 
 /* ---------- 头部 ---------- */

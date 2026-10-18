@@ -37,7 +37,7 @@ const exitSim = () => {
   flex-shrink: 0;
 }
 .sim-title {
-  font-size: 14px; font-weight: 800; color: var(--color-text-secondary);
+  font-size: calc(14px * var(--font-scale)); font-weight: 800; color: var(--color-text-secondary);
   letter-spacing: 2px;
 }
 .sim-body {

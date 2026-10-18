@@ -499,23 +499,23 @@ const launchBattle = () => {
 .env-settings { width: clamp(260px, 25vw, 360px); display: flex; flex-direction: column; padding: clamp(12px, 2vh, 25px); gap: clamp(10px, 1.5vh, 15px); flex-shrink: 0; overflow: hidden; }
 .dispatch-board { flex: 1; padding: clamp(12px, 2vh, 25px); display: flex; flex-direction: column; overflow: hidden; min-height: 0; gap: clamp(10px, 2vh, 20px); }
 
-.panel-title-small { font-size: clamp(13px, 1.8vh, 15px); font-weight: 800; border-left: 4px solid var(--color-cyan); padding-left: 10px; margin: 0; flex-shrink: 0; }
+.panel-title-small { font-size: clamp(calc(13px * var(--font-scale)), calc(1.8vh * var(--font-scale)), calc(15px * var(--font-scale))); font-weight: 800; border-left: 4px solid var(--color-cyan); padding-left: 10px; margin: 0; flex-shrink: 0; }
 .control-group { display: flex; flex-direction: column; gap: clamp(4px, 1vh, 8px); flex-shrink: 0; }
-.control-group label { font-size: clamp(11px, 1.5vh, 13px); font-weight: 800; color: var(--color-text-secondary); }
-.note-text { font-size: clamp(10px, 1.2vh, 12px); margin: 0; }
+.control-group label { font-size: clamp(calc(11px * var(--font-scale)), calc(1.5vh * var(--font-scale)), calc(13px * var(--font-scale))); font-weight: 800; color: var(--color-text-secondary); }
+.note-text { font-size: clamp(calc(10px * var(--font-scale)), calc(1.2vh * var(--font-scale)), calc(12px * var(--font-scale))); margin: 0; }
 
 .flex { display: flex; align-items: center; }
 .gap-2 { gap: 8px; }
 .flex-1 { flex: 1; }
-.btn-icon { display: flex; align-items: center; justify-content: center; width: clamp(32px, 4vh, 40px); height: clamp(32px, 4vh, 40px); font-size: 14px; flex-shrink: 0; padding: 0; border: 1px solid var(--overlay-border); }
+.btn-icon { display: flex; align-items: center; justify-content: center; width: clamp(32px, 4vh, 40px); height: clamp(32px, 4vh, 40px); font-size: calc(14px * var(--font-scale)); flex-shrink: 0; padding: 0; border: 1px solid var(--overlay-border); }
 
 .select-wrapper { position: relative; display: flex; align-items: center; padding: 0; }
-.select-wrapper::after { content: '▼'; position: absolute; right: 10px; color: var(--color-cyan); pointer-events: none; font-size: 12px; }
-.neo-select { width: 100%; appearance: none; background: transparent; border: none; color: var(--color-text-primary); padding: clamp(6px, 1.2vh, 12px) clamp(8px, 1vw, 12px); font-size: clamp(11px, 1.5vh, 14px); font-weight: 800; outline: none; cursor: pointer; }
+.select-wrapper::after { content: '▼'; position: absolute; right: 10px; color: var(--color-cyan); pointer-events: none; font-size: calc(12px * var(--font-scale)); }
+.neo-select { width: 100%; appearance: none; background: transparent; border: none; color: var(--color-text-primary); padding: clamp(6px, 1.2vh, 12px) clamp(8px, 1vw, 12px); font-size: clamp(calc(11px * var(--font-scale)), calc(1.5vh * var(--font-scale)), calc(14px * var(--font-scale))); font-weight: 800; outline: none; cursor: pointer; }
 .neo-select option { background: var(--neo-surface); color: var(--color-text-secondary); }
 
 .launch-action { margin-top: auto; flex-shrink: 0; display: flex; flex-direction: column; }
-.btn-launch-game { padding: clamp(10px, 1.8vh, 16px) 10px; font-size: clamp(13px, 2vh, 16px); letter-spacing: 2px; }
+.btn-launch-game { padding: clamp(10px, 1.8vh, 16px) 10px; font-size: clamp(calc(13px * var(--font-scale)), calc(2vh * var(--font-scale)), calc(16px * var(--font-scale))); letter-spacing: 2px; }
 
 .dispatch-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; overflow-y: auto; flex: 1; min-height: 0; align-content: start; padding-right: 2px; }
 .dispatch-slot { display: flex; flex-direction: row; align-items: flex-start; padding: 10px; position: relative; cursor: pointer; border: 1px solid transparent; transition: border 0.2s; gap: 10px; overflow: hidden; min-height: 70px; }
@@ -523,22 +523,23 @@ const launchBattle = () => {
 .slot-portrait { width: 44px; height: 55px; object-fit: cover; border-radius: 4px; background: var(--neo-surface); border: 1px solid rgba(6,182,212,0.4); flex-shrink: 0; }
 .slot-info { display: flex; flex-direction: column; justify-content: center; overflow: hidden; flex: 1; min-width: 0; gap: 4px; }
 .slot-name-row { display: flex; justify-content: space-between; align-items: baseline; gap: 4px; }
-.adm-slot-name { font-size: 13px; font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.slot-rank { font-size: 10px; color: var(--color-text-disabled); white-space: nowrap; flex-shrink: 0; }
+.adm-slot-name { font-size: calc(13px * var(--font-scale)); font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slot-rank { font-size: calc(10px * var(--font-scale)); color: var(--color-text-disabled); white-space: nowrap; flex-shrink: 0; }
 .slot-stats { display: flex; flex-wrap: wrap; gap: 2px 6px; }
-.slot-stats span { font-size: 10px; font-family: var(--font-family); font-weight: 700; color: var(--color-text-secondary); white-space: nowrap; }
+.slot-stats span { font-size: calc(10px * var(--font-scale)); font-family: var(--font-family); font-weight: 700; color: var(--color-text-secondary); white-space: nowrap; }
 .slot-bottom { display: flex; align-items: center; gap: 4px; flex-wrap: nowrap; }
-.slot-ships { font-size: 10px; color: var(--color-warning); font-weight: 800; white-space: nowrap; }
+.slot-ships { font-size: calc(10px * var(--font-scale)); color: var(--color-warning); font-weight: 800; white-space: nowrap; }
 /* [W2.2] 教范阵型 + 编成明细（P2 成果可见） */
 .slot-doctrine { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
-.doctrine-form { font-size: 10px; font-weight: 800; color: #22d3ee; white-space: nowrap; }
-.doctrine-comp { font-size: 9px; color: var(--color-text-secondary); font-family: var(--font-family); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.empty-mark { color: var(--color-border-emphasized); font-weight: 800; font-size: clamp(12px, 1.6vh, 14px); margin: auto; }
-.slot-remove { position: absolute; top: 2px; right: 4px; color: var(--color-empire); font-weight: 800; font-size: 16px; display: none; }
+.doctrine-form { font-size: calc(10px * var(--font-scale)); font-weight: 800; color: #22d3ee; white-space: nowrap; }
+.doctrine-comp { font-size: calc(9px * var(--font-scale)); color: var(--color-text-secondary); font-family: var(--font-family); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.empty-mark { color: var(--color-border-emphasized); font-weight: 800; font-size: clamp(calc(12px * var(--font-scale)), calc(1.6vh * var(--font-scale)), calc(14px * var(--font-scale))); margin: auto; }
+.slot-remove { position: absolute; top: 2px; right: 4px; color: var(--color-empire); font-weight: 800; font-size: calc(16px * var(--font-scale)); display: none; }
 .dispatch-slot:hover .slot-remove { display: block; }
 
 .selection-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: var(--overlay-scrim); z-index: 1000; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
-.modal-content { width: 560px; max-height: 80vh; display: flex; flex-direction: column; padding: 25px; }
+/* [v66] 80% 而非 80vh：vh 不参与 #game-container 的 zoom(--ui-scale) 折算（同 SaveManagerModal 注释） */
+.modal-content { width: 560px; max-width: 96%; max-height: 80%; display: flex; flex-direction: column; padding: 25px; }
 
 .sortable { cursor: pointer; transition: color 0.2s; user-select: none; }
 .sortable:hover { color: var(--color-cyan); }
@@ -563,25 +564,25 @@ const launchBattle = () => {
 }
 .roster-hdr span {
   display: flex; justify-content: center; align-items: center;
-  font-size: 11px; font-weight: 800; color: var(--color-text-disabled);
+  font-size: calc(11px * var(--font-scale)); font-weight: 800; color: var(--color-text-disabled);
 }
 .roster-row {
-  cursor: pointer; padding: 4px; min-height: 34px; font-size: 13px;
+  cursor: pointer; padding: 4px; min-height: 34px; font-size: calc(13px * var(--font-scale));
 }
 .roster-row > * { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .roster-row .cell-name { text-align: left; padding-left: 4px; }
 .roster-row .cell-portrait { text-align: left; }
 .cell-name { font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 8px; }
-.cell-rank { font-size: 12px; color: var(--color-text-secondary); }
+.cell-rank { font-size: calc(12px * var(--font-scale)); color: var(--color-text-secondary); }
 .cell-stat { font-family: var(--font-family); font-weight: 800; }
 .trait-cell { display: flex; flex-wrap: nowrap; gap: 3px; align-items: center; justify-content: center; overflow: hidden; }
-.trait-tag { display: inline-block; padding: 0 4px; font-size: 9px; color: #a78bfa; background: rgba(139,92,246,0.12); border-radius: 2px; white-space: nowrap; }
-.trait-more { font-size: 8px; color: var(--color-text-disabled); }
+.trait-tag { display: inline-block; padding: 0 4px; font-size: calc(9px * var(--font-scale)); color: #a78bfa; background: rgba(139,92,246,0.12); border-radius: 2px; white-space: nowrap; }
+.trait-more { font-size: calc(8px * var(--font-scale)); color: var(--color-text-disabled); }
 .stat-s { color: #fbbf24 !important; }
 .stat-a { color: #34d399 !important; }
 .stat-b { color: #94a3b8 !important; }
 .stat-c { color: #64748b !important; }
-.text-xs { font-size: 10px; }
+.text-xs { font-size: calc(10px * var(--font-scale)); }
 .text-muted { color: var(--color-text-disabled); }
 .mini-portrait { width: 32px; height: 40px; border-radius: 4px; object-fit: cover; border: 1px solid var(--overlay-border); background-color: var(--neo-surface-raised); }
 
@@ -594,8 +595,8 @@ const launchBattle = () => {
   .launch-action { margin-top: 10px; }
   
   .modal-content { width: 95vw; padding: 15px; }
-  .roster-hdr, .roster-row { font-size: 11px; padding: 4px; }
-  .roster-hdr span { font-size: 9px; }
+  .roster-hdr, .roster-row { font-size: calc(11px * var(--font-scale)); padding: 4px; }
+  .roster-hdr span { font-size: calc(9px * var(--font-scale)); }
   .mini-portrait { width: 24px; height: 30px; }
 }
 </style>

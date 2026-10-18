@@ -499,11 +499,11 @@ watch([showArrivalPanel, showBattleResult, showPostBattleOptions], async () => {
 }
 .comms-header {
   display: flex; justify-content: space-between; align-items: center;
-  padding: 10px 16px; font-size: 13px; font-weight: 800;
+  padding: 10px 16px; font-size: calc(13px * var(--font-scale)); font-weight: 800;
 }
 .header-alliance { background: linear-gradient(90deg, var(--color-alliance-dim), var(--neo-surface)); color: var(--color-alliance); }
 .header-empire { background: linear-gradient(90deg, var(--color-empire-dim), var(--neo-surface)); color: var(--color-empire); }
-.comms-close { background: none; border: none; color: var(--color-text-disabled); font-size: 16px; cursor: pointer; }
+.comms-close { background: none; border: none; color: var(--color-text-disabled); font-size: calc(16px * var(--font-scale)); cursor: pointer; }
 .comms-close:hover { color: var(--color-text-primary); }
 .comms-body {
   display: flex; padding: 16px; gap: 14px; align-items: flex-start; min-height: 80px;
@@ -515,8 +515,8 @@ watch([showArrivalPanel, showBattleResult, showPostBattleOptions], async () => {
 }
 .comms-portrait { width: 100%; height: 100%; object-fit: cover; }
 .comms-content { flex: 1; display: flex; flex-direction: column; gap: 8px; }
-.comms-officer { font-size: 11px; color: var(--color-text-secondary); font-weight: 600; }
-.comms-message { font-size: 13px; color: var(--color-text-secondary); line-height: 1.6; white-space: pre-line; }
+.comms-officer { font-size: calc(11px * var(--font-scale)); color: var(--color-text-secondary); font-weight: 600; }
+.comms-message { font-size: calc(13px * var(--font-scale)); color: var(--color-text-secondary); line-height: 1.6; white-space: pre-line; }
 .comms-footer {
   padding: 10px 16px; border-top: 1px solid var(--neo-surface-raised);
   display: flex; justify-content: flex-end;
@@ -530,8 +530,8 @@ watch([showArrivalPanel, showBattleResult, showPostBattleOptions], async () => {
 }
 .arrival-action-btn:hover { transform: translateY(-2px); filter: brightness(1.2); }
 .arrival-action-btn:active { transform: translateY(0); }
-.btn-main { font-size: 13px; font-weight: 800; }
-.btn-sub { font-size: 10px; opacity: 0.8; }
+.btn-main { font-size: calc(13px * var(--font-scale)); font-weight: 800; }
+.btn-sub { font-size: calc(10px * var(--font-scale)); opacity: 0.8; }
 
 /* ===== 战斗结果徽章 ===== */
 .outcome-hero {
@@ -539,10 +539,10 @@ watch([showArrivalPanel, showBattleResult, showPostBattleOptions], async () => {
 }
 .outcome-badge-lg {
   padding: 8px 20px; border-radius: 6px;
-  font-size: 18px; font-weight: 900; color: var(--color-text-primary);
+  font-size: calc(18px * var(--font-scale)); font-weight: 900; color: var(--color-text-primary);
   letter-spacing: 0.08em; flex-shrink: 0;
 }
-.outcome-summary { font-size: 13px; color: var(--color-text-secondary); line-height: 1.5; }
+.outcome-summary { font-size: calc(13px * var(--font-scale)); color: var(--color-text-secondary); line-height: 1.5; }
 
 /* 舰船损失 3 列网格 */
 .loss-grid {
@@ -556,9 +556,9 @@ watch([showArrivalPanel, showBattleResult, showPostBattleOptions], async () => {
 .loss-bb { border-top: 2px solid var(--color-warning); }
 .loss-ca { border-top: 2px solid var(--color-cyan); }
 .loss-dd { border-top: 2px solid var(--color-green); }
-.loss-icon { font-size: 16px; margin-bottom: 2px; }
-.loss-label { font-size: 10px; color: var(--color-text-secondary); font-weight: 700; }
-.loss-value { font-size: 14px; font-weight: 900; }
+.loss-icon { font-size: calc(16px * var(--font-scale)); margin-bottom: 2px; }
+.loss-label { font-size: calc(10px * var(--font-scale)); color: var(--color-text-secondary); font-weight: 700; }
+.loss-value { font-size: calc(14px * var(--font-scale)); font-weight: 900; }
 .text-red { color: var(--color-empire); }
 .text-green { color: var(--color-green); }
 .text-gold { color: var(--color-warning); }
@@ -568,15 +568,15 @@ watch([showArrivalPanel, showBattleResult, showPostBattleOptions], async () => {
   display: flex; gap: 16px; flex-wrap: wrap;
 }
 .meta-item { display: flex; flex-direction: column; gap: 2px; }
-.meta-label { font-size: 10px; color: var(--color-text-disabled); font-weight: 700; }
-.meta-val { font-size: 14px; font-weight: 900; color: var(--color-text-primary); }
+.meta-label { font-size: calc(10px * var(--font-scale)); color: var(--color-text-disabled); font-weight: 700; }
+.meta-val { font-size: calc(14px * var(--font-scale)); font-weight: 900; color: var(--color-text-primary); }
 .text-cyan { color: var(--color-cyan); }
 
 /* ROUT 警告 */
 .rout-warning {
   margin-top: 10px; padding: 8px 10px;
   background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.3);
-  border-radius: 4px; font-size: 12px; color: var(--color-empire);
+  border-radius: 4px; font-size: calc(12px * var(--font-scale)); color: var(--color-empire);
 }
 
 /* ===== 按钮颜色 ===== */

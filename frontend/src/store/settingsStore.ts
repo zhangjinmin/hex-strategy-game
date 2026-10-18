@@ -14,6 +14,17 @@ export const useSettingsStore = defineStore('settings', () => {
   const briefingDisabled = ref(false);
   // UI 缩放因子（80%~140%）：全局统一放大按钮/菜单/文字，解决"文字太小"
   const uiScale = ref(100);
+  /**
+   * [v66] 界面字体：assets/fonts 下某个字体文件的文件名（见 services/fontManager.ts 的 FONT_CATALOG）。
+   * 空串 = 系统默认字体栈。切换后 App.vue 会立刻改写 --dmc-font / --dmc-font-mono（所见即所得）。
+   */
+  const uiFont = ref('');
+  /**
+   * [v66] 字号独立缩放（100~140%）：**只放大文字**，不动间距与容器尺寸。
+   * 与 uiScale（zoom，整体等比放大）分离 —— 用户抱怨"100% 字太小，但 120% 界面又太大"的正是这个。
+   * 落地方式是全局 font-size: calc(Npx * var(--font-scale))，见 theme/tokens.css。
+   */
+  const fontScale = ref(120);
 
   // ===== 战场 =====
   // [2026-09-20] 原「战场显示」模式选择（星域棋盘 hex / 全息战术投影 crt / 3D 战场 3d /
@@ -101,6 +112,13 @@ export const useSettingsStore = defineStore('settings', () => {
         apiUrl.value = data.apiUrl ?? 'https://api.openai.com/v1';
         briefingDisabled.value = data.briefingDisabled ?? false;
         uiScale.value = data.uiScale ?? 100;
+        // [v66] 字体：值非法（用户删了字体文件 / 手改存档）一律回落系统默认，不静默用错字体
+        uiFont.value = typeof data.uiFont === 'string' ? data.uiFont : '';
+        // 字号缩放：钳制到 100~140（100 以下没有意义，且会让本来就小的字更难看清）
+        {
+          const raw = Number(data.fontScale);
+          fontScale.value = Number.isFinite(raw) ? Math.min(140, Math.max(100, raw)) : 120;
+        }
       }
     } catch { /* ignore */ }
   };
@@ -109,6 +127,8 @@ export const useSettingsStore = defineStore('settings', () => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify({
         settingsVersion: 3,   // [v4] 2 → 3：新增 entryFxStyle（存量档 ver<3 ⇒ 回落 'door'）
+        // [v66] uiFont / fontScale 不占用版本号迁移：缺字段时直接回落默认（字体=系统、字号=120%），
+        //   保持 ver=3 以免打乱台架 entryDoorSim.cjs 对 settingsVersion 的断言。
         musicVolume: musicVolume.value,
         sfxVolume: sfxVolume.value,
         musicEnabled: musicEnabled.value,
@@ -127,12 +147,14 @@ export const useSettingsStore = defineStore('settings', () => {
         apiUrl: apiUrl.value,
         briefingDisabled: briefingDisabled.value,
         uiScale: uiScale.value,
+        uiFont: uiFont.value,
+        fontScale: fontScale.value,
       }));
     } catch { /* ignore */ }
   };
 
   // 自动持久化
-  watch([musicVolume, sfxVolume, musicEnabled, sfxEnabled, musicTrack, factionColorScheme, starmapDisplayMode, briefingDisabled, uiScale, apiKey, apiModel, apiUrl, showSupplyChain, shipModelDetail, battle3dQuality, battle3dPerfGuard, battle3dShowFps, entryFxStyle], save, { deep: true });
+  watch([musicVolume, sfxVolume, musicEnabled, sfxEnabled, musicTrack, factionColorScheme, starmapDisplayMode, briefingDisabled, uiScale, uiFont, fontScale, apiKey, apiModel, apiUrl, showSupplyChain, shipModelDetail, battle3dQuality, battle3dPerfGuard, battle3dShowFps, entryFxStyle], save, { deep: true });
 
   // 初始化加载
   load();
@@ -156,6 +178,8 @@ export const useSettingsStore = defineStore('settings', () => {
     apiUrl.value = 'https://api.openai.com/v1';
     briefingDisabled.value = false;
     uiScale.value = 100;
+    uiFont.value = '';
+    fontScale.value = 120;
   };
 
   /**
@@ -190,7 +214,7 @@ export const useSettingsStore = defineStore('settings', () => {
     factionColorScheme,
     starmapDisplayMode,
     apiKey, apiModel, apiUrl,
-    briefingDisabled, uiScale,
+    briefingDisabled, uiScale, uiFont, fontScale,
     load, save, resetDefaults,
   };
 });

@@ -44,7 +44,7 @@ const b = computed(() => {
   from { opacity: 0; transform: translate(-50%, calc(-100% - 6px)) scale(0.85); }
 }
 .fb-name {
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-weight: 900;
   letter-spacing: 1px;
   margin-bottom: 3px;
@@ -53,7 +53,7 @@ const b = computed(() => {
   text-overflow: ellipsis;
 }
 .fb-text {
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   font-weight: 800;
   color: #f8fafc;
   line-height: 1.45;

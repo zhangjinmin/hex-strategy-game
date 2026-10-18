@@ -110,20 +110,23 @@ const handleImgError = (e: Event) => {
 .side-info.inactive { opacity: 0.4; filter: grayscale(1); }
 .mini-portrait { width: 36px; height: 48px; object-fit: cover; border-radius: 4px; border: 1px solid rgba(255,255,255,0.2); flex-shrink: 0; }
 .info-content { display: flex; flex-direction: column; width: 140px; }
-.faction-name { font-size: 12px; font-weight: 900; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.faction-name { font-size: calc(12px * var(--font-scale)); font-weight: 900; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* [v57] 三细条行：标签 + 条 + 数值，扫读式提高面板信息密度 */
 .stat-row { display: flex; align-items: center; gap: 4px; margin-bottom: 2px; }
-.stat-k { width: 22px; flex-shrink: 0; font-size: 9px; color: var(--color-text-secondary); font-weight: 800; letter-spacing: 1px; }
-.stat-v { width: 20px; flex-shrink: 0; text-align: right; font-size: 9px; color: var(--color-text-secondary); font-family: var(--font-family); font-weight: 800; }
+/* [v66] 标签/数值用 min-width + nowrap 而不是固定 width：
+   字号放大后（尤其 fontScale×uiScale 双高时）「舰况 / 士气 / 补给」会被挤成竖排两行、把整张卡撑高。
+   改成不换行 + 最小宽度，宽度不够时挤占中间的条，而不是折行。 */
+.stat-k { min-width: 22px; flex-shrink: 0; white-space: nowrap; font-size: calc(9px * var(--font-scale)); color: var(--color-text-secondary); font-weight: 800; letter-spacing: 1px; }
+.stat-v { min-width: 20px; flex-shrink: 0; white-space: nowrap; text-align: right; font-size: calc(9px * var(--font-scale)); color: var(--color-text-secondary); font-family: var(--font-family); font-weight: 800; }
 .hp-bar-container { flex: 1; min-width: 0; height: 3px; background: var(--color-border); border-radius: 2px; overflow: hidden; }
 .hp-bar-fill { height: 100%; transition: width 0.3s; }
 .bg-cyan { background: var(--color-cyan); }
 .bg-red { background: var(--color-empire); }
 .bg-gold { background: var(--color-warning, #f59e0b); }
 .bg-green { background: #22c55e; }
-.mini-gold { color: var(--color-text-secondary); font-size: 11px; font-family: var(--font-family); font-weight: 800; }
+.mini-gold { color: var(--color-text-secondary); font-size: calc(11px * var(--font-scale)); font-family: var(--font-family); font-weight: 800; }
 /* [W2.3] 编成摘要（较小，单行省略） */
-.mini-comp { color: var(--color-text-disabled); font-size: 9px; font-family: var(--font-family); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mini-comp { color: var(--color-text-disabled); font-size: calc(9px * var(--font-scale)); font-family: var(--font-family); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .text-cyan { color: var(--color-cyan); }
 /* [v58] .battle-dialog-overlay 立绘对话框样式已随模板删除（banter 改走旗舰浮动气泡） */
 

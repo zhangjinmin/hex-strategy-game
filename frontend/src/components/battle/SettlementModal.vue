@@ -21,8 +21,8 @@ const store = useGameStore();
 <style scoped>
 .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: var(--overlay-scrim); z-index: 999; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
 .modal-content { width: 400px; padding: 30px; text-align: center; border: 1px solid var(--overlay-border); }
-h2 { margin: 0 0 10px 0; font-size: 28px; font-weight: 900; }
-.status-text { color: var(--color-text-secondary); font-size: 14px; margin-bottom: 20px; font-weight: 600; }
+h2 { margin: 0 0 10px 0; font-size: calc(28px * var(--font-scale)); font-weight: 900; }
+.status-text { color: var(--color-text-secondary); font-size: calc(14px * var(--font-scale)); margin-bottom: 20px; font-weight: 600; }
 .reward-box { padding: 15px; border-radius: 8px; margin: 15px 0; }
-.reward-box p { margin: 5px 0; font-size: 14px; font-weight: 800; color: var(--color-text-primary); }
+.reward-box p { margin: 5px 0; font-size: calc(14px * var(--font-scale)); font-weight: 800; color: var(--color-text-primary); }
 </style>

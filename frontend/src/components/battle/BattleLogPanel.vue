@@ -49,7 +49,7 @@ defineExpose({ addLogEntry });
   z-index: 1200; pointer-events: none; max-width: 600px;
 }
 .log-entry {
-  font-size: 11px; font-weight: 600; padding: 3px 12px;
+  font-size: calc(11px * var(--font-scale)); font-weight: 600; padding: 3px 12px;
   background: rgba(0,0,0,0.7); border-radius: 4px;
   animation: logFadeIn 0.3s ease-out;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

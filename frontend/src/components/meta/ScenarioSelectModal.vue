@@ -57,10 +57,10 @@ const diffLabel: Record<string, string> = { easy: '简单', normal: '标准', ha
   cursor: pointer; transition: all 0.15s; background: rgba(0,0,0,0.2);
 }
 .scenario-card:hover, .scenario-card.selected { border-color: var(--color-cyan); background: rgba(6,182,212,0.06); }
-.scenario-year { font-size: 13px; color: var(--color-cyan); font-weight: 700; margin-bottom: 6px; }
-.scenario-name { font-size: 16px; font-weight: 800; color: var(--color-text-primary); margin-bottom: 8px; }
-.scenario-desc { font-size: 12px; color: var(--color-text-secondary); line-height: 1.5; margin-bottom: 10px; }
-.scenario-meta { display: flex; gap: 6px; font-size: 11px; }
+.scenario-year { font-size: calc(13px * var(--font-scale)); color: var(--color-cyan); font-weight: 700; margin-bottom: 6px; }
+.scenario-name { font-size: calc(16px * var(--font-scale)); font-weight: 800; color: var(--color-text-primary); margin-bottom: 8px; }
+.scenario-desc { font-size: calc(12px * var(--font-scale)); color: var(--color-text-secondary); line-height: 1.5; margin-bottom: 10px; }
+.scenario-meta { display: flex; gap: 6px; font-size: calc(11px * var(--font-scale)); }
 .scenario-meta span { padding: 2px 8px; border-radius: 3px; font-weight: 600; }
 .diff-easy { background: rgba(16,185,129,0.15); color: #10b981; }
 .diff-normal { background: rgba(6,182,212,0.15); color: #06b6d4; }

@@ -333,15 +333,19 @@ onBeforeUnmount(() => {
   position: relative; width: min(1180px, 96vw); max-height: 96vh; overflow-y: auto;
   padding: 14px 26px 16px; text-align: center;
 }
+/* [v66] 上面 96vh 的兜底：父级 #game-container 带 zoom(--ui-scale) 时，vh 不参与 zoom 折算
+   ⇒ 140% 下 96vh 实际渲染成 134vh，军议整层会被顶出屏幕（实测 top=-155）。
+   这里改用百分比：百分比相对「已被 zoom 缩放过的父级高度」解析，放大后依然贴合容器。 */
+.io-overlay > .io-shell { max-height: 100%; }
 
 .io-topbar {
   display: flex; align-items: baseline; gap: 12px;
   border-bottom: 1px solid rgba(34, 211, 238, 0.25); padding-bottom: 7px;
 }
-.io-title { font-size: 17px; font-weight: 900; letter-spacing: 5px; color: #22d3ee; text-shadow: 0 0 12px rgba(34, 211, 238, 0.5); }
-.io-mode { font-size: 11px; letter-spacing: 2px; color: #64748b; }
+.io-title { font-size: calc(17px * var(--font-scale)); font-weight: 900; letter-spacing: 5px; color: #22d3ee; text-shadow: 0 0 12px rgba(34, 211, 238, 0.5); }
+.io-mode { font-size: calc(11px * var(--font-scale)); letter-spacing: 2px; color: #64748b; }
 .io-flex { flex: 1; }
-.io-cd { font-size: 11px; font-weight: 800; color: #f59e0b; letter-spacing: 1px; }
+.io-cd { font-size: calc(11px * var(--font-scale)); font-weight: 800; color: #f59e0b; letter-spacing: 1px; }
 
 .io-matchup { display: flex; align-items: flex-start; justify-content: center; gap: 44px; margin: 12px 0 8px; }
 .io-side { width: 210px; }
@@ -355,49 +359,49 @@ onBeforeUnmount(() => {
 .io-portrait-foe { filter: saturate(0.8) contrast(1.02) brightness(0.9); }
 .io-portrait-empty {
   display: flex; align-items: center; justify-content: center;
-  font-size: 32px; color: #475569; background: rgba(15, 23, 42, 0.8);
+  font-size: calc(32px * var(--font-scale)); color: #475569; background: rgba(15, 23, 42, 0.8);
 }
 .io-portrait-glow {
   position: absolute; inset: -5px; border: 1px solid; border-radius: 8px; pointer-events: none;
   box-shadow: 0 0 16px rgba(34, 211, 238, 0.2), inset 0 0 22px rgba(0, 0, 0, 0.55); opacity: 0.85;
 }
-.io-name { margin-top: 7px; font-size: 15px; font-weight: 900; letter-spacing: 1px; }
-.io-meta { margin-top: 3px; font-size: 10px; display: flex; gap: 8px; justify-content: center; align-items: center; }
+.io-name { margin-top: 7px; font-size: calc(15px * var(--font-scale)); font-weight: 900; letter-spacing: 1px; }
+.io-meta { margin-top: 3px; font-size: calc(10px * var(--font-scale)); display: flex; gap: 8px; justify-content: center; align-items: center; }
 .io-flag { font-weight: 800; }
 .io-rank { color: #94a3b8; font-weight: 800; }
 .io-fleets { color: #64748b; }
 /* [W2.2] 教范阵型 + 编成明细 */
 .io-doctrine { margin-top: 4px; display: flex; flex-direction: column; align-items: center; gap: 1px; }
-.io-form { font-size: 11px; font-weight: 900; color: #22d3ee; letter-spacing: 1px; }
-.io-comp { font-size: 9px; color: #64748b; font-family: var(--font-family); max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.io-vs { align-self: center; margin-top: 76px; font-size: 14px; font-weight: 900; color: #f59e0b; letter-spacing: 2px; }
+.io-form { font-size: calc(11px * var(--font-scale)); font-weight: 900; color: #22d3ee; letter-spacing: 1px; }
+.io-comp { font-size: calc(9px * var(--font-scale)); color: #64748b; font-family: var(--font-family); max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.io-vs { align-self: center; margin-top: 76px; font-size: calc(14px * var(--font-scale)); font-weight: 900; color: #f59e0b; letter-spacing: 2px; }
 
 .io-speech {
   max-width: 720px; margin: 0 auto; text-align: left; min-height: 60px;
   border-left: 2px solid rgba(34, 211, 238, 0.55); padding: 6px 12px;
   background: rgba(15, 23, 42, 0.5); border-radius: 0 5px 5px 0;
 }
-.io-speaker { font-size: 11px; font-weight: 900; color: #22d3ee; letter-spacing: 1px; margin-bottom: 3px; }
-.io-line { font-size: 12.5px; line-height: 1.65; white-space: pre-wrap; color: #cbd5e1; }
+.io-speaker { font-size: calc(11px * var(--font-scale)); font-weight: 900; color: #22d3ee; letter-spacing: 1px; margin-bottom: 3px; }
+.io-line { font-size: calc(12.5px * var(--font-scale)); line-height: 1.65; white-space: pre-wrap; color: #cbd5e1; }
 .io-caret { color: #22d3ee; animation: io-blink 1s steps(2) infinite; }
 @keyframes io-blink { 50% { opacity: 0; } }
 
 .io-deploy { margin-top: 12px; text-align: left; }
 .io-sec {
-  font-size: 11px; font-weight: 900; letter-spacing: 2px; color: #22d3ee;
+  font-size: calc(11px * var(--font-scale)); font-weight: 900; letter-spacing: 2px; color: #22d3ee;
   border-left: 2px solid rgba(34, 211, 238, 0.5); padding-left: 6px; margin-bottom: 6px;
 }
 
 .io-actions { margin-top: 12px; }
 .io-picks { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; }
 .io-group { display: flex; align-items: center; gap: 4px; }
-.io-group-label { font-size: 10px; color: #94a3b8; letter-spacing: 1px; margin-right: 2px; }
+.io-group-label { font-size: calc(10px * var(--font-scale)); color: #94a3b8; letter-spacing: 1px; margin-right: 2px; }
 .io-opt {
   background: rgba(15, 23, 42, 0.85); color: #cbd5e1; font-weight: 800;
   border: 1px solid rgba(148, 163, 184, 0.35); border-radius: 4px;
-  font-size: 11px; padding: 4px 10px; cursor: pointer; font-family: inherit;
+  font-size: calc(11px * var(--font-scale)); padding: 4px 10px; cursor: pointer; font-family: inherit;
 }
-.io-opt i { font-style: normal; color: #64748b; font-size: 9px; margin-left: 4px; }
+.io-opt i { font-style: normal; color: #64748b; font-size: calc(9px * var(--font-scale)); margin-left: 4px; }
 .io-opt:hover { border-color: #22d3ee; color: #22d3ee; }
 .io-opt.on { background: #22d3ee; color: #06121f; border-color: #22d3ee; }
 .io-opt.on i { color: rgba(6, 18, 31, 0.6); }
@@ -406,9 +410,9 @@ onBeforeUnmount(() => {
   display: block; margin: 12px auto 0;
   background: rgba(245, 158, 11, 0.18); color: #f59e0b; font-weight: 900; letter-spacing: 4px;
   border: 1px solid rgba(245, 158, 11, 0.7); border-radius: 5px; padding: 9px 44px;
-  font-size: 14px; cursor: pointer; font-family: inherit;
+  font-size: calc(14px * var(--font-scale)); cursor: pointer; font-family: inherit;
   box-shadow: 0 0 18px rgba(245, 158, 11, 0.16);
 }
 .io-go:hover { background: #f59e0b; color: #1a1204; }
-.io-hint { margin-top: 8px; font-size: 10px; color: #64748b; letter-spacing: 1px; }
+.io-hint { margin-top: 8px; font-size: calc(10px * var(--font-scale)); color: #64748b; letter-spacing: 1px; }
 </style>

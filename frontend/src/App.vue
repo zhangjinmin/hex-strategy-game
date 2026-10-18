@@ -17,8 +17,8 @@
           <div class="fleet-info">
             <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
                 <div class="fleet-name" :class="fleet.team === 1 ? 'text-cyan' : 'text-red'">{{ fleet.name }}</div>
-                <div v-if="!fleet.contactState || fleet.contactState === 'identified'" style="font-size: 9px; color: var(--color-text-secondary); font-weight: 800;">{{ fleet.unitCount }} 艘</div>
-                <div v-else style="font-size: 9px; color: var(--color-warning); font-weight: 800;">{{ fleet.contactState === 'anomaly' ? '◌' : '◇' }}</div>
+                <div v-if="!fleet.contactState || fleet.contactState === 'identified'" style="font-size: calc(9px * var(--font-scale)); color: var(--color-text-secondary); font-weight: 800;">{{ fleet.unitCount }} 艘</div>
+                <div v-else style="font-size: calc(9px * var(--font-scale)); color: var(--color-warning); font-weight: 800;">{{ fleet.contactState === 'anomaly' ? '◌' : '◇' }}</div>
             </div>
             <template v-if="!fleet.contactState || fleet.contactState === 'identified'">
             <div class="fleet-hp-bar">
@@ -29,7 +29,7 @@
               <div class="hp-fill" :style="{ width: fleet.supply + '%', background: fleet.supply > 30 ? 'var(--color-green)' : 'var(--color-warning)' }"></div>
             </div>
             <!-- 士气：补给告急会先动摇士气，归零后才可能在交火中快速崩溃。 -->
-            <div title="士气" style="font-size: 8px; color: var(--color-text-secondary); margin-top: 2px; line-height: 10px;">士气 {{ Math.round(fleet.morale ?? 100) }}%</div>
+            <div title="士气" style="font-size: calc(8px * var(--font-scale)); color: var(--color-text-secondary); margin-top: 2px; line-height: 1.25;">士气 {{ Math.round(fleet.morale ?? 100) }}%</div>
             <div class="fleet-hp-bar" style="height: 2px; margin-top: 1px; background: var(--neo-surface-raised);">
               <div class="hp-fill" :style="{ width: Math.max(0, fleet.morale ?? 100) + '%', background: (fleet.morale ?? 100) > 40 ? '#a78bfa' : 'var(--color-warning)' }"></div>
             </div>
@@ -136,7 +136,7 @@
     </Transition>
   </div>
   
-  <div v-else class="loading-screen" style="display: flex; justify-content: center; align-items: center; height: 100vh; color: var(--color-cyan); font-size: 14px; font-weight: 800;">
+  <div v-else class="loading-screen" style="display: flex; justify-content: center; align-items: center; height: 100vh; color: var(--color-cyan); font-size: calc(14px * var(--font-scale)); font-weight: 800;">
     接入战术网络中...
   </div>
 </template>
@@ -170,6 +170,7 @@ import BattleLogPanel from './components/battle/BattleLogPanel.vue';
 import ForcePassDialog from './components/meta/ForcePassDialog.vue';
 import { commandBridge } from './services/CommandBridge';
 import { initMusic, unlockAudio, setEnabled, setVolume } from './services/MusicManager';
+import { applyFontFamily, ensureFontFacesInjected } from './services/fontManager';
 import { Battle3DOverlay } from './game/three/Battle3DOverlay';
 // [v36c] 战场地形图例：数据由 `terrainEffects` 的**效果表推导**（不手抄），
 //   保证图例文案与实装数值永不脱节。
@@ -521,6 +522,25 @@ const applyUiScale = (n: number) => {
 // 初始化 + 监听变化
 applyUiScale((settings as any).uiScale ?? 100);
 watch(() => (settings as any).uiScale, (v: number) => applyUiScale(v));
+// ⚠ 修复：首次 setup 时 #game-container 还不存在（模板上是 v-if="isDataLoaded"），
+//   原实现取到 null 就直接放弃设 zoom ⇒ 除非用户动一次滑块，全局缩放在启动后**根本没生效**。
+//   这里等容器挂载后补一次。
+watch(isDataLoaded, (v: boolean) => { if (v) nextTick(() => applyUiScale((settings as any).uiScale ?? 100)); });
+
+// [v66] 字号独立缩放：只改写 --font-scale（所有 font-size 都是 calc(Npx * var(--font-scale))），
+//   不碰 zoom / 间距 / 容器尺寸 ⇒ 字变大但界面不会跟着变大（与 uiScale 语义分离，可叠加）。
+const applyFontScale = (n: number) => {
+  const factor = Math.max(1, Math.min(1.4, (Number(n) || 100) / 100));
+  document.documentElement.style.setProperty('--font-scale', factor.toFixed(3));
+};
+applyFontScale((settings as any).fontScale ?? 120);
+watch(() => (settings as any).fontScale, (v: number) => applyFontScale(v));
+
+// [v66] 界面字体：改 --dmc-font / --dmc-font-mono 两个变量即全站即时生效（含 mono 语义的数值位）。
+//   字体清单由 services/fontManager.ts 在编译期扫描 assets/fonts/ 自动生成。
+ensureFontFacesInjected();
+applyFontFamily((settings as any).uiFont ?? '');
+watch(() => (settings as any).uiFont, (v: string) => applyFontFamily(v ?? ''));
 
 watch(gameState, (newState, oldState) => {
     console.log(`[App.vue] gameState change: ${oldState} -> ${newState}`);
@@ -576,7 +596,7 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
 
 /* neo-* 样式由 theme/tokens.css 统一定义 */
 
-.icon-btn { padding: 8px 12px; font-weight: 800; font-size: 13px; flex-shrink: 0; }
+.icon-btn { padding: 8px 12px; font-weight: 800; font-size: calc(13px * var(--font-scale)); flex-shrink: 0; }
 
 /* Toast 动画 */
 .toast-enter-active { animation: toastIn 0.3s var(--ease-out); }
@@ -605,8 +625,8 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
 
 .sidebar-header { display: flex; align-items: center; justify-content: space-between; height: 40px; padding: 0 10px; }
 .logo-box { display: flex; align-items: center; gap: 8px; }
-.game-logo { font-size: 16px; font-weight: 800; color: var(--color-text-primary); white-space: nowrap; }
-.version-tag { font-size: 10px; background: rgba(0,0,0,0.3); padding: 3px 6px; border-radius: 99px; margin-left: 6px; color: var(--color-text-secondary); }
+.game-logo { font-size: calc(16px * var(--font-scale)); font-weight: 800; color: var(--color-text-primary); white-space: nowrap; }
+.version-tag { font-size: calc(10px * var(--font-scale)); background: rgba(0,0,0,0.3); padding: 3px 6px; border-radius: 99px; margin-left: 6px; color: var(--color-text-secondary); }
 
 .btn-toggle-sidebar { background: transparent; border: none; color: var(--color-text-secondary); cursor: pointer; transition: color 0.2s; font-family: var(--font-family); }
 .btn-toggle-sidebar:hover { color: var(--color-text-primary); }
@@ -624,22 +644,22 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
   padding: 16px 24px; flex-shrink: 0; margin-bottom: 5px;
 }
 .res-group { display: flex; gap: 20px; }
-.res-item { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
-.btn-fortune { padding: 8px 20px; font-weight: 800; font-size: 13px; color: var(--color-cyan); }
+.res-item { font-size: calc(14px * var(--font-scale)); font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.btn-fortune { padding: 8px 20px; font-weight: 800; font-size: calc(13px * var(--font-scale)); color: var(--color-cyan); }
 
 .tab-panel { flex: 1; display: flex; flex-direction: column; gap: 20px; overflow-y: auto; padding: 5px; }
 
 .battle-setup-container { justify-content: flex-start; }
 .setup-controls-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
 .control-group { display: flex; flex-direction: column; gap: 10px; }
-.control-group label { font-size: 14px; font-weight: 800; color: var(--color-text-primary); padding-left: 6px; border-left: 4px solid var(--color-cyan); line-height: 1; }
+.control-group label { font-size: calc(14px * var(--font-scale)); font-weight: 800; color: var(--color-text-primary); padding-left: 6px; border-left: 4px solid var(--color-cyan); line-height: 1; }
 .map-select-group { display: flex; gap: 10px; align-items: stretch; }
 
 .select-wrapper { position: relative; display: flex; align-items: center; padding: 0; }
-.select-wrapper::after { content: '▼'; position: absolute; right: 15px; color: var(--color-cyan); pointer-events: none; font-size: 12px; }
+.select-wrapper::after { content: '▼'; position: absolute; right: 15px; color: var(--color-cyan); pointer-events: none; font-size: calc(12px * var(--font-scale)); }
 .neo-select { 
   width: 100%; appearance: none; background: transparent; border: none; 
-  color: var(--color-text-primary); padding: 14px 16px; font-size: 14px; font-weight: 800; outline: none; cursor: pointer;
+  color: var(--color-text-primary); padding: 14px 16px; font-size: calc(14px * var(--font-scale)); font-weight: 800; outline: none; cursor: pointer;
 }
 .neo-select option { background: var(--neo-surface); color: var(--color-text-secondary); }
 
@@ -647,35 +667,35 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
   flex: none; display: flex; flex-direction: column; padding: 24px; gap: 20px; justify-content: flex-start;
 }
 .preview-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--overlay-hover); padding-bottom: 12px; }
-.preview-header h3 { font-size: 20px; font-weight: 900; margin: 0; }
-.vs-badge { background: var(--color-empire); color: var(--color-text-primary); padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 800; }
+.preview-header h3 { font-size: calc(20px * var(--font-scale)); font-weight: 900; margin: 0; }
+.vs-badge { background: var(--color-empire); color: var(--color-text-primary); padding: 4px 10px; border-radius: 6px; font-size: calc(12px * var(--font-scale)); font-weight: 800; }
 .preview-details { display: flex; flex-direction: column; gap: 12px; }
 .detail-item { display: flex; gap: 15px; align-items: flex-start; }
-.detail-item .label { color: var(--color-text-disabled); font-size: 13px; font-weight: 800; white-space: nowrap; width: 65px; }
-.detail-item .value { color: var(--color-text-primary); font-size: 14px; font-weight: 600; line-height: 1.5; }
+.detail-item .label { color: var(--color-text-disabled); font-size: calc(13px * var(--font-scale)); font-weight: 800; white-space: nowrap; width: 65px; }
+.detail-item .value { color: var(--color-text-primary); font-size: calc(14px * var(--font-scale)); font-weight: 600; line-height: 1.5; }
 
 .start-action-zone { display: flex; justify-content: center; margin-top: auto; flex-shrink: 0; padding-top: 10px; }
-.btn-launch-game { padding: 16px; font-size: 16px; width: 100%; }
+.btn-launch-game { padding: 16px; font-size: calc(16px * var(--font-scale)); width: 100%; }
 
 .deck-builder-panel { display: flex; flex-direction: column; overflow: hidden; }
 .deck-top-section { display: flex; gap: 20px; flex-shrink: 0; }
 .deck-slots-container, .synergy-container { flex: 1; padding: 15px; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
 .deck-header-row { display: flex; justify-content: space-between; align-items: center; }
-.panel-title-small { font-size: 13px; font-weight: 800; color: var(--color-text-primary); padding-left: 6px; border-left: 3px solid var(--color-cyan); }
-.auto-deploy-btn { padding: 4px 8px; font-size: 11px; }
+.panel-title-small { font-size: calc(13px * var(--font-scale)); font-weight: 800; color: var(--color-text-primary); padding-left: 6px; border-left: 3px solid var(--color-cyan); }
+.auto-deploy-btn { padding: 4px 8px; font-size: calc(11px * var(--font-scale)); }
 
 .deck-slots { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
 .slot-item { aspect-ratio: 1/1; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s; border: 1px solid transparent; border-radius: 8px; }
 .slot-item:hover { border-color: var(--color-empire); color: var(--color-empire); }
-.slot-shape { font-size: 16px; margin-bottom: 4px; font-family: var(--font-family); font-weight: bold; padding: 3px 6px; background: var(--overlay-hover); border-radius: 4px; }
-.slot-name { font-size: 10px; font-weight: 800; text-align: center; line-height: 1.2;}
-.empty-slot { font-size: 24px; color: var(--color-border-emphasized); font-family: var(--font-family); }
+.slot-shape { font-size: calc(16px * var(--font-scale)); margin-bottom: 4px; font-family: var(--font-family); font-weight: bold; padding: 3px 6px; background: var(--overlay-hover); border-radius: 4px; }
+.slot-name { font-size: calc(10px * var(--font-scale)); font-weight: 800; text-align: center; line-height: 1.2;}
+.empty-slot { font-size: calc(24px * var(--font-scale)); color: var(--color-border-emphasized); font-family: var(--font-family); }
 
 .synergy-list { display: flex; flex-wrap: wrap; gap: 6px; overflow-y: auto; }
 .synergy-item { background: var(--neo-surface); padding: 4px 8px; border-radius: 4px; border: 1px solid var(--neo-surface-raised); display: inline-flex; align-items: baseline; gap: 6px; width: auto; flex: 1 1 calc(50% - 6px); }
 .active-syn { border-color: var(--color-cyan); box-shadow: inset 0 0 8px var(--color-cyan)33; }
-.syn-name { font-size: 11px; font-weight: 800; color: var(--color-cyan); white-space: nowrap; }
-.syn-desc { font-size: 10px; color: var(--color-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.syn-name { font-size: calc(11px * var(--font-scale)); font-weight: 800; color: var(--color-cyan); white-space: nowrap; }
+.syn-desc { font-size: calc(10px * var(--font-scale)); color: var(--color-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .can-upgrade { border: 1px solid var(--color-green); box-shadow: 0 0 15px rgba(16, 185, 129, 0.2), inset 4px 4px 8px var(--neo-surface-inset), inset -4px -4px 8px var(--neo-surface-raised); }
 .can-upgrade-btn { color: var(--color-green); border-color: var(--color-green); }
@@ -683,30 +703,30 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
 .barracks-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 15px; padding: 5px; overflow-y: auto; flex: 1; }
 .troop-card { padding: 16px; display: flex; flex-direction: column; gap: 12px; width: 100%; position: relative; }
 .in-deck { border: 1px solid var(--color-cyan); }
-.quality-badge { position: absolute; top: 10px; right: 10px; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 800; color: var(--color-text-primary); }
+.quality-badge { position: absolute; top: 10px; right: 10px; padding: 2px 6px; border-radius: 4px; font-size: calc(10px * var(--font-scale)); font-weight: 800; color: var(--color-text-primary); }
 .q-1 { background: var(--color-text-secondary); } .q-2 { background: var(--color-green); } .q-3 { background: var(--color-alliance); } .q-4 { background: var(--color-purple); } .q-5 { background: var(--color-warning); }
 
 .troop-header { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
-.neo-icon-inset { width: 36px; height: 36px; box-shadow: inset 3px 3px 6px var(--neo-surface-inset), inset -3px -3px 6px var(--neo-surface-inset); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 14px; color: var(--color-text-primary); flex-shrink:0; font-family: var(--font-family); font-weight: bold; }
-.level-tag { background: var(--neo-surface); padding: 2px 6px; border-radius: 4px; font-size: 10px; color: var(--color-text-secondary); margin-left: 6px; }
-.tags-row { font-size: 11px; color: var(--color-text-disabled); margin-top: 4px; }
-.btn-equip { padding: 6px 12px; font-size: 11px; }
-.troop-stats-bars { padding: 10px; font-size: 11px; font-weight: 600; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 6px; }
+.neo-icon-inset { width: 36px; height: 36px; box-shadow: inset 3px 3px 6px var(--neo-surface-inset), inset -3px -3px 6px var(--neo-surface-inset); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: calc(14px * var(--font-scale)); color: var(--color-text-primary); flex-shrink:0; font-family: var(--font-family); font-weight: bold; }
+.level-tag { background: var(--neo-surface); padding: 2px 6px; border-radius: 4px; font-size: calc(10px * var(--font-scale)); color: var(--color-text-secondary); margin-left: 6px; }
+.tags-row { font-size: calc(11px * var(--font-scale)); color: var(--color-text-disabled); margin-top: 4px; }
+.btn-equip { padding: 6px 12px; font-size: calc(11px * var(--font-scale)); }
+.troop-stats-bars { padding: 10px; font-size: calc(11px * var(--font-scale)); font-weight: 600; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 6px; }
 
 .box-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 15px; }
 .box-card { padding: 20px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px; width: 100%; }
 
 .editor-screen { display: flex; flex-direction: column; width: 100%; height: 100vh; overflow: hidden; }
 .editor-top-bar { padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
-.editor-title { font-weight: 800; font-size: 14px; color: var(--color-text-primary); }
+.editor-title { font-weight: 800; font-size: calc(14px * var(--font-scale)); color: var(--color-text-primary); }
 .editor-actions { display: flex; gap: 8px; align-items: center; }
-.btn-editor-toolbar { height: 36px; flex-shrink: 0; padding: 0 12px; display: flex; align-items: center; justify-content: center; font-size: 12px; }
+.btn-editor-toolbar { height: 36px; flex-shrink: 0; padding: 0 12px; display: flex; align-items: center; justify-content: center; font-size: calc(12px * var(--font-scale)); }
 .editor-body { flex: 1; display: flex; flex-direction: row; overflow: hidden; position: relative; height: calc(100vh - 60px); }
 #editor-canvas-container { flex: 1; height: 100%; min-width: 0; min-height: 0; overflow: hidden; position: relative; }
 #editor-canvas-container canvas { width: 100% !important; height: 100% !important; object-fit: contain; }
 .editor-sidebar-tools { width: 220px; padding: 20px; display: flex; flex-direction: column; gap: 15px; flex-shrink: 0; overflow-y: auto; }
 .brush-list { display: flex; flex-direction: column; gap: 10px; }
-.brush-btn { padding: 12px; display: flex; align-items: center; gap: 10px; font-size: 13px; height: auto; flex-shrink: 0; }
+.brush-btn { padding: 12px; display: flex; align-items: center; gap: 10px; font-size: calc(13px * var(--font-scale)); height: auto; flex-shrink: 0; }
 .brush-color { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
 
 .game-screen { display: block; width: 100%; height: 100%; position: relative; }
@@ -721,10 +741,10 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
 
 /* 3D 视角预设按钮组（右下角，3D 就绪后显示） */
 .view-preset-group { position: absolute; right: 16px; bottom: 70px; display: flex; flex-direction: column; gap: 8px; z-index: 20; }
-.view-preset-btn { padding: 8px 12px; font-size: 12px; font-weight: 800; color: var(--color-cyan); background: var(--overlay-surface, rgba(10,16,28,0.75)); border: 1px solid var(--color-border); border-radius: 8px; cursor: pointer; backdrop-filter: blur(4px); transition: all 0.2s; }
+.view-preset-btn { padding: 8px 12px; font-size: calc(12px * var(--font-scale)); font-weight: 800; color: var(--color-cyan); background: var(--overlay-surface, rgba(10,16,28,0.75)); border: 1px solid var(--color-border); border-radius: 8px; cursor: pointer; backdrop-filter: blur(4px); transition: all 0.2s; }
 .view-preset-btn:hover { background: var(--color-cyan); color: var(--neo-surface, #0a0f1c); }
 /* 提督扮演：军议面板关闭态的开启按钮（指挥制）。top 与 CouncilWarRoom 面板对齐（170px） */
-.war-room-toggle { position: absolute; right: 16px; top: 170px; z-index: 20; padding: 10px 16px; font-size: 13px; font-weight: 900; letter-spacing: 1px; color: #22d3ee; background: rgba(10,16,28,0.85); border: 2px solid rgba(34,211,238,0.65); border-radius: 8px; cursor: pointer; backdrop-filter: blur(4px); box-shadow: 0 0 12px rgba(34,211,238,0.25); animation: war-room-pulse 2.2s ease-in-out infinite; }
+.war-room-toggle { position: absolute; right: 16px; top: 170px; z-index: 20; padding: 10px 16px; font-size: calc(13px * var(--font-scale)); font-weight: 900; letter-spacing: 1px; color: #22d3ee; background: rgba(10,16,28,0.85); border: 2px solid rgba(34,211,238,0.65); border-radius: 8px; cursor: pointer; backdrop-filter: blur(4px); box-shadow: 0 0 12px rgba(34,211,238,0.25); animation: war-room-pulse 2.2s ease-in-out infinite; }
 @keyframes war-room-pulse { 0%, 100% { box-shadow: 0 0 8px rgba(34,211,238,0.2); } 50% { box-shadow: 0 0 18px rgba(34,211,238,0.5); } }
 .war-room-toggle:hover { background: #22d3ee; color: #0a0f1c; }
 
@@ -737,9 +757,9 @@ body.battle3d-mode .fleet-ui-layer { display: none; }
   position: absolute; bottom: 80px; left: 20px; top: auto; display: flex; flex-direction: column; gap: 8px;
   padding: 15px; z-index: 5; background: rgba(17, 24, 39, 0.85); backdrop-filter: blur(8px); border: 1px solid var(--overlay-border); border-radius: 12px;
 }
-.legend-title { font-size: 12px; font-weight: 800; color: var(--color-text-primary); border-bottom: 1px solid var(--overlay-border); padding-bottom: 6px; margin-bottom: 4px; }
-.legend-item { font-size: 11px; color: var(--color-text-secondary); display: flex; align-items: center; gap: 8px; }
-.legend-item .icon { font-family: var(--font-family); font-size: 14px; font-weight: bold; width: 16px; text-align: center; }
+.legend-title { font-size: calc(12px * var(--font-scale)); font-weight: 800; color: var(--color-text-primary); border-bottom: 1px solid var(--overlay-border); padding-bottom: 6px; margin-bottom: 4px; }
+.legend-item { font-size: calc(11px * var(--font-scale)); color: var(--color-text-secondary); display: flex; align-items: center; gap: 8px; }
+.legend-item .icon { font-family: var(--font-family); font-size: calc(14px * var(--font-scale)); font-weight: bold; width: 16px; text-align: center; }
 
 /* [v36c] 空域地形图例（战场左下角）。独立命名，避免与战略地图的 .map-legend 耦合 */
 .terrain-legend {
@@ -751,23 +771,23 @@ body.battle3d-mode .fleet-ui-layer { display: none; }
   pointer-events: auto;
 }
 .terrain-legend .tl-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer; }
-.terrain-legend .tl-title { font-size: 11px; font-weight: 900; letter-spacing: 1px; color: #22d3ee; }
-.terrain-legend .tl-toggle { font-size: 12px; font-weight: 900; color: var(--color-text-secondary); width: 12px; text-align: center; }
-.terrain-legend .tl-row { display: flex; align-items: center; gap: 7px; font-size: 10px; line-height: 1.3; }
+.terrain-legend .tl-title { font-size: calc(11px * var(--font-scale)); font-weight: 900; letter-spacing: 1px; color: #22d3ee; }
+.terrain-legend .tl-toggle { font-size: calc(12px * var(--font-scale)); font-weight: 900; color: var(--color-text-secondary); width: 12px; text-align: center; }
+.terrain-legend .tl-row { display: flex; align-items: center; gap: 7px; font-size: calc(10px * var(--font-scale)); line-height: 1.3; }
 .terrain-legend .tl-dot { width: 9px; height: 9px; border-radius: 2px; flex: 0 0 auto; }
 .terrain-legend .tl-name { color: var(--color-text-primary); font-weight: 800; width: 62px; flex: 0 0 auto; }
 .terrain-legend .tl-desc { color: var(--color-text-secondary); font-weight: 600; }
-.terrain-legend .tl-off { font-size: 10px; color: var(--color-warning); font-weight: 800; }
+.terrain-legend .tl-off { font-size: calc(10px * var(--font-scale)); color: var(--color-warning); font-weight: 800; }
 .terrain-legend.tl-collapsed { min-width: 0; }
 
 .ui-footer { 
   position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
-  padding: 10px 24px; border-radius: 99px; font-size: 12px; color: var(--color-text-secondary); z-index: 10; font-weight: 800;
+  padding: 10px 24px; border-radius: 99px; font-size: calc(12px * var(--font-scale)); color: var(--color-text-secondary); z-index: 10; font-weight: 800;
 }
 
 .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(11, 12, 16, 0.8); backdrop-filter: blur(8px); display: flex; justify-content: center; align-items: center; z-index: 999; }
 .modal-content { padding: 40px; max-width: 400px; width: 90%; text-align: center; }
-.modal-title { font-size: 24px; font-weight: 800; margin-bottom: 10px; color: var(--color-text-primary); }
+.modal-title { font-size: calc(24px * var(--font-scale)); font-weight: 800; margin-bottom: 10px; color: var(--color-text-primary); }
 .modal-desc { color: var(--color-text-secondary); font-weight: 600; margin-bottom: 20px; }
 .settlement-rewards { padding: 20px; text-align: left; color: var(--color-text-primary); font-weight: 600; line-height: 2; margin-bottom: 24px; }
 
@@ -795,7 +815,7 @@ body.battle3d-mode .fleet-ui-layer { display: none; }
     padding: 6px 0 !important; margin: 0 !important; box-shadow: none !important; border: none !important; background: transparent !important;
   }
  
-  .nav-text { display: block !important; font-size: 10px; font-weight: 800; text-align: center; color: var(--color-text-disabled); white-space: nowrap; }
+  .nav-text { display: block !important; font-size: calc(10px * var(--font-scale)); font-weight: 800; text-align: center; color: var(--color-text-disabled); white-space: nowrap; }
   .btn-nav-item.active .nav-text { color: var(--color-cyan); }
   
   .menu-main-content { padding: 10px 10px 75px 10px; display: block; overflow-y: auto; height: auto; }
@@ -803,22 +823,22 @@ body.battle3d-mode .fleet-ui-layer { display: none; }
   
   .global-resource-bar { padding: 10px; flex-direction: column; gap: 10px; align-items: stretch; margin-bottom: 0; }
   .res-group { justify-content: space-between; }
-  .res-item { font-size: 12px; }
+  .res-item { font-size: calc(12px * var(--font-scale)); }
   
   .tab-panel { gap: 15px; padding: 0; overflow-y: visible; }
   .setup-controls-grid { grid-template-columns: 1fr; gap: 15px; }
-  .panel-title { font-size: 13px; margin-bottom: 8px; }
-  .neo-select { padding: 12px 14px; font-size: 13px; }
+  .panel-title { font-size: calc(13px * var(--font-scale)); margin-bottom: 8px; }
+  .neo-select { padding: 12px 14px; font-size: calc(13px * var(--font-scale)); }
   
   .preview-board { padding: 16px; min-height: auto; }
-  .preview-header h3 { font-size: 16px; }
+  .preview-header h3 { font-size: calc(16px * var(--font-scale)); }
   .detail-item { flex-direction: column; gap: 4px; }
   
   .start-action-zone { margin-top: 5px; padding-top: 0;}
-  .btn-launch-game { width: 100%; padding: 14px; font-size: 14px; }
+  .btn-launch-game { width: 100%; padding: 14px; font-size: calc(14px * var(--font-scale)); }
 
   .deck-top-section { flex-direction: column; gap: 15px; }
-  .slot-name { font-size: 9px; }
+  .slot-name { font-size: calc(9px * var(--font-scale)); }
   
   .synergy-list { display: flex; flex-wrap: wrap; gap: 6px; }
   .synergy-item { width: calc(50% - 3px); flex: none; }
@@ -826,14 +846,14 @@ body.battle3d-mode .fleet-ui-layer { display: none; }
   /* v3：顶栏全局旧规则已删（见上方 .active-bomb 注释），移动端残留一并移除；
      GameHeader.vue scoped 内有自己的 @media 规则 */
 
-  .ui-footer { bottom: 5px; padding: 8px 12px; font-size: 10px; width: 95%; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ui-footer { bottom: 5px; padding: 8px 12px; font-size: calc(10px * var(--font-scale)); width: 95%; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   
   .editor-top-bar { flex-wrap: wrap; justify-content: center; gap: 5px; padding: 5px; }
   .editor-body { flex-direction: column; height: auto; }
   .editor-canvas-pane { flex: none; height: 50vh; width: 100%; }
   .editor-sidebar-tools { width: 100%; flex: 1; flex-direction: row; flex-wrap: wrap; padding: 10px; gap: 5px; height: auto; overflow: visible; }
   .brush-list { flex-direction: row; flex-wrap: wrap; gap: 5px; }
-  .brush-btn { padding: 6px 10px; font-size: 11px; height: auto; }
+  .brush-btn { padding: 6px 10px; font-size: calc(11px * var(--font-scale)); height: auto; }
 }
 
 @media (min-width: 769px) {
@@ -863,13 +883,13 @@ body.battle3d-mode .fleet-ui-layer { display: none; }
 
 .fleet-portrait { width: 28px; height: 36px; object-fit: cover; border-radius: 3px; border: 1px solid var(--color-border); background: var(--neo-surface-raised); }
 .fleet-info { display: flex; flex-direction: column; gap: 4px; width: 90px; }
-.fleet-name { font-size: 11px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1; }
+.fleet-name { font-size: calc(11px * var(--font-scale)); font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1; }
 .fleet-hp-bar { width: 100%; height: 4px; background: var(--color-border); border-radius: 2px; overflow: hidden; }
 .hp-fill { height: 100%; transition: width 0.1s linear; }
 .bg-cyan { background: var(--color-cyan); }
 .bg-red { background: var(--color-empire); }
 
 .stance-controls { display: flex; gap: 2px; margin-top: 4px; pointer-events: auto; }
-.stance-btn { flex: 1; background: var(--neo-surface); border: 1px solid var(--color-border); color: var(--color-text-disabled); font-size: 9px; font-weight: 800; padding: 2px 0; border-radius: 3px; cursor: pointer; transition: all 0.2s; }
+.stance-btn { flex: 1; background: var(--neo-surface); border: 1px solid var(--color-border); color: var(--color-text-disabled); font-size: calc(9px * var(--font-scale)); font-weight: 800; padding: 2px 0; border-radius: 3px; cursor: pointer; transition: all 0.2s; }
 .stance-btn.active { background: var(--color-cyan); color: var(--neo-surface); border-color: var(--color-cyan); }
 </style>
