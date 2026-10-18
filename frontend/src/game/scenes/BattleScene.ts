@@ -324,26 +324,6 @@ const SLOT_FLIP_MIN_RAD = Math.PI / 2;
 const FORM_FACING_MIN_SPD2 = 0.02 * 0.02;
 
 /**
- * [FIX-⑫] 停船交战期的**舰首回瞄速率**（占本舰满转率的比例）。
- *
- * 为什么需要：舰首朝向的真源是「到航点方位」，而"已抵达射位"分支刻意不写 `facingAngle`
- *   （v72 的假设是炮塔层独立回转）——但炮塔层从未接线（火弧读的仍是舰首）
- *   ⇒ 一旦在该状态下停住，舰首就永久冻在进入时的角度 ⇒ 舷侧 = 全队停火。
- * 为什么给"占满转率一个比例"而不是直接指敌：`facingSmooth` 虽已限速，但它会以**满转率**
- *   拧过去 ⇒ 视觉是"停着船突然甩头"；取小比例 ⇒ 过渡是"缓慢摆正"，与 `turnDiscipline`
- *   的 denied 档（交战中不许大角度转向）是同一意图。
- * ⚠ 必须与 `headingError` 的口径配套：回瞄态下相位机改看 `moveAngle`，否则回瞄本身
- *   会被判成"需要掉头" ⇒ 触发 brake（motion='hold'）⇒ 舰队永久停船。
- */
-const BOW_AIM_FRAC = 0.35;
-/**
- * [FIX-⑫] 回瞄**降档驻留**（秒）：只在"整队能开火"持续这么久之后才切回慢档。
- *   为什么必须带驻留：射界是逐舰判决（敌舰角展宽 + 我舰位），锥边界上会逐帧翻面
- *   ⇒ 直接按单帧判决切档，会把"快档/慢档"本身变成新的抖动源。
- *   取值只要求"明显短于一次有意义的角度修正"—— 用满档抢射界通常是数秒量级。
- */
-const ARC_OPEN_DWELL_SEC = 0.3;
-/**
  * [FIX-⑬] 包抄支的**射界失败放弃阈值**（秒）：连续这么久"整队一发都打不出"就放弃包抄。
  *   取值理由：一次齐射间隔 + 一次航向修正的量级。太短（<1 次齐射）会被单帧遮挡误判；
  *   太长则舰队已经绕了半个圆、损失不可逆。**用时间不用帧数**（帧率会变）。
@@ -4256,6 +4236,24 @@ export class BattleScene extends Phaser.Scene {
      * ⚠ 保持签名与全部 7 处调用点不变（最小侵入）。
      * ⚠ 阶段状态挂在舰队上（），持久化字段需在 transient 剥离表补登记。
      */
+    /**
+     * 逐舰射界：本舰队能否对 `foe` 的任一存活单位开火。
+     *
+     * 与开火门**同一个** `isTargetWithinFireArc`（含同一个半锥常量），
+     * 因此可作"射界是否打开"的判据，而不引入第二套近似口径。
+     * 用途：包抄退出/档位判决等需要"现在到底打不打得到"的地方。
+     */
+    private anyUnitBearsOnFleet(fleet: any, foe: any, bow: number): boolean {
+        const units = (foe && Array.isArray(foe.units)) ? foe.units : null;
+        if (!units) return false;
+        const from = { x: fleet.x, y: fleet.y };
+        for (const eu of units) {
+            if (!eu || !eu.sprite || (typeof eu.hp === 'number' && eu.hp <= 0)) continue;
+            if (isTargetWithinFireArc(bow, from, { x: eu.sprite.x, y: eu.sprite.y })) return true;
+        }
+        return false;
+    }
+
     private getIdealEngageDist(fleet: any): number {
         const ships = (fleet.units || [])
             .filter((u: any) => (u.classType || '') !== '补给')
@@ -4355,29 +4353,6 @@ export class BattleScene extends Phaser.Scene {
             if (typeof g === 'number' && g > mx) mx = g;
         }
         return mx;
-    }
-
-    /**
-     * [FIX-⑫] 「整队能否对某敌舰队开火」——**舰队级布尔**，仅供停船回瞄的档位选择。
-     *
-     * 为什么用逐舰判决而不是"舰首 vs 敌向夹角"：
-     *   · 射界本身就是**逐舰**判决（开火门对每个「本舰 × 敌舰」对调用 `isTargetWithinFireArc`），
-     *     舰队夹角只是近似；
-     *   · 将来炮塔层接线后，"能不能打"这个语义不会与开火门冲突。
-     * 口径：射手取舰队中心（本舰队各舰共用同一舰首，舰位差带来的角差约 = 舰位偏移 / 射程，
-     *   量级远小于前锥张角，不足以翻转档位）；目标**逐舰**枚举 —— 敌舰的角展宽才是
-     *   真正会把"整队打不出"变成"某几艘打得出"的因素。
-     * ⚠ 仅用于档位。**不得**拿它替代真正的开火门（那只在开火循环里按真实目标判决）。
-     */
-    private anyUnitBearsOnFleet(fleet: any, foe: any, bow: number): boolean {
-        const units = (foe && Array.isArray(foe.units)) ? foe.units : null;
-        if (!units) return false;
-        const from = { x: fleet.x, y: fleet.y };
-        for (const eu of units) {
-            if (!eu || !eu.sprite || (typeof eu.hp === 'number' && eu.hp <= 0)) continue;
-            if (isTargetWithinFireArc(bow, from, { x: eu.sprite.x, y: eu.sprite.y })) return true;
-        }
-        return false;
     }
 
     /**
@@ -8049,19 +8024,9 @@ export class BattleScene extends Phaser.Scene {
                 //        所以必须由它自己带过门（不能并入上面的 AND）。
                 && ((((fleet as any)._mPhase === 2) && minFleetDist < this.getIdealEngageDist(fleet) * 0.6)
                     || (fleet as any)._standoffBacking === true);
-            // [v69] 舰种运动学剖面（聚合一次，供本帧朝向 / 刹停超时 / 阵面速率共用）。
-            //   按 hullLen²（面积/质量感）加权 ⇒ 8 战列 + 2 驱逐的转向接近纯战列，
-            //   而非被算术平均拉到"中速"。排除 '补给'（运输舰极重会拖垮整队）。
-            //   ⚠ 空编队/纯补给 ⇒ EMPTY_FLEET_PROFILE，退化路径与新表一致不突变。
-            //   [FIX-⑫] 声明位置再上移到朝向解算之前：停船回瞄要按本舰满转率分档，
-            //     不能为它再聚合一次（同一帧 units 不变，重复聚合是纯浪费）。
-            const kinProfile: FleetKinematicsProfile = fleetProfile(fleet.units);
             let fAngle = fleet.facingAngle || 0;
             // 移动方向（默认与朝向一致；撤退时分离：移动朝补给点，火炮朝敌军）
             let moveAngle = fAngle;
-            // [FIX-⑫] 本帧是否处于"停船回瞄"态（由下方"已抵达射位"分支置位）。
-            //   只影响 `headingError` 取哪个参考量，不影响站位目标。
-            let _bowAim = false;
             
             if (distToTarget > 5) { 
                 fAngle = Math.atan2(fleetTargetY - fleet.y, fleetTargetX - fleet.x);
@@ -8092,80 +8057,8 @@ export class BattleScene extends Phaser.Scene {
                     closestEnemyFleet.y - fleet.y, closestEnemyFleet.x - fleet.x,
                 );
                 (fleet as any)._fireControlAngle = _fireAngle;   // 火控解算（炮塔消费）
-                // [FIX-⑫] **"炮塔层待做"是这段的前提，而它至今不存在** —— 开火射界读的是
-                //   `visHeading`（= `facingSmooth` = 舰首），所以"舰首保持停船时的航向"在本工程
-                //   等于**永久舷侧**：一旦在此状态停住，再没有任何写入点会把舰首转回来
-                //   （朝敌写入只存在于拖刀 / `_backing` 两个例外分支，且都要求 `distToTarget > 5`）。
-                //   现在：把 `fAngle` 按本舰满转率**分档**回瞄威胁方位。
-                //   · 只动 `fAngle`（朝向目标），**不动** `fleetTargetX/Y`（站位目标）⇒ 不会转成追击；
-                //   · `facingSmooth` 仍按自身动力学跟随 ⇒ 观感是"摆正"，不是"瞬移"；
-                //   · 必须**持久化** `facingAngle`，否则下一帧又从旧值起步，回瞄永远只走一步。
-                //   ⚠ 与下方 `headingError` 的口径配套：回瞄态下相位机改看 `moveAngle`。
-                //
-                //   **分档依据 = 能不能开火**（比按角度分档更贴语义）：
-                //     打不出（整队射界外）⇒ 用本舰满转率抢回射界；
-                //     打得出（已在锥内）  ⇒ 降到小比例细调，避免在敌舰横移时左右甩头。
-                //   ⚠ 档位上限就是 `kinOmegaNow` 本身，**不再乘任何系数**——乘了会抹平
-                //     驱逐/战列之间的相对机动感（舰种差异是这张运动学表存在的理由）。
-                //   ⚠ 回到慢档必须带**驻留**：射界是逐舰判决，锥边界上会抖 ⇒ 只认"持续在锥内"。
-                //
-                //   收敛时间表（**按 ω 推算，非实测**；战列满速 ω ≈ 12.6°/s、前锥半角 75.6°）：
-                //     起始偏角 180°：104.4° 用满档 ⇒ 约 8.3s 进射界，余 75.6° 用慢档 ⇒ 约 17.2s
-                //     起始偏角  90°：14.4° 满档 ⇒ 约 1.1s，余 75.6° 慢档 ⇒ 约 17.2s
-                //     起始偏角  30°：已在锥内 ⇒ 全程慢档 ⇒ 约 6.8s
-                //   即"能不能打"最多 8~9s 就有质变，之后是细调收敛。
-                const _arcOpenNow = this.anyUnitBearsOnFleet(fleet, closestEnemyFleet, fleet.facingSmooth ?? fAngle);
-                const _nowMs = this.time.now;
-                if (_arcOpenNow) {
-                    if ((fleet as any)._arcOpen !== true || typeof (fleet as any)._arcOpenSince !== 'number') {
-                        (fleet as any)._arcOpenSince = _nowMs;
-                    }
-                } else {
-                    (fleet as any)._arcOpenSince = null;
-                }
-                (fleet as any)._arcOpen = _arcOpenNow;
-                const _arcStableSec = (_arcOpenNow && typeof (fleet as any)._arcOpenSince === 'number')
-                    ? (_nowMs - (fleet as any)._arcOpenSince) / 1000
-                    : 0;
-                const _aimOmega = effectiveOmegaMax(
-                    { vMax: kinProfile.vMax, omegaMax: kinProfile.omegaMax } as any,
-                    Math.hypot(fleet.vx ?? 0, fleet.vy ?? 0),
-                );
-                // 在锥内且**驻留够久**才降档；否则一律满档（含刚进锥的过渡段）。
-                const _aimFrac = _arcStableSec >= ARC_OPEN_DWELL_SEC ? BOW_AIM_FRAC : 1.0;
-                const _aimStep = _aimOmega * _aimFrac * dt;
-                const _dAim = Math.atan2(Math.sin(_fireAngle - fAngle), Math.cos(_fireAngle - fAngle));
-                fAngle = Math.abs(_dAim) <= _aimStep
-                    ? _fireAngle
-                    : fAngle + Math.sign(_dAim) * _aimStep;
-                fleet.facingAngle = fAngle;
-                _bowAim = true;
-            }
-
-            // [FIX-⑫ 取证] 只读快照补齐"朝向 / 回瞄"字段。缺了它们，探针只能看到
-            //   `tx/ty` 在动，分不清"站位在动"还是"舰首在回瞄"，也无法验证 `off` 是否收敛。
-            //   ⚠ 只写不读、不参与判定（与上面 `_dbg` 同规格）。
-            //   ⚠ 单位/参考系统一在这里写清，否则真机取证会白跑一局：
-            //     · fa  = 本帧朝向**目标**角（rad，世界系，回瞄后的值）
-            //     · fs  = 本帧**舰首**角（rad，世界系，= facingSmooth，渲染真源）
-            //     · dt  = 到**站位目标**的距离（px，≈0 ⇒ 停船态）
-            //     · bow = 是否处于停船回瞄态（1/0）
-            //     · off = 敌方位 − fs 的 wrap 差值（rad，世界系；|off| > 前锥半角 ⇒ 打不出）
-            {
-                const d = (fleet as any)._dbg;
-                if (d) {
-                    const _fs = fleet.facingSmooth ?? fAngle;
-                    d.fa = fAngle;
-                    d.fs = _fs;
-                    d.dt = distToTarget;
-                    d.bow = _bowAim ? 1 : 0;
-                    d.off = closestEnemyFleet
-                        ? Math.atan2(
-                            Math.sin(Math.atan2(closestEnemyFleet.y - fleet.y, closestEnemyFleet.x - fleet.x) - _fs),
-                            Math.cos(Math.atan2(closestEnemyFleet.y - fleet.y, closestEnemyFleet.x - fleet.x) - _fs),
-                        )
-                        : null;
-                }
+                // ⚠ 刻意**不改** fAngle / fleet.facingAngle：舰首保持停船时的航向。
+                fAngle = fleet.facingAngle || fAngle;
             }
 
             // 战术控制器是大机动唯一入口：接战锁定时只能倒退脱离；脱战后才会
@@ -8176,14 +8069,9 @@ export class BattleScene extends Phaser.Scene {
             const contact = updateContact(prevContact, isEngaging, Math.min(delta, 100) / 1000 * dt);
             (fleet as any)._combatContact = contact;
             const prevControl: ManeuverState = (fleet as any)._combatControl ?? { phase: 'cruise', phaseSeconds: 0 };
-            // [FIX-⑫] 回瞄态下相位机**只看行进方向**：该状态站位目标 = 自身、没有行进意图，
-            //   若仍用 `fAngle`（回瞄角）算误差，则回瞄本身会被判成"需要掉头"
-            //   ⇒ `cruise → brake`，而 brake 的 `motion='hold'` 会把速度清零 ⇒ 永久停船。
-            //   其余状态逐字不变（仍看 `fAngle`）。
-            const _headingTarget = _bowAim ? moveAngle : fAngle;
             const headingError = Math.abs(Math.atan2(
-                Math.sin(_headingTarget - (fleet.facingSmooth ?? _headingTarget)),
-                Math.cos(_headingTarget - (fleet.facingSmooth ?? _headingTarget)),
+                Math.sin(fAngle - (fleet.facingSmooth ?? fAngle)),
+                Math.cos(fAngle - (fleet.facingSmooth ?? fAngle)),
             ));
             // 重编完成必须由实际阵面追到新朝向确认，不能靠固定时间提前放行。
             const previousFormFacing = (fleet as any).formFacing ?? fleet.facingSmooth ?? fAngle;
@@ -8197,8 +8085,12 @@ export class BattleScene extends Phaser.Scene {
             const reformed = prevControl.phase === 'reform'
                 && headingDistance(previousFormFacing, fleet.facingSmooth ?? fAngle) <= 0.05
                 && this.maxSlotGap(fleet) <= REFORM_SLOT_GAP_PX;
-            // [v69] 舰种运动学剖面已在**朝向解算之前**聚合（[FIX-⑫] 停船回瞄要按本舰满转率分档，
-            //   且 [FIX-⑥] 需要它在 `advanceManeuver` 之前）⇒ 此处不再重复声明。
+            // [v69] 舰种运动学剖面（**必须早于 headingStep 声明** —— const 无 TDZ 提升）。
+            //   按 hullLen²（面积/质量感）加权聚合 ⇒ 8 战列 + 2 驱逐的转向接近纯战列，
+            //   而非被算术平均拉到"中速"。排除 '补给'（运输舰极重会拖垮整队）。
+            //   ⚠ 空编队/纯补给 ⇒ EMPTY_FLEET_PROFILE，退化路径与新表一致不突变。
+            //   [FIX-⑥] 声明位置再次上移到 advanceManeuver 之前：brake 相超时需按舰种刹停时间计算。
+            const kinProfile: FleetKinematicsProfile = fleetProfile(fleet.units);
             // [FIX-⑥] brake 相超时 = 1.2 × 刹停帧数 / 60（秒）。
             //   刹停帧数 = (vMax − stopped 阈值) / accel；这里用 vMax/accel 略保守（含 0.02 死区）。
             //   战列：1.2×0.22/0.00042/60 ≈ 10.5s（旧固定值 5s ⇒ 43% 残速就进 turn）。
