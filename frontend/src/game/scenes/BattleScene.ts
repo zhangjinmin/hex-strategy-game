@@ -5553,8 +5553,12 @@ export class BattleScene extends Phaser.Scene {
             //      上面刚把 `mission` 置 null ⇒ 下一 tick 连函数都进不去 ⇒ **清理通道不可达**。
             //      ⇒ 这不是"残留一拍"，是**永久残留**（曾被误判为"1 秒后自愈"）。
             //   ② 为什么残留有害：`_missionDest` 被**独立于 `mission`** 消费 ——
-            //      看门狗 objective 覆盖（:6919 `st.override`）、目标快照（:6867/#6886）、
-            //      快照显示（:7652）。这些点不检查 `mission` 是否为空。
+            //      看门狗 objective 覆盖（`st.override = { x, y }` 分支）、
+            //      目标快照（`const objW = fleet._missionDest ?? …` 与 `objectiveAvailable`）、
+            //      运动链首（`if (fleet._missionDest)`）。
+            //      这些点都不检查 `mission` 是否为空。
+            //      ⚠ 这里**刻意不写行号**：本块插在中段，写数字会在每次编辑后立刻失效
+            //        （本注释初版就写成了数字，插入 15 行后三者全体偏移，当场过期）。用符号锚点。
             //      ⇒ 玩家下姿态（"索敌/驻守"）后，舰队仍被旧任务点持续牵引
             //        = 用户实报"我点了索敌，它好像还在按原来的想法走"的机制来源之一。
             //   ③ 口径与 `:3591 clearMission` 一致（该处三件套同清：mission / fac.mission / _missionDest）。
