@@ -39,6 +39,15 @@ export interface IntelRecord {
   t: number;
   firstConfirmedAt: number;
   strength: number | null;
+  /**
+   * [C-3] 阵营 id / 战力 / 末次已知速度分量。
+   * ⚠ 未知一律 `null`，**不要用 0 表示未知** —— 0 是"静止"这个确定断言，
+   *   而拦截点前置量（P + v·t）会把 null 当未知处理、把 0 当静止处理，两者语义不同。
+   */
+  factionId: number | null;
+  power: number | null;
+  vx: number | null;
+  vy: number | null;
   /** 可靠航迹是否成立（仅显式电子战/欺骗可置 false） */
   reliable: boolean;
 }
@@ -51,7 +60,15 @@ export function createIntelArchive(): IntelArchive;
 
 export function recordKnownContact(
   archive: IntelArchive,
-  input: { team: number; targetId: number | string; kind: 'fleet' | 'base'; x: number; y: number; now: number; strength?: number | null },
+  input: {
+    team: number; targetId: number | string; kind: 'fleet' | 'base'; x: number; y: number; now: number;
+    strength?: number | null;
+    /** [C-3] 下列 4 项均为可选；缺省时沿用上一条档案，仍无则记 `null`（未知 ≠ 0） */
+    factionId?: number | null;
+    power?: number | null;
+    vx?: number | null;
+    vy?: number | null;
+  },
 ): IntelRecord;
 
 export function getKnownContact(archive: IntelArchive, team: number, targetId: number | string): IntelRecord | null;

@@ -66,7 +66,8 @@ function intelKey(team, targetId) {
  * 写入/刷新持久档案（recordScoutReport 与 markFleetIdentified 的落地点）。
  * 新的确认会重建可靠航迹（reliable=true）并把末次确认位置/时间推进到当前。
  *
- * @param {{ team: number, targetId: number|string, kind: 'fleet'|'base', x: number, y: number, now: number, strength?: number|null }} input
+ * @param {{ team: number, targetId: number|string, kind: 'fleet'|'base', x: number, y: number, now: number,
+ *           strength?: number|null, factionId?: number|null, power?: number|null, vx?: number|null, vy?: number|null }} input
  */
 export function recordKnownContact(archive, input) {
   const k = intelKey(input.team, input.targetId);
@@ -83,6 +84,24 @@ export function recordKnownContact(archive, input) {
     firstConfirmedAt: prev ? prev.firstConfirmedAt : input.now,
     /** 兵力估计（舰数；用于「敌兵力重大变化」判定） */
     strength: input.strength !== undefined ? input.strength : (prev ? prev.strength : null),
+    /**
+     * 阵营 id / 战力 / 速度分量 —— [C-3] 新增的 4 个字段，**只是"多记一点"**，
+     * 不参与任何既有判断（既有消费方仍只读 team/targetId/kind/x/y/t/strength/reliable）。
+     *
+     * 为什么需要它们：
+     *   · `power` —— 战力比（forceRatio）的分子/分母都要求"我方 vs 敌方已知均值"，
+     *     而旧的 `strength` 只是舰数，无法表达舰种差异；
+     *   · `vx/vy` —— 末次已知速度，供拦截点前置量（P_lead = P + v·t_close）使用。
+     *     ⚠ **不能默认成 0**：0 是"静止"这个确定断言，而"不知道"必须用 `null` 表达，
+     *     否则拦截点会把一艘高速撤离的舰队当成停在原地。
+     *   · `factionId` —— 按阵营聚合战力时需要（targetId 是舰队 id，不能反推阵营）。
+     *
+     * 未知时显式 `null`（与 `strength` 同规格）；沿用上一帧的值，避免一次缺参把已知信息抹掉。
+     */
+    factionId: input.factionId !== undefined ? input.factionId : (prev ? prev.factionId : null),
+    power: input.power !== undefined ? input.power : (prev ? prev.power : null),
+    vx: input.vx !== undefined ? input.vx : (prev ? prev.vx : null),
+    vy: input.vy !== undefined ? input.vy : (prev ? prev.vy : null),
     /** 可靠航迹是否成立（仅显式电子战/欺骗可置 false） */
     reliable: true,
   };

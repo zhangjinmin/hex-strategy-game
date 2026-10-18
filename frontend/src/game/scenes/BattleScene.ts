@@ -2698,6 +2698,13 @@ export class BattleScene extends Phaser.Scene {
             team, targetId: fleet.id, kind: 'fleet',
             x: fleet.x, y: fleet.y, now: this.time.now,
             strength: (fleet.units || []).length,
+            // [C-3] 落库 4 字段：战力比要用 power（strength 只是舰数，无法表达舰种差异）、
+            //   拦截点前置量要用 vx/vy、按阵营聚合要用 factionId。
+            //   ⚠ 速度未知时传 `null`（"不知道"）而不是 0（"静止"）—— 两者对拦截点含义相反。
+            factionId: fleet.factionId,
+            power: this.calculateFleetPower(fleet),
+            vx: typeof fleet.vx === 'number' ? fleet.vx : null,
+            vy: typeof fleet.vy === 'number' ? fleet.vy : null,
         });
     }
 
@@ -2974,6 +2981,13 @@ export class BattleScene extends Phaser.Scene {
                         team: fac.team, targetId: report.targetId, kind: 'fleet',
                         x: report.x, y: report.y, now,
                         strength: tgt ? (tgt.units || []).length : null,
+                        // [C-3] 侦察报告是**主情报源**：漏传这 4 项会让 attack_fleet 的
+                        //   "阵营 id → 档案"映射找不到侦察档案（发现了敌人却解析不到目标）。
+                        //   `tgt` 可能已不在场（报告跨帧）⇒ 一律 null（未知 ≠ 0）。
+                        factionId: tgt ? tgt.factionId : null,
+                        power: tgt ? this.calculateFleetPower(tgt) : null,
+                        vx: typeof tgt?.vx === 'number' ? tgt.vx : null,
+                        vy: typeof tgt?.vy === 'number' ? tgt.vy : null,
                     });
                     (sf as any).lastTrackReportAt = now;
                     det.lastContactAt = now;
@@ -2991,6 +3005,12 @@ export class BattleScene extends Phaser.Scene {
                             team: fac.team, targetId: trackedFleet.id, kind: 'fleet',
                             x: trackedFleet.x, y: trackedFleet.y, now,
                             strength: trackedFleet.units.length,
+                            // [C-3] 同上：持续跟踪刷新也必须带 4 字段，否则档案里的
+                            //   power/vx/vy 会在"首次接触后"被这条刷新抹成 null。
+                            factionId: trackedFleet.factionId,
+                            power: this.calculateFleetPower(trackedFleet),
+                            vx: typeof trackedFleet.vx === 'number' ? trackedFleet.vx : null,
+                            vy: typeof trackedFleet.vy === 'number' ? trackedFleet.vy : null,
                         });
                         (sf as any).lastTrackReportAt = now;
                         det.lastContactAt = now;
