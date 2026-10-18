@@ -648,6 +648,34 @@ checkGated(F_MOVE_WIRED, 'S6-05 fuzzy 查证分支不得直赋 fz.ef.x（C-3）'
 // 背景：`resolveMissionMove` 刻意不判 `reliable`（避免第三套约定），
 //   可靠性只在调用方判一次。⇒ 这条把"调用方契约"变成可断言的形状。
 // ⚠ 若第 6 步用了别的过滤形式（例如先拼好数组再传），请告诉验收方改断言，**不要改实现去迁就断言**。
+// ── S6-07：fuzzy 分支若仍使用活坐标，**必须量化**（"格级精度"语义）──────────
+// 背景（已与实施方确认的语义）：
+//   · 无档案时若完全不查证，会回到 v6 修掉的"视野边缘双方互判模糊 ⇒ 双双驻守"；
+//   · 因此**接受**"fuzzy = 格级精度"：读一次活坐标，但吸附到 `2×hexRadius` 的格心。
+//   ⚠ 这不是"去位置"，而是"去精确值" —— 规格本身允许"方位 + 距离"（信息等价或更强），
+//     所以这是**在规格之内的取舍**，不是破例；但必须写进代码注释，否则后人会以为是遗漏。
+// ⇒ 本条的职责：锁"必须量化"。删掉量化（改回直赋）必红。
+checkGated(F_MOVE_WIRED, 'S6-07 fuzzy 分支的活坐标必须量化（格级精度）', () => {
+  const blk = sliceFn(sceneSrc, "fuzzyTargets.length > 0", "} else if (fleet.stance === 'defend')");
+  assert.ok(blk.length > 0, '未定位到 fuzzyTargets 分支');
+  // ⚠ 先剔除注释行：注释里若举例写了 `fleetTargetX = fz.ef.x`（正是要警告的写法），
+  //   不剔除就会把"提醒"当成"违规"（与 S7-03 剥注释同一个教训，这次我先自己踩到）。
+  const usesTruth = blk.split('\n')
+    .filter((l) => !/^\s*\//.test(l))
+    .filter((l) => /fleetTarget[XY]\s*=/.test(l) && /fz\.ef\./.test(l));
+  // 若已完全改成"只读档案"（不使用 fz.ef.），本条自动满足 —— 那是更好的形态，不算空转。
+  //
+  // 容忍形态（**断言跟结构，不跟写法**）：
+  //   · 行内量化：`Math.round(fz.ef.x / cell) * cell`、或同行出现 `hexRadius`
+  //   · **把量化抽成辅助函数**：只要 `fz.ef.x/y` 是某个调用的实参（`quantize(fz.ef.x)`），也算合规
+  // ⇒ 裸写 `fleetTargetX = fz.ef.x` 或只做算术位移（`fz.ef.x + 5`）都会被判红 —— 那才是"没量化"。
+  const QUANT = /Math\.(round|floor|ceil|trunc)\s*\(|hexRadius/;
+  const WRAPPED = /\b[A-Za-z_$][\w$]*\s*\(\s*fz\.ef\.[xy]/;
+  const bad = usesTruth.filter((l) => !QUANT.test(l) && !WRAPPED.test(l));
+  assert.deepEqual(bad.map((l) => l.trim()), [],
+    `下列赋值的活坐标未量化（模糊档会退化成"精确知道")：\n${bad.join('\n')}`);
+});
+
 checkGated(F_MOVE_WIRED, 'S6-06 接线处用 isKnownTrackReliable 过滤档案（调用方契约）', () => {
   const src = SCENE_SRC;
   const at = src.search(/resolveMissionMove\s*\(/);
