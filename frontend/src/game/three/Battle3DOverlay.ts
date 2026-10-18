@@ -3944,7 +3944,7 @@ export class Battle3DOverlay {
     } catch { /* 非浏览器环境 */ }
   }
 
-  private updateDebugPanel(rows: { id: string; n: number; px: number; mesh: number }[]): void {
+  private updateDebugPanel(rows: { id: string; n: number; px: number; mesh: number; intel: string; mem: string; flips: number }[]): void {
     this.bindDebugHotkey();
     if (!this._dbgFlags.checked) {
       this._dbgFlags.checked = true;
@@ -3966,7 +3966,7 @@ export class Battle3DOverlay {
     }
     const head = `tier=${this.lodNear ? 'NEAR' : 'FAR'} lo=${this.lodLo} hi=${this.lodHi} keep=${this.lodKeep}`;
     const body = rows
-      .map((r) => `${r.id}  n=${String(r.n).padStart(3)}  px=${r.px.toFixed(1).padStart(6)}  mesh=${String(r.mesh).padStart(3)}  ${r.px >= this.lodKeep ? 'MODEL' : r.px >= this.lodLo ? 'FADE' : 'DOT'}`)
+      .map((r) => `${r.id}  n=${String(r.n).padStart(3)}  px=${r.px.toFixed(1).padStart(6)}  mesh=${String(r.mesh).padStart(3)}  ${r.px >= this.lodKeep ? 'MODEL' : r.px >= this.lodLo ? 'FADE' : 'DOT'}  intel=${r.intel.padEnd(10)} mem=${r.mem.padEnd(10)} flips=${String(r.flips).padStart(3)}/s`)
       .join('\n');
     this.debugPanel.textContent = head + '\n' + body;
     // [v80] 同步输出到控制台（节流 1s）—— 便于用户直接复制文本反馈，
@@ -4330,10 +4330,32 @@ export class Battle3DOverlay {
         r.n += 1; r.px = v.fleetPx;
         if (this.ships.has(v.key)) r.mesh += 1;
       }
-      const rows: { id: string; n: number; px: number; mesh: number }[] = [];
+      // [v98] 情报档位 + **闪烁定量**（用户实报"接近开枪距离时敌方舰队突然快速闪烁"）。
+      //   为什么要计数而不是目测：口语的"闪烁"无法验收，而"档位每秒翻转 N 次"是可复跑的数字。
+      //   · flips=0 ⇒ 档位稳 ⇒ 闪烁出在模型/实体层（看 mesh 是否来回变）
+      //   · flips 两位数 ⇒ 档位在 `live`/`fuzzy` 之间抖 ⇒ 该加滞回
+      //   ⚠ 只读 `BattleScene` 每帧已写好的字段，不新增任何写入、不改判定。
+      const dbgOn = this._dbgFlags.on;
+      const nowMs = performance.now();
+      const rows: { id: string; n: number; px: number; mesh: number; intel: string; mem: string; flips: number }[] = [];
       for (const [f, r] of byFleet) {
         const ff: any = f;
-        rows.push({ id: String(ff?.id ?? ff?.factionId ?? '?'), n: r.n, px: r.px, mesh: r.mesh });
+        const intel = String(ff?._intelDisplayMode ?? '-');
+        const mem = String(ff?._contactMemState ?? '-');
+        let flips = 0;
+        if (dbgOn) {
+          const last = ff.__dbgLastIntel;
+          if (last !== undefined && last !== intel) ff.__dbgFlipCount = (ff.__dbgFlipCount ?? 0) + 1;
+          ff.__dbgLastIntel = intel;
+          const since = ff.__dbgFlipAt ?? nowMs;
+          if (nowMs - since >= 1000) {
+            ff.__dbgFlipRate = ff.__dbgFlipCount ?? 0;
+            ff.__dbgFlipCount = 0;
+            ff.__dbgFlipAt = nowMs;
+          }
+          flips = ff.__dbgFlipRate ?? 0;
+        }
+        rows.push({ id: String(ff?.id ?? ff?.factionId ?? '?'), n: r.n, px: r.px, mesh: r.mesh, intel, mem, flips });
       }
       rows.sort((a, b) => b.n - a.n);
       this.updateDebugPanel(rows);

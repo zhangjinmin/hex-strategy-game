@@ -6553,7 +6553,10 @@ export class BattleScene extends Phaser.Scene {
             // === 阶段B：视野迷雾系统 ===
             // 视野 = 基础200 + 情报值×2 + 电子科技×30（随hexRadius缩放）
             const visionRange = this.getVisionRange(fleet, myFac);
-            // 视野内敌人按距离分级：近(<50%视野)=完全可见，中(50-80%)=识别类型，远(80-100%)=模糊
+            // 视野内敌人按距离分级（真源 `aiDirector.visibilityOf`，**阈值以代码为准**：
+            //   `full` ≤35% 视野 / `partial` 35~80% / `fuzzy` 80~100% / 视野外不记录）。
+            //   ⚠ 此处曾写"近(<50%视野)=完全可见"，与代码的 35% 不符 —— 注释数字会误导调参，
+            //     故改为写着口径名并指向真源，不再抄数字。
             let visibleEnemies: { ef: any; dist: number; clarity: 'full' | 'partial' | 'fuzzy' }[] = [];
             this.globalFleets.forEach(ef => {
                 // v8：伪舰队（后勤支队）已不存在 ⇒ 可交战判据回到纯战斗编制口径。
