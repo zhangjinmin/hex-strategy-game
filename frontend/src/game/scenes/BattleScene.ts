@@ -152,6 +152,7 @@ import {
 } from '../battle/IntelSystem';
 // [B0/B1] 任务 → 目的地（纯函数）：三段解析在 FleetIntentSystem 里，本文件只做接线。
 import { resolveMissionMove } from '../battle/FleetIntentSystem';
+import { resolveStandoffOrder } from '../battle/StandoffOrder';
 // 档案新鲜度分档（消费者侧口径；档案本身无 TTL）——用于给 resolveMissionMove 预算 tier。
 import { intelAgeTier } from '../battle/intelFreshness';
 
@@ -7660,9 +7661,53 @@ export class BattleScene extends Phaser.Scene {
                         //   条件带 `mfd < idealDist`：还差得远时仍要能接近（否则会停在大老远）。
                         fleetTargetX = fleet.x; fleetTargetY = fleet.y;
                     } else {
-                        // 标准接近：从当前角度接近到理想距离
-                        fleetTargetX = _lead.x - Math.cos(approachAngle) * idealDist;
-                        fleetTargetY = _lead.y - Math.sin(approachAngle) * idealDist;
+                        // [v99] 距离保持收口为三态纯函数（StandoffOrder）：
+                        //   接近 / 悬停 / 倒车。病根是下面这条恒等式 ——
+                        //     目标点 P = _lead − idealDist·û  ⇒  我→目标 = (d − idealDist)·û
+                        //   ⇒ **只要 d < idealDist，目标点就翻到舰队正后方** ⇒ 为几十 px 的
+                        //   距离误差命令整队掉头 180°，而掉头协议全程 `motion='hold'`（零位移），
+                        //   转完还停在一个打不出炮的方位上。
+                        //   ⚠ 上面"已抵达射位"的 5px 门只能吸收最后一小段，越过去立刻翻面，
+                        //     不能替代死区。
+                        //   锚点：三态判定在 `battle/StandoffOrder`，本文件只做分派（快照→问→应用）。
+                        const _standoffTargetId = closestEnemyFleet.id;
+                        if ((fleet as any)._standoffTargetId !== _standoffTargetId) {
+                            // 换目标 ⇒ 清滞回记忆（与 `_mPhase` 同生命周期口径）
+                            (fleet as any)._standoffKind = null;
+                            (fleet as any)._standoffTargetId = _standoffTargetId;
+                        }
+                        const _standoff = resolveStandoffOrder({
+                            d: minFleetDist,
+                            idealDist,
+                            // 死区 = 理想距离的 5%，夹在 [20, 60] px：
+                            //   比例下限防"边界逐帧翻面"，上限防"悬停得像脱战"；夹逼防
+                            //   `idealDist` 在 brawl 相变小时死区反而大于距离本身。
+                            deadband: Math.min(60, Math.max(20, idealDist * 0.05)),
+                            prevKind: ((fleet as any)._standoffKind as any) ?? null,
+                            // 放弃包抄后先强制倒一次车把舰首拧回敌向（见 `_reorientFacing`）
+                            forceReverse: (fleet as any)._reorientFacing === true,
+                        });
+                        (fleet as any)._standoffKind = _standoff.kind;
+                        (fleet as any)._standoffBacking = _standoff.kind === 'reverse';
+                        if (_standoff.kind === 'reverse') {
+                            // 倒退通道：目标点**在身后**以提供后退位移，舰首由下方 `_backing`
+                            // 同款通道钉在敌向（位移 ≠ 舰首）。
+                            // ⚠ 这里的"目标在身后"是**预期**（探针里表现为 dot<0），与旧 bug 的
+                            //   区别在于：旧写法没有配套的舰首锁定，所以连舰首都跟着转过去。
+                            const _escAngle = Math.atan2(
+                                fleet.y - closestEnemyFleet.y, fleet.x - closestEnemyFleet.x,
+                            );
+                            fleetTargetX = fleet.x + Math.cos(_escAngle) * idealDist * 0.5;
+                            fleetTargetY = fleet.y + Math.sin(_escAngle) * idealDist * 0.5;
+                        } else if (_standoff.kind === 'hold') {
+                            // 悬停：不生成任何 waypoint（停在原地）。舰首**不由本分支写**，
+                            //   沿用既有朝向（v72 契约：交战中不把舰首重绑到敌向）。
+                            fleetTargetX = fleet.x; fleetTargetY = fleet.y;
+                        } else {
+                            // 接近：与改动前逐字相同
+                            fleetTargetX = _lead.x - Math.cos(approachAngle) * idealDist;
+                            fleetTargetY = _lead.y - Math.sin(approachAngle) * idealDist;
+                        }
                     }
 
                     // [FIX-⑬] 出口 A 的计时/落闩（**只在本帧真的要走包抄时**才计）。
@@ -7982,9 +8027,15 @@ export class BattleScene extends Phaser.Scene {
             //   怎么能转？被追击就不该能转向）；现在位移朝脱离点、舰首钉在敌人方向（下方 rawVX 走倒退通道）。
             // [v47·P1 双保险] 附加"真实贴脸"闸：phase 陈旧时一旦敌拉开距离，倒退自动解除，
             //   倒退只存在于"被贴住需要脱开"的真实缠斗距离内（phase2 定义域 <0.5×ideal）。
-            const _backing = fleet.state === 'engaging' && (fleet as any)._mPhase === 2
+            const _backing = fleet.state === 'engaging'
                 && !!closestEnemyFleet && !isRetreating && fleet.stance !== 'fallback'
-                && minFleetDist < this.getIdealEngageDist(fleet) * 0.6;
+                // 两条来源共用**同一套**"位移≠舰首"语义（必须逐字一致，否则会出现两套倒退行为）：
+                //   ① `_mPhase === 2`：极近脱离（原有通道，判据保持"贴脸"距离）；
+                //   ② `_standoffBacking`：距离保持判定为倒车（v99 StandoffOrder 的 reverse 态）。
+                //      ⚠ 它出现在 d 略小于 idealDist 时，此时距离阈值 0.6 不一定成立，
+                //        所以必须由它自己带过门（不能并入上面的 AND）。
+                && ((((fleet as any)._mPhase === 2) && minFleetDist < this.getIdealEngageDist(fleet) * 0.6)
+                    || (fleet as any)._standoffBacking === true);
             // [v69] 舰种运动学剖面（聚合一次，供本帧朝向 / 刹停超时 / 阵面速率共用）。
             //   按 hullLen²（面积/质量感）加权 ⇒ 8 战列 + 2 驱逐的转向接近纯战列，
             //   而非被算术平均拉到"中速"。排除 '补给'（运输舰极重会拖垮整队）。
