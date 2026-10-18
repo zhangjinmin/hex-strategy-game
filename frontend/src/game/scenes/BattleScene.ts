@@ -342,6 +342,12 @@ const BOW_AIM_FRAC = 0.35;
  *   取值只要求"明显短于一次有意义的角度修正"—— 用满档抢射界通常是数秒量级。
  */
 const ARC_OPEN_DWELL_SEC = 0.3;
+/**
+ * [FIX-⑬] 包抄支的**射界失败放弃阈值**（秒）：连续这么久"整队一发都打不出"就放弃包抄。
+ *   取值理由：一次齐射间隔 + 一次航向修正的量级。太短（<1 次齐射）会被单帧遮挡误判；
+ *   太长则舰队已经绕了半个圆、损失不可逆。**用时间不用帧数**（帧率会变）。
+ */
+const FLANK_NOFIRE_GIVEUP_SEC = 1;
 
 
 // [v21 JIT] 阵位跟随的除零保护阈值（px）已随 P2 的 `stepShipSlotFollow` 收进
@@ -7432,6 +7438,10 @@ export class BattleScene extends Phaser.Scene {
                         (fleet as any)._flankAngleLock = enemyAngleRaw + Math.PI + (fleet as any)._flankSign * Math.PI / 4;
                         (fleet as any)._flankPhase = 0;
                         (fleet as any)._mPhase = 0;
+                        // [FIX-⑬] 「包抄因射界失败而放弃」的落闩也挂同一生命周期：
+                        //   换目标 / 脱战重接战 ⇒ 允许重新尝试一次包抄。不新增状态机。
+                        (fleet as any)._flankBlocked = false;
+                        (fleet as any)._flankNoFireSince = null;
                         // [v47·P1] _mPhase 与 flank 组**同生命周期**清零：它只在通用 search 分支更新，
                         //   换目标/脱战重接战若不清 → 陈旧 2 会误武装 _backing（攻坚直冲变 55% 倒退速）。
                     }
@@ -7534,6 +7544,28 @@ export class BattleScene extends Phaser.Scene {
                     //   60/42px 改为按理想交战距比例推导（0.35/0.5 倍）——
                     //   战列 800 → 脱离 280 / 缠斗下限 400；驱逐 560 → 196/280。
                     //   固定 60px 是"接舷战"距离（用户实报：敌我舰队都贴上了）。
+                    // [FIX-⑬] **包抄支的射界失败出口**（响应式）。
+                    //
+                    //   病灶：包抄目标点 = 「以敌为圆心、半径 idealDist 的圆上一点」，目标点随敌平移
+                    //   ⇒ `distToTarget > 5` 永远成立 ⇒ 一直在圆周上追 ⇒ 舰首恒切向 ⇒ 舷侧。
+                    //   该支**没有任何退出条件**：没有"包抄到位→转入攻击"，也没有"打不出→放弃"。
+                    //   `[FIX-⑪]` 把 `angleDiff` 的参考系修正后，正面接敌不再被判成 `isBehind`
+                    //   ⇒ 包抄支从接战第一帧就生效 ⇒ 这条缺陷从"偶尔"变成"总是"。
+                    //
+                    //   出口 A（本处）：连续一段时间整队一发都打不出 ⇒ **本次接战内放弃包抄**，
+                    //     改把目标设成自身（停船）⇒ 下一帧落进"已抵达射位"分支，
+                    //     由 `[FIX-⑫]` 的回瞄接管把舰首拧回敌向。
+                    //     为什么用"能否开火"而不是"舰首与敌向夹角"：射界是**逐舰**判决
+                    //     （敌舰角展宽 + 我舰位），舰队夹角只是近似；用真实开火判决更准，
+                    //     且将来炮塔层接线后这里的语义不用改。
+                    //     为什么"放弃"是一次性的（而不是到点解除）：到点解除会让它
+                    //     「出锥→放弃→回瞄→进锥→再去包抄」形成新的极限环；包抄失败就正面打
+                    //     是更可读的战术语义。解除点复用 `_flankSign` 的既有生命周期
+                    //     （换目标 / 脱战重接战）—— 不新增状态机。
+                    //   出口 B：`distToTarget <= 5` 由既有"已抵达射位"分支天然覆盖
+                    //     （目标点就是这个圆上的点，真到位就停船回瞄），故不另写判据。
+                    const _flankBlocked = (fleet as any)._flankBlocked === true;
+                    let _tookFlank = false;
                     if (isCautious && !wantsFlank) {
                         // 低统帅：正面直冲，无战术
                         // [v32] 例外：被战法指定侧翼时不适用——**战法优先于提督属性**
@@ -7555,24 +7587,62 @@ export class BattleScene extends Phaser.Scene {
                         fleetTargetY = fleet.y + Math.sin(escapeAngle) * idealDist * 0.5;
                     } else if (_mPhase === 1) {
                         // 已进入缠斗距离：保持当前位置对射，或侧翼机动
-                        if ((isAggressive || wantsFlank) && !isBehind) {
+                        if ((isAggressive || wantsFlank) && !isBehind && !_flankBlocked) {
                             // 尝试绕到侧后
                             fleetTargetX = _lead.x + Math.cos(flankAngle) * idealDist;
                             fleetTargetY = _lead.y + Math.sin(flankAngle) * idealDist;
+                            _tookFlank = true;
                         } else {
                             // 保持当前位置
                             fleetTargetX = fleet.x; fleetTargetY = fleet.y;
                         }
-                    } else if ((isAggressive || wantsFlank) && !isBehind && !isFlanking) {
+                    } else if ((isAggressive || wantsFlank) && !isBehind && !isFlanking && !_flankBlocked) {
                         // 高统帅+不在侧后 → 尝试包抄
                         // [v32] `wantsFlank` 让**战法指定的左右翼**即使统帅不高也走包抄 ——
                         //   这是"迂回/包抄"真正落到执行层的那一刀。
                         fleetTargetX = _lead.x + Math.cos(flankAngle) * idealDist;
                         fleetTargetY = _lead.y + Math.sin(flankAngle) * idealDist;
+                        _tookFlank = true;
+                    } else if (_flankBlocked && minFleetDist < idealDist) {
+                        // [FIX-⑬] 包抄已放弃、且已在理想距离内 ⇒ **就地正面战**。
+                        //   为什么不能落到下面的"标准接近"：那支的目标点
+                        //   `_lead − idealDist·û` 在 `mfd < idealDist` 时会翻到**舰队正后方**
+                        //   （向量恒等式：我→目标 = (mfd − idealDist)·û）⇒ 为了几十 px 的
+                        //   后退修正，整队要转 180°。包抄失败后最忌讳的正是再转一次。
+                        //   条件带 `mfd < idealDist`：还差得远时仍要能接近（否则会停在大老远）。
+                        fleetTargetX = fleet.x; fleetTargetY = fleet.y;
                     } else {
                         // 标准接近：从当前角度接近到理想距离
                         fleetTargetX = _lead.x - Math.cos(approachAngle) * idealDist;
                         fleetTargetY = _lead.y - Math.sin(approachAngle) * idealDist;
+                    }
+
+                    // [FIX-⑬] 出口 A 的计时/落闩（**只在本帧真的要走包抄时**才计）。
+                    //   口径：用 `this.time.now` 差值（帧计数会随帧率漂移，且本项目已在多处栽过）。
+                    //   落闩后本帧立刻把目标改成自身 ⇒ 当帧就不再去圆周点，下一帧进入回瞄。
+                    if (_tookFlank) {
+                        // ⚠ 这里**不能**用 `fAngle`：它在本分支更后面才声明（TDZ）。
+                        //   本帧的朝向真源就是 `facingSmooth`（facingAngle 只是它的上一帧目标）。
+                        const _arcOpen = this.anyUnitBearsOnFleet(
+                            fleet, closestEnemyFleet,
+                            fleet.facingSmooth ?? fleet.facingAngle ?? 0,
+                        );
+                        if (_arcOpen) {
+                            (fleet as any)._flankNoFireSince = null;
+                        } else {
+                            if (typeof (fleet as any)._flankNoFireSince !== 'number') {
+                                (fleet as any)._flankNoFireSince = this.time.now;
+                            }
+                            const _noFireSec = (this.time.now - (fleet as any)._flankNoFireSince) / 1000;
+                            if (_noFireSec >= FLANK_NOFIRE_GIVEUP_SEC) {
+                                (fleet as any)._flankBlocked = true;
+                                fleetTargetX = fleet.x; fleetTargetY = fleet.y;
+                            }
+                        }
+                    } else if (!_flankBlocked) {
+                        // 没走包抄（正常正面战/低速/已在他背后）⇒ 计时器清零，
+                        //   避免"上次包抄留下的陈旧秒数"让下一次包抄一进去就被判超时。
+                        (fleet as any)._flankNoFireSince = null;
                     }
 
                     // [v55] 阵型统一走 aiDirector.chooseFormation（本表口径 = 整合前的最终生效表；
