@@ -30,6 +30,8 @@ export const BATTLE_TRANSIENT_FIELDS: readonly string[] = [
   '_compactTurn',
   // [v99] 距离保持三态（StandoffOrder）的滞回记忆、目标 id 与逐帧倒车标志
   '_standoffKind', '_standoffTargetId', '_standoffBacking',
+  // [v99] 放弃包抄后的"强制转头"闩锁（转回来之前一直有效，跨战局必须复位）
+  '_reorientFacing', '_reorientSince',
 ];
 
 const TRANSIENT_SET: ReadonlySet<string> = new Set(BATTLE_TRANSIENT_FIELDS);

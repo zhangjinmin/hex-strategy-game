@@ -330,6 +330,19 @@ const FORM_FACING_MIN_SPD2 = 0.02 * 0.02;
  */
 const FLANK_NOFIRE_GIVEUP_SEC = 1;
 /**
+ * [v99] 放弃包抄后「强制转头」的**完成判据**：与敌向夹角 ≤ 60°。
+ *
+ * 为什么不是火弧半锥本身（`π*0.42 = 75.6°`）：贴着锥边界解除，下一次逐舰判决
+ * 很容易再次判出锥 ⇒「出锥→放弃→转头→进锥→再包抄」形成新的极限环。
+ * 留 15.6° 余量后，解除意味着"确实转回来了"，而不是"刚好擦过边界"。
+ */
+const REORIENT_DONE_RAD = Math.PI / 3;
+/**
+ * [v99] 上述判据的**驻留**（秒）：连续满足这么久才解除。
+ * 防单帧越界即解除（姿态在噪声下会短暂掠过阈值）。
+ */
+const REORIENT_DWELL_SEC = 0.25;
+/**
  * [FIX-⑭] `kind:'move'` 直接指令的**到位判定**（px）。
  * 与 `exploreTarget` 的到位判定**同源**（探索航点用 `< 25`）—— 两者语义相同：
  *   "点到点机动的完成 = 已抵达该点"，不应出现第二套口径。
@@ -7601,6 +7614,36 @@ export class BattleScene extends Phaser.Scene {
                     //   出口 B：`distToTarget <= 5` 由既有"已抵达射位"分支天然覆盖
                     //     （目标点就是这个圆上的点，真到位就停船回瞄），故不另写判据。
                     const _flankBlocked = (fleet as any)._flankBlocked === true;
+                    // [v99] 放弃包抄后的**强制转头**闩锁（一次性，直到真的转回来才解除）。
+                    //
+                    //   为什么需要：包抄飞行段的舰首指向**切向**；若此时直接落停船分支，
+                    //   舰首会被冻在舷侧（本工程 `formFacing ≡ facingSmooth`，停住之后
+                    //   没有任何写入点会把它转回来）⇒ 永久停火挨打。
+                    //   解法：借倒车通道（位移背离、舰首钉敌）转一次头，再落 `hold` ——
+                    //   不需要新增任何朝向绑定，因此不触碰 v72「火控与舰首解耦」契约。
+                    //
+                    //   ⚠ 解除条件**不能**用"回到射界"（= 火弧半锥 75.6°）：贴着边界解除会
+                    //     形成「出锥→放弃→转头→进锥→再包抄」的新环。用更严的 60° + 驻留。
+                    if ((fleet as any)._reorientFacing === true && closestEnemyFleet) {
+                        const _reBear = Math.atan2(
+                            closestEnemyFleet.y - fleet.y, closestEnemyFleet.x - fleet.x,
+                        );
+                        const _reOff = Math.abs(Math.atan2(
+                            Math.sin(_reBear - (fleet.facingSmooth ?? 0)),
+                            Math.cos(_reBear - (fleet.facingSmooth ?? 0)),
+                        ));
+                        if (_reOff <= REORIENT_DONE_RAD) {
+                            if (typeof (fleet as any)._reorientSince !== 'number') {
+                                (fleet as any)._reorientSince = this.time.now;
+                            }
+                            if ((this.time.now - (fleet as any)._reorientSince) / 1000 >= REORIENT_DWELL_SEC) {
+                                (fleet as any)._reorientFacing = false;
+                                (fleet as any)._reorientSince = null;
+                            }
+                        } else {
+                            (fleet as any)._reorientSince = null;
+                        }
+                    }
                     let _tookFlank = false;
                     if (isCautious && !wantsFlank) {
                         // 低统帅：正面直冲，无战术
@@ -7717,6 +7760,11 @@ export class BattleScene extends Phaser.Scene {
                             const _noFireSec = (this.time.now - (fleet as any)._flankNoFireSince) / 1000;
                             if (_noFireSec >= FLANK_NOFIRE_GIVEUP_SEC) {
                                 (fleet as any)._flankBlocked = true;
+                                // [v99] 同时起"强制转头"闩锁：包抄飞行段舰首是切向，
+                                //   直接停船会把它冻在舷侧。转头完成后由上方驻留判据解除，
+                                //   期间 `StandoffOrder` 收到 `forceReverse` ⇒ 走倒车通道。
+                                (fleet as any)._reorientFacing = true;
+                                (fleet as any)._reorientSince = null;
                                 fleetTargetX = fleet.x; fleetTargetY = fleet.y;
                             }
                         }
