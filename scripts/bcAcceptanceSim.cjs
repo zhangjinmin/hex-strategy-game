@@ -210,11 +210,28 @@ const F_DISTOF = (() => {
   return fs.existsSync(p) && /distanceOf/.test(fs.readFileSync(p, 'utf8'));
 })();
 
+/**
+ * `resolveMissionMove` 是否已**接线**到 BattleScene。
+ *
+ * 为什么要与 `F_MOVE` 分开：
+ *   · S4-xx 测的是**纯函数本身** ⇒ 只要函数存在就该硬断言（`F_MOVE`）；
+ *   · S6-04/05 测的是**调用方的接线**（不得再用 `tgt.x/tgt.y` 直赋 `_missionDest`）
+ *     ⇒ 函数存在但还没接线时，旧代码当然还留着旧写法 ⇒ 此时报红是**误红**（"还没做"被当成"做错了"）。
+ *   ⇒ 旗标必须对齐断言的真实依赖，而不是复用"同类功能"的旗标。
+ */
+const F_MOVE_WIRED = !!INTENT && !INTENT.__missing
+  && typeof INTENT.resolveMissionMove === 'function'
+  && /\bresolveMissionMove\s*\(/.test(SCENE_SRC);
+
 // 旗标可视：PENDING 时说清"是哪个特性还没落地"，避免"为什么这条一直 PEND"的来回问
 process.stdout.write(
-  `旗标 F_FRESH=${F_FRESH} F_SWEEP=${F_SWEEP} F_MOVE=${F_MOVE} F_FIELDS=${F_FIELDS} ` +
-  `F_DEST=${F_DEST} F_DISTOF=${F_DISTOF}\n`,
+  `旗标 F_FRESH=${F_FRESH} F_SWEEP=${F_SWEEP} F_MOVE=${F_MOVE} F_MOVE_WIRED=${F_MOVE_WIRED} ` +
+  `F_FIELDS=${F_FIELDS} F_DEST=${F_DEST} F_DISTOF=${F_DISTOF}\n`,
 );
+// "函数已存在但未接线"是一个**必须可见**的中间态：否则 S6-04/05 会永久 PENDING 而没人注意
+if (F_MOVE && !F_MOVE_WIRED) {
+  process.stdout.write('说明：F_MOVE=true 但未接线 ⇒ S6-04/05 保持 PENDING（等接线步骤），不是失败\n');
+}
 
 function missing(mod, name) {
   if (mod.__missing) return `模块不存在: ${mod.__missing.split('\n')[0]}`;
@@ -527,6 +544,23 @@ if (TACT.__missing || typeof TACT.resolveMissionTargets !== 'function') {
   });
 }
 
+
+// ── S5-04：未知目标的哨兵基值必须**大于地图对角线** ────────────────────────
+// 语义：未知目标用 `BASE + real` 排序，前提是"任何真实距离都 < BASE"。
+//   · 物理约束：BASE > 对角线（hexRadius ≤ 50 ⇒ 跨度 ≤ 2500 ⇒ 对角线 ≈ 3536）
+//   · 治理余量：×4（不是物理常数，只保证"不把仍然安全的较小基值判红"）
+//   ⚠ 若有人把基值调到地图尺度内，"已知恒排在未知之前"会静默失效（不报错、只是顺序变了）。
+check('S5-04 未知哨兵基值 > 4 × 地图对角线（物理约束 + 治理余量）', () => {
+  const src = fs.readFileSync(path.join(SRC, 'game', 'scenes', 'BattleScene.ts'), 'utf8');
+  const m = src.match(/UNKNOWN_TARGET_DIST_BASE\s*=\s*([0-9_eE+.]+)/);
+  assert.ok(m, '未找到具名常量 UNKNOWN_TARGET_DIST_BASE（应先把它提成常量再断言）');
+  const base = Number(m[1]);
+  assert.ok(Number.isFinite(base), `基值不是有限数: ${m[1]}`);
+  const MAX_SPAN = 50 * 50;              // hexRadius 上限 50 ⇒ 跨度 = hexRadius×50
+  const DIAG = Math.SQRT2 * MAX_SPAN;    // 真实距离上界 ≈ 对角线 ≈ 3536
+  assert.ok(base > 4 * DIAG, `基值 ${base} 未超过对角线的 4 倍（${Math.round(4 * DIAG)}）`);
+});
+
 // ══════════════════════════════════════════════════════════════════════
 // S6 · 源码不变量（5 条）—— 这些只能在源码层锁
 // ══════════════════════════════════════════════════════════════════════
@@ -565,7 +599,7 @@ checkGated(F_DEST, 'S6-03 三处 mission=null 均清理 _searchDest（0.6）', (
   assert.deepEqual(offenders, [], `这些 mission=null 未清理 _searchDest: 行 ${offenders.join(',')}`);
 });
 
-checkGated(F_MOVE, 'S6-04 attack_fleet 分支不得用 tgt.x/tgt.y 直赋 _missionDest（C-1）', () => {
+checkGated(F_MOVE_WIRED, 'S6-04 attack_fleet 分支不得用 tgt.x/tgt.y 直赋 _missionDest（C-1）', () => {
   const blk = sliceFn(sceneSrc, "if (m.type === 'attack_fleet')", "} else if (m.type === 'capture_planet')");
   assert.ok(blk.length > 0, '未定位到 attack_fleet 分支');
   assert.ok(
@@ -574,12 +608,28 @@ checkGated(F_MOVE, 'S6-04 attack_fleet 分支不得用 tgt.x/tgt.y 直赋 _missi
   );
 });
 
-checkGated(F_MOVE, 'S6-05 fuzzy 查证分支不得直赋 fz.ef.x（C-3）', () => {
+checkGated(F_MOVE_WIRED, 'S6-05 fuzzy 查证分支不得直赋 fz.ef.x（C-3）', () => {
   const blk = sliceFn(sceneSrc, "fuzzyTargets.length > 0", '} else if (fleet.stance === \'defend\')');
   assert.ok(blk.length > 0, '未定位到 fuzzyTargets 分支');
   assert.ok(
     !/fleetTargetX\s*=\s*fz\.ef\.x/.test(blk),
     '仍在直赋 fz.ef.x（活坐标）—— 去全知失效',
+  );
+});
+
+
+// ── S6-06：调用方必须**先用 isKnownTrackReliable 过滤**再传给纯函数 ────────
+// 背景：`resolveMissionMove` 刻意不判 `reliable`（避免第三套约定），
+//   可靠性只在调用方判一次。⇒ 这条把"调用方契约"变成可断言的形状。
+// ⚠ 若第 6 步用了别的过滤形式（例如先拼好数组再传），请告诉验收方改断言，**不要改实现去迁就断言**。
+check('S6-06 接线处用 isKnownTrackReliable 过滤档案（调用方契约）', () => {
+  const src = SCENE_SRC;
+  const at = src.search(/resolveMissionMove\s*\(/);
+  assert.ok(at >= 0, '未找到 resolveMissionMove 调用点');
+  const window = src.slice(Math.max(0, at - 3000), at + 1500);
+  assert.ok(
+    /isKnownTrackReliable\s*\(/.test(window),
+    'resolveMissionMove 调用附近未见 isKnownTrackReliable —— 可靠性可能没被过滤（档案的 reliable=false 会被当成可用）',
   );
 });
 
