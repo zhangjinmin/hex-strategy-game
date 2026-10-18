@@ -604,6 +604,24 @@ if (INTEL_ARCHIVE.__missing || typeof INTEL_ARCHIVE.recordKnownContact !== 'func
   });
 }
 
+// S7-03：**接线**断言 —— 落库 API 收得下 4 个字段 ≠ 调用方真的传了。
+// ⚠ 分界：S7-01 证明"收得下"，S7-03 证明"传了"。
+//   B+C 的核心链是"侦察报告 → 档案 → 目标解析/战力比/拦截点"，
+//   报告点漏传 ⇒ 链断在中间，而 S7-01 仍会绿。
+check('S7-03 所有 kind=fleet 的写入点都传了 4 字段（源码断言）', () => {
+  const src = fs.readFileSync(path.join(SRC, 'game', 'scenes', 'BattleScene.ts'), 'utf8');
+  const blocks = [...src.matchAll(/recordKnownContact\([^,]+,\s*\{([\s\S]*?)\}\)/g)].map((m) => m[1]);
+  const fleetBlocks = blocks.filter((b) => b.includes("kind: 'fleet'"));
+  assert.ok(fleetBlocks.length >= 3, `fleet 写入点只有 ${fleetBlocks.length} 处（预期 >=3）`);
+  const NEED = ['factionId', 'power', 'vx', 'vy'];
+  const bad = [];
+  fleetBlocks.forEach((b, idx) => {
+    const miss = NEED.filter((k) => !new RegExp(`${k}\\s*:`).test(b));
+    if (miss.length) bad.push(`#${idx + 1} 缺 [${miss.join(',')}]`);
+  });
+  assert.deepEqual(bad, [], `有 fleet 写入点漏传字段：${bad.join(' | ')}`);
+});
+
 checkGated(F_FIELDS, 'S7-02 IntelSystem.d.ts 声明 4 个新字段', () => {
   const dts = path.join(BATTLE, 'IntelSystem.d.ts');
   assert.ok(fs.existsSync(dts), 'IntelSystem.d.ts 不存在');
