@@ -1,5 +1,6 @@
 <template>
   <div class="settings-body">
+    <div class="settings-col settings-col-a">
     <!-- 音频设置 -->
     <div class="settings-section">
       <div class="section-title">
@@ -48,6 +49,46 @@
       </div>
     </div>
 
+    <!-- 界面缩放 -->
+    <div class="settings-section">
+      <div class="section-title">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" style="vertical-align:-1px;margin-right:5px;"><path d="M6 3H2v4"/><path d="M2 3l5 5"/><path d="M10 13h4v-4"/><path d="M14 13l-5-5"/></svg>
+        界面缩放
+      </div>
+      <div class="setting-row">
+        <span class="setting-label">全局缩放</span>
+        <input type="range" min="80" max="140" step="5" v-model.number="settings.uiScale" class="setting-slider" />
+        <span class="setting-value">{{ settings.uiScale }}%</span>
+      </div>
+      <div class="setting-hints">
+        <div class="setting-hint">统一放大界面文字、按钮、菜单（80%~140%）。</div>
+        <div class="setting-hint">这里放大的是整个界面（含面板与间距）；只想让字更大就别动这里，用「字体与字号」里的「字号」。</div>
+      </div>
+    </div>
+
+    <!-- 势力配色 -->
+    <div class="settings-section">
+      <div class="section-title">
+        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" style="vertical-align:-1px;margin-right:5px;"><circle cx="4" cy="8" r="2.5"/><circle cx="12" cy="8" r="2.5"/><line x1="6.5" y1="8" x2="9.5" y2="8"/></svg>
+        势力配色
+      </div>
+      <div class="setting-row">
+        <span class="setting-label">配色方案</span>
+        <select class="neo-select" :value="factionScheme" @change="onSchemeChange">
+          <option v-for="s in schemes" :key="s.key" :value="s.key">{{ s.name }} — {{ s.desc }}</option>
+        </select>
+      </div>
+      <div class="scheme-preview" v-if="currentScheme">
+        <span class="swatch ally" :style="{ background: hexToCss(currentScheme.ally.main) }"></span>
+        <span class="scheme-preview-label">同盟 {{ hexToCss(currentScheme.ally.main) }}</span>
+        <span class="swatch empire" :style="{ background: hexToCss(currentScheme.empire.main) }"></span>
+        <span class="scheme-preview-label">帝国 {{ hexToCss(currentScheme.empire.main) }}</span>
+      </div>
+    </div>
+    </div>
+
+    <div class="settings-col settings-col-b">
+
     <!-- 3D 战场性能 -->
     <div class="settings-section">
       <div class="section-title">
@@ -79,7 +120,7 @@
         <span class="setting-value">{{ settings.battle3dShowFps ? 'ON' : 'OFF' }}</span>
       </div>
       <div class="setting-row">
-        <span class="setting-label">舰船模型精细度</span>
+        <span class="setting-label">模型精细度</span>
         <select class="neo-select" :value="shipDetail" @change="onShipDetailChange">
           <option value="high">高（原始 ~5 万面）</option>
           <option value="medium">中（LOD1 ≈20% 三角数）</option>
@@ -94,12 +135,12 @@
           <option value="off">关闭</option>
         </select>
       </div>
-      <div class="setting-hint">开场动画：开战时播放的入场特效（传送门 / 能量球 / 关闭）。下一场战斗生效。</div>
-      <div class="setting-hint">关闭后不播入场特效，舰队立即正常显示（也不会暂停）。</div>
-      <div class="setting-hint">降低舰船模型面数可提升帧率（尤其核显）。轮廓线框各档位均保留，差别只在折角密度。下一场战斗生效。</div>
-      <div class="setting-hint">核显卡顿时优先调低画质档（中/低会降低 3D 渲染分辨率与抗锯齿）。</div>
-      <div class="setting-hint">帧率保护：低于约 45fps 时自动把多余实体退回光点层；跑得动时完全不生效。</div>
-      <div class="setting-hint">显示帧率：3D 战场右下角显示实时帧率，用于对比调档前后。画质档下一场战斗生效。</div>
+      <div class="setting-hints">
+        <div class="setting-hint">开场动画：开战时的入场特效（传送门 / 能量球 / 关闭）；选「关闭」后舰队立即正常显示、不暂停。下一场战斗生效。</div>
+        <div class="setting-hint">画质档 / 舰船精细度：降档会降低 3D 渲染分辨率与模型面数（轮廓线框各档均保留）。下一场战斗生效。</div>
+        <div class="setting-hint">帧率保护：低于约 45fps 时自动把多余实体退回光点层；跑得动时完全不生效。</div>
+        <div class="setting-hint">显示帧率：3D 战场右下角显示实时帧率，用于对比调档前后。</div>
+      </div>
     </div>
 
     <div class="settings-section">
@@ -123,6 +164,9 @@
         </div>
       </div>
     </div>
+    </div>
+
+    <div class="settings-col settings-col-c">
 
     <!-- 字体与字号 -->
     <div class="settings-section">
@@ -146,44 +190,11 @@
         <div class="font-preview-line">舰况士气 · 补给混战 · 阶段 AE-01</div>
         <div class="font-preview-sub">字号预览：这一行字会随上面的「字号」变化，面板尺寸不变。</div>
       </div>
-      <div class="setting-hint">字体：把 .ttf / .otf / .woff2 丢进 <code>frontend/src/assets/fonts/</code>，重新 build（dev 下自动热更）后就会出现在上面的下拉里，无需改代码。选中即时生效。</div>
-      <div class="setting-hint" v-if="currentCoverage && !currentCoverage.cjk">⚠ 当前字体不含中文字形：中文会回落到「微软雅黑」，只有英文/数字变化。</div>
-      <div class="setting-hint" v-if="currentCoverage && currentCoverage.cjk && !currentCoverage.latin">当前字体不含拉丁字形：英文/数字会回落。</div>
-      <div class="setting-hint">字号：只放大文字（100%~140%），不动按钮/面板/间距，与下面「全局缩放」互相独立、可叠加。</div>
-    </div>
-
-    <!-- 界面缩放 -->
-    <div class="settings-section">
-      <div class="section-title">
-        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" style="vertical-align:-1px;margin-right:5px;"><path d="M6 3H2v4"/><path d="M2 3l5 5"/><path d="M10 13h4v-4"/><path d="M14 13l-5-5"/></svg>
-        界面缩放
-      </div>
-      <div class="setting-row">
-        <span class="setting-label">全局缩放</span>
-        <input type="range" min="80" max="140" step="5" v-model.number="settings.uiScale" class="setting-slider" />
-        <span class="setting-value">{{ settings.uiScale }}%</span>
-      </div>
-      <div class="setting-hint">统一放大界面文字、按钮、菜单（80%~140%）。</div>
-      <div class="setting-hint">这里放大的是整个界面（含面板与间距）；只想让字更大就别动这里，用上面的「字号」。</div>
-    </div>
-
-    <!-- 势力配色 -->
-    <div class="settings-section">
-      <div class="section-title">
-        <svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.5" style="vertical-align:-1px;margin-right:5px;"><circle cx="4" cy="8" r="2.5"/><circle cx="12" cy="8" r="2.5"/><line x1="6.5" y1="8" x2="9.5" y2="8"/></svg>
-        势力配色
-      </div>
-      <div class="setting-row">
-        <span class="setting-label">配色方案</span>
-        <select class="neo-select" :value="factionScheme" @change="onSchemeChange">
-          <option v-for="s in schemes" :key="s.key" :value="s.key">{{ s.name }} — {{ s.desc }}</option>
-        </select>
-      </div>
-      <div class="scheme-preview" v-if="currentScheme">
-        <span class="swatch ally" :style="{ background: hexToCss(currentScheme.ally.main) }"></span>
-        <span class="scheme-preview-label">同盟 {{ hexToCss(currentScheme.ally.main) }}</span>
-        <span class="swatch empire" :style="{ background: hexToCss(currentScheme.empire.main) }"></span>
-        <span class="scheme-preview-label">帝国 {{ hexToCss(currentScheme.empire.main) }}</span>
+      <div class="setting-hints">
+        <div class="setting-hint">字体：把 .ttf / .otf / .woff2 丢进 <code>frontend/src/assets/fonts/</code>，重新 build（dev 下自动热更）后就会出现在下拉里，无需改代码。选中即时生效。</div>
+        <div class="setting-hint" v-if="currentCoverage && !currentCoverage.cjk">⚠ 当前字体不含中文字形：中文会回落到「微软雅黑」，只有英文/数字变化。</div>
+        <div class="setting-hint" v-if="currentCoverage && currentCoverage.cjk && !currentCoverage.latin">当前字体不含拉丁字形：英文/数字会回落。</div>
+        <div class="setting-hint">字号：只放大文字（100%~140%），不动按钮/面板/间距，与「全局缩放」互相独立、可叠加。</div>
       </div>
     </div>
 
@@ -206,11 +217,12 @@
         <input type="text" v-model="settings.apiUrl" class="neo-input" placeholder="https://api.openai.com/v1" />
       </div>
     </div>
-
-    <!-- 恢复默认 -->
-    <div class="settings-footer">
-      <button class="reset-btn" @click="settings.resetDefaults()">恢复默认设置</button>
     </div>
+  </div>
+
+  <!-- 恢复默认：面板外，固定在底部（不参与三列流） -->
+  <div class="settings-footer">
+    <button class="reset-btn" @click="settings.resetDefaults()">恢复默认设置</button>
   </div>
 </template>
 
@@ -366,15 +378,24 @@ function onTrackSelect(e: Event) {
 </script>
 
 <style scoped>
-/* 两列布局：充分利用弹窗宽度，避免竖长条 */
-.settings-body { display: grid; grid-template-columns: 1fr 1fr; gap: 18px 22px; }
-.settings-section { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+/* [v67] 桌面端三列：原 grid 1fr 1fr 是**逐行配对**（row1 = 音频 | 3D，row2 = 星图 | 字体 …），
+   行高被行内最高的一节撑起 ⇒ 音频被拉到 523px、右侧留一大块空，整页仍要滚 540px。
+   现在改成**三个独立的纵向列**（按内容高度手工配平，见各列注释），列内自然堆叠：
+   · 不再有行高耦合，也就不会"一列空着另一列很长"；
+   · 三列总高 ≈ 570，1560px 宽弹窗里一屏放得下（1920×1080 / 1600×900 实测 0 滚动）。
+   ⚠ 不要改回 grid 逐行配对；也不要用 CSS 多列（column-count）——它在"整块不切断"时配不平，
+     会把第 3 列留成半空（实测 671/550/306）。 */
+.settings-body { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 26px; align-items: start; }
+.settings-col { display: flex; flex-direction: column; min-width: 0; }
+.settings-section { display: flex; flex-direction: column; gap: 9px; min-width: 0; margin-bottom: 18px; }
+.settings-col > .settings-section:last-child { margin-bottom: 0; }
 .section-title { font-size: calc(13px * var(--font-scale)); font-weight: 800; color: var(--color-cyan); border-bottom: 1px solid rgba(6,182,212,0.2); padding-bottom: 6px; display: flex; align-items: center; }
 
-.setting-row { display: flex; align-items: center; gap: 10px; padding: 4px 0; }
-.setting-label { flex: 0 0 90px; font-size: calc(13px * var(--font-scale)); font-weight: 700; color: var(--color-text-primary); }
+.setting-row { display: flex; align-items: center; gap: 10px; padding: 2px 0; }
+.setting-label { flex: 0 0 96px; font-size: calc(13px * var(--font-scale)); font-weight: 700; color: var(--color-text-primary); white-space: nowrap; }
 .setting-value { font-size: calc(12px * var(--font-scale)); font-weight: 700; color: var(--color-text-disabled); min-width: 50px; text-align: right; }
-.setting-hint { font-size: calc(11px * var(--font-scale)); color: var(--color-text-disabled); padding: 2px 0; line-height: 1.4; }
+.setting-hints { display: flex; flex-direction: column; gap: 3px; }
+.setting-hint { font-size: calc(11px * var(--font-scale)); color: var(--color-text-disabled); padding: 0; line-height: 1.45; }
 .setting-hint code { font-size: calc(10px * var(--font-scale)); color: var(--color-cyan); background: rgba(6,182,212,0.08); padding: 0 4px; border-radius: 3px; font-family: var(--dmc-font-mono); }
 
 /* [v66] 字体预览：用当前生效字体渲染，选中即变（所见即所得）。min-height 而非 height，字号放大时不裁切。 */
@@ -459,16 +480,29 @@ function onTrackSelect(e: Event) {
 .swatch.ally { border: 1px solid rgba(255,255,255,0.3); }
 .swatch.empire { border: 1px solid rgba(255,255,255,0.3); }
 
-/* 恢复默认（横跨两列底部） */
-.settings-footer { grid-column: 1 / -1; display: flex; justify-content: flex-end; padding-top: 12px; border-top: 1px solid var(--overlay-hover); }
+/* 恢复默认（面板外、贴底，不参与三列流） */
+.settings-footer { display: flex; justify-content: flex-end; padding-top: 10px; border-top: 1px solid var(--overlay-hover); flex-shrink: 0; }
 .reset-btn {
   padding: 8px 18px; font-size: calc(12px * var(--font-scale)); font-weight: 700; color: var(--color-text-disabled);
   background: transparent; border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; cursor: pointer; transition: all 0.15s;
 }
 .reset-btn:hover { color: var(--color-warning); border-color: var(--color-warning); }
 
-/* 窄屏：回到单列 */
-@media (max-width: 720px) {
+/* 窄屏回落：窗口拉窄时列数递减（媒体查询按真实视口，不受 zoom 影响）。
+   ⚠ 阈值按"弹窗内可用宽"折算：单列观感低于 ~430px 就开始挤。
+   两列时第三列（字体 / 接口）横跨整行、内部再并排两列，避免出现半宽的孤岛。 */
+@media (max-width: 1239px) {
+  .settings-body { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .settings-col-c { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 26px; align-items: start; }
+}
+/* 窄屏收紧纵向节奏（段间距 / 行距 / 提示行高），把 1280 档的滚动条压掉 */
+@media (max-width: 1360px) {
+  .settings-section { gap: 7px; margin-bottom: 14px; }
+  .setting-row { padding: 1px 0; }
+  .setting-hint { line-height: 1.4; }
+}
+@media (max-width: 780px) {
   .settings-body { grid-template-columns: 1fr; }
+  .settings-col-c { display: flex; flex-direction: column; }
 }
 </style>

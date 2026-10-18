@@ -417,7 +417,15 @@ const formatTime = (ts: number) => {
 /* [v66] max-height/max-width 用 % 而不是 vh/vw：父级 .selection-modal 是 fixed inset:0（高度=视口在 zoom 坐标系里的值），
    而 vh/vw 不参与 #game-container 的 zoom(--ui-scale) 折算 —— 120% 下 88vh 会渲染成 105.6vh，
    弹窗上下各被切掉 25px（实测 top=-25/bottom=925）。百分比按缩放后的父级解析，放大后依然贴合屏幕。 */
-.modal-content { width: 1020px; max-width: 96%; max-height: 88%; display: flex; flex-direction: column; padding: 22px; gap: 10px; }
+/* [v67] 桌面端加宽：原来固定 1020px，在 1920/2560 屏上两侧各空 400~770px。
+   宽度 = min(92%, 1560px)：92% 是窄屏兜底（永不溢出），1560px 封顶避免超宽屏把设置行拉成"标签在左、控件在右岸"。
+   ⚠ 必须**同时**写 max-width：App.vue 里有一条全局 `.modal-content { max-width: 400px }`（旧登录框样式），
+     本组件 scoped 规则不再声明 max-width 时，那条会把整个战术电脑压成 400px 宽（实测）。 */
+.modal-content { width: min(92%, 1560px); max-width: 96%; max-height: 92%; display: flex; flex-direction: column; padding: 20px 22px; gap: 10px; }
+/* 窄屏（≤1360）：弹窗再撑宽一点、内边距收紧，尽量让设置页仍能一屏放下（1280×800 实测溢出 106px ⇒ 44px） */
+@media (max-width: 1360px) {
+  .modal-content { width: 96%; padding: 16px 18px; }
+}
 .flex-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--overlay-hover); padding-bottom: 12px; }
 .m-0 { margin: 0; font-size: calc(20px * var(--font-scale)); font-weight: 900; }
 .mb-4 { margin-bottom: 10px; }
@@ -436,6 +444,11 @@ const formatTime = (ts: number) => {
 
 /* ===== 各面板通用 ===== */
 .tab-panel { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; flex: 1; min-height: 0; padding: 2px; }
+/* [v67] 细滚动条：设置页目标是无滚动条，其余面板（档位列表）滚动时也不该出现系统粗条挤占宽度 */
+.tab-panel::-webkit-scrollbar { width: 8px; }
+.tab-panel::-webkit-scrollbar-track { background: transparent; }
+.tab-panel::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 4px; }
+.tab-panel::-webkit-scrollbar-thumb:hover { background: var(--color-border-emphasized); }
 .tab-new { min-height: 520px; }
 .panel-desc { font-size: calc(13px * var(--font-scale)); color: var(--color-text-secondary); line-height: 1.5; margin: 0; }
 
@@ -511,8 +524,12 @@ const formatTime = (ts: number) => {
 .empty-hint { font-size: calc(12px * var(--font-scale)); color: var(--color-border-emphasized); margin-top: 8px; }
 
 /* ===== 槽位卡片列表 ===== */
-.list-container { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; padding-right: 4px; }
-.save-slot { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border: 1px solid transparent; transition: border 0.2s; }
+/* [v67] 弹窗加到 1560 后单列存档条会被拉成"名字贴左、箭头贴右岸"。改成自适应网格：
+   宽屏 2~3 列，窄屏自动回落单列（auto-fill + minmax 无需媒体查询）。 */
+.list-container { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 10px; align-content: start; overflow-y: auto; padding-right: 4px; }
+.list-container::-webkit-scrollbar { width: 8px; }
+.list-container::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 4px; }
+.save-slot { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 14px 18px; border: 1px solid transparent; transition: border 0.2s; }
 .save-slot:hover { border-color: var(--color-cyan); }
 .save-slot.slot-autosave { opacity: 0.7; }
 .save-slot.slot-clickable { cursor: pointer; }
