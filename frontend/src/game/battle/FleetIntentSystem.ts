@@ -289,9 +289,16 @@ export function canCommitSiege(input: SiegeGateInput): boolean {
   return input.forceRatio > 2.30 && identified >= need;
 }
 
-/** 阵营快照（调用方把"还有几支战斗舰队"数好传进来；本文件不碰 units）。 */
+/**
+ * 阵营快照（调用方把"还有几支战斗舰队"数好传进来；本文件不碰 units）。
+ *
+ * ⚠ **刻意不含 `id`**：本函数一个字段都不读 `id`。
+ *   曾按规格写成 `id: string`，但 `types/game.ts` 的 `Faction.id` 是 `number`
+ *   ⇒ 迫使 B3 写一句无意义的 `String(f.id)`。
+ *   ⇒ 按"SweepAim.fleetId / MissionMoveInput"同一条规矩：**传了但不读的字段不该在签名里**。
+ *   ⇒ 删掉之后类型不一致自动消失，且不需要放宽成 `string | number`（放宽只会掩盖不一致）。
+ */
 export interface FactionLiveLike {
-  id: string;
   /** `store.factions[].active` —— ⚠ **`active` ≠ 还有舰队**（见下） */
   active: boolean;
   /** 该阵营**仍有战斗单位**的舰队数（由调用方数好；本文件不判断"什么算战斗单位"） */
