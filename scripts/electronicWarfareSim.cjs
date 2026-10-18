@@ -15,7 +15,7 @@ function check(name, condition) {
 console.log('\n=== Electronic warfare ===');
 check('direct command permissions include electronic warfare', commands.includes("'electronic'"));
 check('fleet HUD exposes electronic jamming', app.includes("'electronic'"));
-check('BattleScene requires a real electronic ship before jamming', scene.includes('activateElectronicWarfare') && scene.includes("u.classType === '电子' || u.classType === 'electronic'"));
+check('BattleScene requires a real electronic ship before jamming', scene.includes('activateElectronicWarfare') && scene.includes("resolveClassTypeCn(u.classType) === '电子' || u.classType === 'electronic'"));
 check('fog contact assessment applies target jamming', scene.includes('jammingStrength'));
 check('combat visibility is reduced by active electronic jamming', scene.includes('targetJamming'));
 check('electronic warfare creates expiring false contacts', scene.includes('electronicDecoys') && scene.includes('expiresAt'));

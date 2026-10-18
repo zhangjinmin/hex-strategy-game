@@ -25,6 +25,7 @@
  */
 
 import { DIRECTION_ARMOR, INTERCEPT, TACTICAL_V33 } from './balance';
+import { resolveClassTypeCn } from './shipScaling';
 import type { RangeBand } from './formationColumns';
 
 /** 受击方向（以**受击方朝向**为参考系）。 */
@@ -102,7 +103,7 @@ const SHIP_PREFERRED_BAND: Record<string, RangeBand[]> = {
 
 /** 该舰种的偏好距离带（未登记返回 null = 中性，不参与判定）。 */
 export function getShipPreferredBand(classType: string): RangeBand[] | null {
-  return SHIP_PREFERRED_BAND[classType] ?? null;
+  return SHIP_PREFERRED_BAND[resolveClassTypeCn(classType)] ?? null;
 }
 
 /**
@@ -119,12 +120,12 @@ export function getShipPreferredBand(classType: string): RangeBand[] | null {
  *   0.30 下全部落在 clamp 区间内、偏序完整，且战列背面 1.62 贴近旧实现的固定 ×1.5。
  *
  * @param side      受击方向
- * @param classType 受击舰的舰种
+ * @param classType 受击舰的舰种（英文 ShipType / 中文 cls 皆可，本函数内归一为中文键）
  */
 export function dirArmorMul(side: HitSide, classType: string): number {
   if (!TACTICAL_V33.DIRECTION_ARMOR) return 1.0;
   if (side === 'front') return 1.0;
-  const prof = SHIP_ARMOR[classType];
+  const prof = SHIP_ARMOR[resolveClassTypeCn(classType)];
   if (!prof) return 1.0;                       // 未登记 / 各向同性 → 无方向倍率
   const denom = side === 'side' ? prof.side : prof.rear;
   if (!(denom > 0) || !(prof.front > 0)) return 1.0;
@@ -157,7 +158,7 @@ export const DIRECTION_CRIT_MIN = DIRECTION_ARMOR.CRIT_THRESHOLD;
  *   · 权重 = 该舰队**存活单位**的 `SHIP_INTERCEPT` 均值 ⇒ 打掉防空舰即削弱拦截
  *   · `skillBonus` 来自特技 `intercept_bonus`（P1-4.4）
  *
- * @param units       受击舰队的单位数组（读 `classType`）
+ * @param units       受击舰队的单位数组（读 `classType`，英文 ShipType / 中文 cls 皆可）
  * @param skillBonus  特技加值（绝对量，0~`INTERCEPT.SKILL_MAX`）
  */
 export function fleetInterceptRate(units: readonly { classType?: string }[], skillBonus = 0): number {
@@ -165,7 +166,7 @@ export function fleetInterceptRate(units: readonly { classType?: string }[], ski
   const n = units?.length ?? 0;
   if (n === 0) return 0;
   let sum = 0;
-  for (const u of units) sum += SHIP_INTERCEPT[u.classType || '无'] ?? 0;
+  for (const u of units) sum += SHIP_INTERCEPT[resolveClassTypeCn(u.classType) || '无'] ?? 0;
   const avg = sum / n;
   const base = (avg / 100) * INTERCEPT.K;
   const skill = Math.max(0, Math.min(INTERCEPT.SKILL_MAX, skillBonus));

@@ -102,6 +102,32 @@ export function resolveShipType(code: string | null | undefined): ShipType | und
   return CN_TO_SHIP_TYPE[code];
 }
 
+/**
+ * 把任意 classType 归一为**中文舰种键**（战术侧写表的键口径）。
+ *
+ * 为什么需要：两条部署轨写进 `classType` 的口径不同 —— 战役轨是英文 `ShipType`
+ *   （`BattleScene.deploySide` 直接写 `slot.type`），演习轨是中文 cls；而
+ *   `SHIP_ARMOR` / `SHIP_INTERCEPT` / `SHIP_PREFERRED_BAND` / `SHIP_KINEMATICS`
+ *   全部以中文为键。英文键查不到时各表都静默走 fallback（方向装甲恒 1.0、拦截率恒 0、
+ *   舰队运动学恒 `EMPTY_FLEET_PROFILE`），**不报错、不告警**。
+ *
+ * 为什么在**查表入口**归一而不在建舰处归一：建舰处改只能救"以后新建的舰"，
+ *   存量存档、演习轨、以及其他调用方（战后回写 / 3D 层 / 台架）仍会传英文键。
+ *   入口归一一次覆盖全部来源，且口径只有一处。
+ *
+ * 口径：已是中文键 ⇒ 原样返回；命中 `SHIP_TYPE_CN` ⇒ 返回中文；未知键 ⇒ **原样返回**
+ *   （保持原有 fallback 行为，不抛错）。`电子` / `突击` 这类不在 `ShipType` 里的战术舰种
+ *   本就不在映射表中 ⇒ 同样原样返回。
+ *
+ * ⚠ 与 `resolveShipType` 是同一份映射的两个方向（后者 → 英文 `ShipType`，供 HP/ATK 表用）。
+ *   禁止再抄一份映射表。
+ */
+export function resolveClassTypeCn(classType: string | null | undefined): string {
+  if (!classType) return classType ?? '';
+  const st = resolveShipType(classType);
+  return st ? SHIP_TYPE_CN[st] : classType;
+}
+
 // ────────────────────────────────────────────────────────────
 // 实体数折算
 // ────────────────────────────────────────────────────────────

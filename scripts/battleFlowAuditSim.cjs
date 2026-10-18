@@ -154,7 +154,7 @@ check('electronic warfare has an execution path after its command permission gat
   const end = scene.indexOf('private scaleMapForFleetCount', start);
   const block = scene.slice(start, end);
   return block.includes("type === 'stance' || type === 'electronic'")
-    && block.includes("classType === '电子'")
+    && block.includes("resolveClassTypeCn(u.classType) === '电子'")
     && block.includes("const stance = type === 'electronic' ? 'electronic' : payload")
     && block.includes('this.applyStanceToFleet(fleet, stance)');
 });

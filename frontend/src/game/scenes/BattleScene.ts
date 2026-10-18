@@ -3831,7 +3831,7 @@ export class BattleScene extends Phaser.Scene {
                         if (type === 'stance' || type === 'electronic') {
                             const stance = type === 'electronic' ? 'electronic' : payload;
                             if (stance === 'electronic'
-                                && !fleet.units.some((u: any) => u.classType === '电子' || u.classType === 'electronic')) {
+                                && !fleet.units.some((u: any) => resolveClassTypeCn(u.classType) === '电子' || u.classType === 'electronic')) {
                                 this.store.triggerToast(`⛔ ${fac.name} 没有电子战舰，无法执行电子压制。`);
                                 return;
                             }
@@ -4340,7 +4340,7 @@ export class BattleScene extends Phaser.Scene {
         for (const fleet of this.globalFleets) {
             if (!fleet || !fleet.units || fleet.units.length === 0) continue;
             const carriers = fleet.units.filter(
-                (u: any) => u.classType === '空母' || u.classType === '突击' || u.classType === 'CV',
+                (u: any) => resolveClassTypeCn(u.classType) === '空母' || resolveClassTypeCn(u.classType) === '突击' || u.classType === 'CV',
             );
             if (carriers.length === 0) continue;
             const gid = String(fleet.id) + '#' + String(fleet.id);
@@ -4359,7 +4359,7 @@ export class BattleScene extends Phaser.Scene {
 
             // 母舰是否存活
             const carrierAlive = (fleet.units || []).some(
-                (u: any) => u.hp > 0 && (u.classType === '空母' || u.classType === '突击' || u.classType === 'CV'),
+                (u: any) => u.hp > 0 && (resolveClassTypeCn(u.classType) === '空母' || resolveClassTypeCn(u.classType) === '突击' || u.classType === 'CV'),
             );
 
             // 放飞窗口：战斗阶段 approach / assault（combatPhase.isFighterWindow）
@@ -4448,7 +4448,7 @@ export class BattleScene extends Phaser.Scene {
         for (const g of Array.from(this.fighterGroups.values())) {
             const fleet: any = this.globalFleets.find((f: any) => String(f.id) === String(g.fleetId));
             const hasCarrier = fleet && (fleet.units || []).some(
-                (u: any) => u.hp > 0 && (u.classType === '空母' || u.classType === '突击' || u.classType === 'CV'),
+                (u: any) => u.hp > 0 && (resolveClassTypeCn(u.classType) === '空母' || resolveClassTypeCn(u.classType) === '突击' || u.classType === 'CV'),
             );
             // 母舰沉没且舰载机已返航/全灭 ⇒ 清理；仍在作战则保留（拼死，符合原作）
             if (!hasCarrier && g.alive <= 0) this.destroyFighterGroup(g.id);
@@ -4464,7 +4464,7 @@ export class BattleScene extends Phaser.Scene {
      */
     private renderFighterGroup(g: FighterGroupState, fleet: any, time: number): void {
         const carrier: any = (fleet.units || []).find(
-            (u: any) => u.hp > 0 && (u.classType === '空母' || u.classType === '突击' || u.classType === 'CV'),
+            (u: any) => u.hp > 0 && (resolveClassTypeCn(u.classType) === '空母' || resolveClassTypeCn(u.classType) === '突击' || u.classType === 'CV'),
         );
         const cx = carrier ? carrier.sprite.x : (fleet.x || 0);
         const cy = carrier ? carrier.sprite.y : (fleet.y || 0);
@@ -4524,11 +4524,13 @@ export class BattleScene extends Phaser.Scene {
             if (!f || String(f.factionId) === String(own.factionId)) continue;
             for (const u of (f.units || [])) {
                 if (!u || u.hp <= 0) continue;
+                // classType 口径因轨而异（战役英文 / 演习中文）⇒ 比较前归一为中文键（旧英文别名原样透传）
+                const ct = resolveClassTypeCn(u.classType);
                 const kind: FighterTargetKind =
-                    (u.classType === '空母' || u.classType === '突击' || u.classType === 'CV') ? 'carrier'
-                        : (u.classType === '补给' || u.classType === '运输' || u.classType === 'TR') ? 'supply'
-                            : (u.classType === '战列' || u.classType === '高战' || u.classType === '巡洋'
-                                || u.classType === '驱逐' || u.classType === '电子') ? 'battleship'
+                    (ct === '空母' || ct === '突击' || ct === 'CV') ? 'carrier'
+                        : (ct === '补给' || ct === '运输' || ct === 'TR') ? 'supply'
+                            : (ct === '战列' || ct === '高战' || ct === '巡洋'
+                                || ct === '驱逐' || ct === '电子') ? 'battleship'
                                 : 'none';
                 const dist = Phaser.Math.Distance.Between(sx, sy, u.sprite.x, u.sprite.y);
                 const score = targetPriority(kind, dist);
@@ -4575,7 +4577,7 @@ export class BattleScene extends Phaser.Scene {
         });
 
         // 航母下方弱点 ⇒ 连锁爆炸
-        if (g.hitZone === 'ventral' && (ship.classType === '空母' || ship.classType === 'CV')) {
+        if (g.hitZone === 'ventral' && (resolveClassTypeCn(ship.classType) === '空母' || ship.classType === 'CV')) {
             const enemyFighters: { id: string; x: number; y: number }[] = [];
             for (const o of this.fighterGroups.values()) {
                 const of: any = this.globalFleets.find((f: any) => String(f.id) === String(o.fleetId));
@@ -8778,7 +8780,7 @@ export class BattleScene extends Phaser.Scene {
                         // [v86] 同上：地形闪避须取**受击方**坐标（受击方 = fireTargetFleet）。
                         const terrainDodge = this.getTerrainDodgeMul(fireTargetFleet.x, fireTargetFleet.y);
                         let baseDmg = (((u.atk + Math.floor(admAtk * 0.5) / typeShare) * unitSupplyFactor) - effectiveDef) / terrainDodge;
-                        if (u.classType === '电子' || u.classType === '无') baseDmg = (u.atk + Math.floor(admAtk * 0.1) / typeShare) * unitSupplyFactor / terrainDodge;
+                        if (resolveClassTypeCn(u.classType) === '电子' || resolveClassTypeCn(u.classType) === '无') baseDmg = (u.atk + Math.floor(admAtk * 0.1) / typeShare) * unitSupplyFactor / terrainDodge;
 
                         // ── [v33 P0-3] 方向装甲：前 / 侧 / 后（收口替换原"仅 >135° 背击 ×1.5"）──────
                         //   原实现只有一档背击、且装甲是单值 ⇒ **舰种编成在战术层没有形状差异**
@@ -8839,7 +8841,7 @@ export class BattleScene extends Phaser.Scene {
                         // 理论上限会被推到 5× 以上（单看每项都"温和"，但乘区是相乘的）——
                         // 这是"某一帧出现秒杀级伤害"的典型成因（docs/design/loch-web-plan/02 §6.2）。
                         const bandNowLocal: RangeBand = (fleet as any)._rangeBand ?? 'mid';
-                        const isStrikeUnit = u.classType === '舰载' || u.classType === '突击';
+                        const isStrikeUnit = resolveClassTypeCn(u.classType) === '舰载' || resolveClassTypeCn(u.classType) === '突击';
                         // P0-2 列位 × 距离带（净增益恒 1.0，只对"能否维持理想交战距"敏感）
                         const colMul = columnMatrixMul(colProfile, slotIdx, bandNowLocal, isStrikeUnit);
                         // P1-4.5 舰种偏好距离带（命中 +5% / 未命中 −3%）
@@ -8894,7 +8896,7 @@ export class BattleScene extends Phaser.Scene {
                             }
                         }
 
-                        if (u.classType === '突击') {
+                        if (resolveClassTypeCn(u.classType) === '突击') {
                             const fighterCount = 4;
                             const dmgPerFighter = finalDmg / fighterCount;
                             // v6：3D 舰载机小队（专用模型 + 飞行→格斗→击落→返航），2D 保留三角机 tween（factionId 供 3D 按敌我选模型）
@@ -9006,7 +9008,7 @@ export class BattleScene extends Phaser.Scene {
                             });
                         }
                     } 
-                    else if (closestEnemyTile && Phaser.Math.Distance.Between(u.sprite.x, u.sprite.y, closestEnemyTile.x, closestEnemyTile.y) <= u.range + (u.classType==='战列' || u.classType==='突击' || u.classType==='无' ? 0 : 60)) {
+                    else if (closestEnemyTile && Phaser.Math.Distance.Between(u.sprite.x, u.sprite.y, closestEnemyTile.x, closestEnemyTile.y) <= u.range + (resolveClassTypeCn(u.classType)==='战列' || resolveClassTypeCn(u.classType)==='突击' || resolveClassTypeCn(u.classType)==='无' ? 0 : 60)) {
                          // [FIX-volley] 同舰炮分支：相位推进，不再全体钉回同一时刻
                          advanceAtkPhase(u, slotIdx);
                          const admAtk = myFac.admiralStats?.attack || 0;
@@ -9115,7 +9117,7 @@ export class BattleScene extends Phaser.Scene {
         // 清理已死亡航母的舰载机
         for (const [fleetId, fighters] of this.carrierFighters.entries()) {
             const fleet = this.globalFleets.find(fl => fl.id === fleetId);
-            const hasCV = fleet && fleet.units.some((u: any) => u.classType === '突击' || u.classType === 'CV');
+            const hasCV = fleet && fleet.units.some((u: any) => resolveClassTypeCn(u.classType) === '突击' || u.classType === 'CV');
             if (!hasCV) {
                 fighters.forEach(f => f.destroy());
                 this.carrierFighters.delete(fleetId);
@@ -9302,7 +9304,7 @@ export class BattleScene extends Phaser.Scene {
                             supply: flagship.supply, morale: fl.morale, contactState: contact.state,
                             team: fac.team, stance: fl.stance,
                             canDirectCommand: this.canDirectlyControlFleet(fl) && fl.id === this.battleSelectedFleetId,
-                            hasElectronicShip: fl.units.some((u: any) => u.classType === '电子' || u.classType === 'electronic'),
+                            hasElectronicShip: fl.units.some((u: any) => resolveClassTypeCn(u.classType) === '电子' || u.classType === 'electronic'),
                         });
                     } else if (display.mode === 'last_known') {
                         // 末次位置情报接触：画在**档案坐标**（持久档案的末次确认位置/时间），绝不实时跟位

@@ -25,12 +25,15 @@
  * ============================================================================
  * 与既有层的关系
  * ============================================================================
- * · 零 import（裁决层规格）
+ * · 只依赖 `config/shipScaling` 的键归一（查表前把英文 classType 转成中文键）——
+ *   本文件不得再自带一份中英映射
  * · 舰队级（`fleet.x/y/vx/vy/facingRate`）仍由 BattleScene 积分，但**参数改为按舰种加权**
  *   ⇒ 阶段 1（最小改动）可只改参数；阶段 2（每舰刚体）再把积分下沉到单位
  * · 舰级（`stepShipSlotFollow`）继续用 `UNIT_MOTION_LIMITS` 作为**槽位追踪**上限，
  *   不与本表冲突：本表管**舰队航行**，那个管**归位**
  */
+
+import { resolveClassTypeCn } from './shipScaling';
 
 // ══════════════════════════════════════════════════════════════════════
 // A. 舰种运动学档案
@@ -102,8 +105,9 @@ export const HULL_LEN_FROM_DEPLOY = Object.freeze({
 // ══════════════════════════════════════════════════════════════════════
 
 export function kinematicsOf(classType: string | null | undefined): ShipKinematics {
-  if (!classType) return DEFAULT_KINEMATICS;
-  return SHIP_KINEMATICS[classType] || DEFAULT_KINEMATICS;
+  const cn = resolveClassTypeCn(classType);
+  if (!cn) return DEFAULT_KINEMATICS;
+  return SHIP_KINEMATICS[cn] || DEFAULT_KINEMATICS;
 }
 
 /** 转弯半径（px）= v/ω。台架与调试用。 */
@@ -165,6 +169,8 @@ export const EMPTY_FLEET_PROFILE: FleetKinematicsProfile = Object.freeze({
  *   理由：一支 8 战列 + 2 驱逐的舰队，其"机动性格"应接近战列（重舰决定航迹），
  *   算术平均会让 2 驱逐把整体拉到"中速"，这正是旧实现"五舰种同质"的另一种表现。
  * ⚠ 排除 '补给'：运输舰不参与战斗机动（其极重参数会拖垮整队速度）。
+ * ⚠ `classType` 可能是英文 ShipType（战役轨）或中文 cls（演习轨）：查表前统一归一为中文键，
+ *   否则整支舰队都查不到档案 ⇒ `sumW` 为 0 ⇒ 全部退回 `EMPTY_FLEET_PROFILE`。
  */
 export function fleetProfile(units: readonly { classType?: string; hp?: number }[] | null | undefined): FleetKinematicsProfile {
   if (!units || units.length === 0) return EMPTY_FLEET_PROFILE;
@@ -172,7 +178,7 @@ export function fleetProfile(units: readonly { classType?: string; hp?: number }
   let bestW = -1, dominant = '战列';
   const seen = new Set<string>();
   for (const u of units) {
-    const ct = u && u.classType;
+    const ct = resolveClassTypeCn(u && u.classType);
     if (!ct || ct === '补给' || ct === '无') continue;
     if (u.hp !== undefined && u.hp <= 0) continue;   // 已沉没不参与
     const k = SHIP_KINEMATICS[ct];
