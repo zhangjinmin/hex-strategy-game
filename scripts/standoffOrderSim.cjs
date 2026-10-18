@@ -1,5 +1,5 @@
 /**
- * standoffOrderSim.cjs — StandoffOrder 纯函数台架（11 条断言 + 迁移表）
+ * standoffOrderSim.cjs — StandoffOrder 纯函数台架（15 条断言 + 迁移表）
  *
  * 运行：
  *   node --import ./_ts_resolve.mjs scripts/standoffOrderSim.cjs
@@ -170,6 +170,58 @@ check('11. 2000 帧 sweep（1.5i→0.2i→1.5i）：迁移 ≤6，且 |err|<half
   for (let i = 0; i < down; i++) feed(1.5 - step * i);
   for (let i = 0; i < down; i++) feed(0.2 + step * i);
   assert.ok(transitions <= 6, `迁移次数=${transitions}（应 ≤6）`);
+});
+
+check('12. |err| 在带内 + forceReverse ⇒ reverse（强制优先于 hold）', () => {
+  const r = resolveStandoffOrder({
+    d: 1.00 * I, idealDist: I, deadband: DB, prevKind: 'hold', forceReverse: true,
+  });
+  assert.equal(r.kind, 'reverse');
+  assert.equal(r.facingIntent, 'enemy');
+  assert.equal(r.reason, STANDOFF_REASONS.forcedReverse);
+});
+
+check('13. err > +deadband + forceReverse ⇒ 仍 reverse（强制压过 approach）', () => {
+  const r = resolveStandoffOrder({
+    d: 1.20 * I, idealDist: I, deadband: DB, prevKind: 'approach', forceReverse: true,
+  });
+  assert.equal(r.kind, 'reverse');
+  assert.equal(r.facingIntent, 'enemy');
+  assert.equal(r.reason, STANDOFF_REASONS.forcedReverse);
+});
+
+check('14. 不传 forceReverse 与传 false：同一组输入结果全等（防默认路径被顺带改掉）', () => {
+  const prevs = [null, 'approach', 'hold', 'reverse'];
+  const deadbands = [20, DB, 80];
+  let n = 0;
+  for (let ratio = 0.20; ratio <= 1.50 + 1e-9; ratio += 0.01) {
+    const d = ratio * I;
+    for (const prevKind of prevs) {
+      for (const deadband of deadbands) {
+        const base = { d, idealDist: I, deadband, prevKind };
+        assert.deepEqual(
+          resolveStandoffOrder({ ...base, forceReverse: false }),
+          resolveStandoffOrder(base),
+          `d/ideal=${ratio.toFixed(2)} prev=${prevKind} db=${deadband}：false 与不传必须全等`,
+        );
+        n += 1;
+      }
+    }
+  }
+  assert.ok(n > 1000, `样本数=${n}（应覆盖全比例段）`);
+});
+
+check('15. 非法入参优先于 forceReverse：deadband<=0 / d=NaN 不得被强制掩盖', () => {
+  const badDb = resolveStandoffOrder({
+    d: 1.00 * I, idealDist: I, deadband: 0, prevKind: null, forceReverse: true,
+  });
+  assert.equal(badDb.kind, 'hold');
+  assert.equal(badDb.reason, STANDOFF_REASONS.invalidDeadband);
+  const badD = resolveStandoffOrder({
+    d: NaN, idealDist: I, deadband: DB, prevKind: null, forceReverse: true,
+  });
+  assert.equal(badD.kind, 'hold');
+  assert.equal(badD.reason, STANDOFF_REASONS.invalidInput);
 });
 
 // ── 人可读迁移表（1.20i → 0.85i，步长 0.01i）────────────────────────────

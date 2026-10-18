@@ -67,6 +67,18 @@ export interface StandoffInput {
   deadband: number;
   /** 上一帧的三态（用于滞回；null = 首帧/无记忆） */
   prevKind: StandoffKind | null;
+  /**
+   * 强制本帧走 `reverse`（无视距离误差）。
+   *
+   * 用途只有一个：**放弃包抄后先把舰首拧回敌向**。包抄飞行段的舰首指向切向，
+   * 若此时直接落 `hold`，舰首会被冻在舷侧（本工程的 `formFacing ≡ facingSmooth`，
+   * 停住就没有任何写入点会把它转回来）⇒ 永久停火。
+   * 借倒车通道（位移背离、舰首钉敌）转一次头，再落 `hold`，不需要新增朝向绑定。
+   *
+   * ⚠ 非法 `deadband` / 非法输入**优先于**本开关（不得用它掩盖入参错误）。
+   * ⚠ 本开关不改变 `prevKind` 的滞回语义：置位期间恒为 `reverse`，撤销后按 `prevKind='reverse'` 走滞回退出。
+   */
+  forceReverse?: boolean;
 }
 
 export interface StandoffDecision {
@@ -84,6 +96,7 @@ export const STANDOFF_REASONS = {
   holdExitHysteresis: 'hold-exit-hysteresis',
   invalidDeadband: 'invalid-deadband',
   invalidInput: 'invalid-input',
+  forcedReverse: 'forced-reverse',
 } as const;
 
 /**
@@ -103,7 +116,14 @@ export const STANDOFF_REASONS = {
  *
  * 边界吸附：所有阈值比较都带一个 `1e-9 × 尺度` 的 ε。二进制浮点下
  * `0.95 · idealDist` 可能落在 `−deadband` 的外侧；ε 只把"数学上恰好等于
- * 边界"的那一层吸回带内，不改变任何非边界输入（契约：`|err| ≤ deadband ⇒ hold`）。
+ * 边界"的那一层吸回带内，不改变任何非边界输入。
+ *
+ * ⚠ 契约是**非对称滞回**，不是「`|err| ≤ deadband` 就恒 hold」：
+ *   · **进带**用半带（`|err| < deadband/2`）——从 approach / reverse 进来；
+ *   · **出带**用全带（`err > +deadband` 才回 approach，`err < −deadband` 才转 reverse）。
+ *   ⇒ 处于 `half ≤ |err| ≤ deadband` 时，**结果取决于 `prevKind`**：
+ *     从外面进来的保持原态，已经在带内的保持 hold。
+ *   这条不对称是有意的（进严出松防翻面），任何"简化成单阈值"的改动都会让边界逐帧抖。
  */
 export function resolveStandoffOrder(input: StandoffInput): StandoffDecision {
   const { d, idealDist, deadband, prevKind } = input;
@@ -121,6 +141,12 @@ export function resolveStandoffOrder(input: StandoffInput): StandoffDecision {
   // 显式拒绝而不是静默当 0（理由见模块头 §2）。
   if (!Number.isFinite(deadband) || deadband <= 0) {
     return hold(STANDOFF_REASONS.invalidDeadband);
+  }
+
+  // 强制倒车（用于"放弃包抄后先转头"）。位置有意放在非法入参之后：
+  //   入参错误必须显式暴露；而本开关一旦置位，应当压过距离误差。
+  if (input.forceReverse === true) {
+    return { kind: 'reverse', facingIntent: 'enemy', reason: STANDOFF_REASONS.forcedReverse };
   }
 
   // 运行时容错：非法 prevKind 一律当"无记忆"，不做任何推测。
