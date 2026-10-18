@@ -288,3 +288,36 @@ export function canCommitSiege(input: SiegeGateInput): boolean {
   const identified = Number.isFinite(input.identifiedCount) ? input.identifiedCount : 0;
   return input.forceRatio > 2.30 && identified >= need;
 }
+
+/** 阵营快照（调用方把"还有几支战斗舰队"数好传进来；本文件不碰 units）。 */
+export interface FactionLiveLike {
+  id: string;
+  /** `store.factions[].active` —— ⚠ **`active` ≠ 还有舰队**（见下） */
+  active: boolean;
+  /** 该阵营**仍有战斗单位**的舰队数（由调用方数好；本文件不判断"什么算战斗单位"） */
+  combatFleetCount: number;
+}
+
+/**
+ * 敌方**活阵营数** = `active === true` **且** `combatFleetCount > 0` 的阵营个数。
+ *
+ * 为什么要单独成一个纯函数：`canCommitSiege` 只看得到"传进来的数"，
+ *   看不到这个数是怎么数出来的。若调用侧写成 `factions.filter(f => f.active).length`，
+ *   **终盘僵尸阵营**（据点还在、军舰已打光，`active` 仍为 true）会被计入 ⇒ `need` 永久偏高
+ *   ⇒ **AI 永远不攻坚**，而纯函数断言照样全绿（它只验"给定 3 就按 3 算"）。
+ *   ⇒ 把"怎么数"也做成纯函数，这一层才有断言可依。
+ *
+ * ⚠ 这里**只**负责"僵尸不计"；`combatFleetCount` 由调用方数（数数是机械操作，属 B3 接线）。
+ * ⚠ 严格判 `active === true`：与 `reliable === true` 同约定 —— 缺字段/非布尔一律**不计**，
+ *   而不是"只要不是 false 就算真的"（后者在字段缺失时会虚增）。
+ * 空数组 ⇒ 0（`canCommitSiege` 会用 `Math.max(1, 0)` 兜底成"至少识别 1 支"）。
+ */
+export function countLiveEnemyFactions(input: { factions: readonly FactionLiveLike[] }): number {
+  let n = 0;
+  for (const f of input.factions) {
+    if (!f || f.active !== true) continue;
+    if (!(f.combatFleetCount > 0)) continue;   // 0 / 负数 / NaN 一律不计
+    n += 1;
+  }
+  return n;
+}
