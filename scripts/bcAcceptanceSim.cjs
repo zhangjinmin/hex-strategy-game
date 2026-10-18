@@ -174,7 +174,7 @@ const INTEL_ARCHIVE = load('frontend/src/game/battle/IntelSystem.js');
  *
  * 为什么不能用一个全局 IMPL：
  *   B+C 分 10 个 commit 落地。若 commit 1 建了 `intelFreshness.ts` 就翻全局开关，
- *   那么"IntelRecord 新字段"（commit 3）、"_searchDest 清理"（commit 6）等**尚未实现**的断言
+ *   那么"IntelRecord 新字段"（commit 3）、"siege 闸接线"（commit 10）等**尚未实现**的断言
  *   会立刻变成硬 FAIL ⇒ 提交后立刻一片红。
  *   ⇒ 而"提交后立刻一片红"正是"校验消耗信任"的入口：人会学会"刚提交时红是正常的"。
  * ⇒ 所以按特性分别 gate：只在该特性**声称已落地**之后才硬断言。
@@ -202,8 +202,6 @@ const SCENE_SRC = (() => {
   const p = path.join(SRC, 'game', 'scenes', 'BattleScene.ts');
   return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
 })();
-/** `_searchDest` 通道是否已接线（C1 落地标志） */
-const F_DEST = /_searchDest/.test(SCENE_SRC);
 /** `distanceOf` 注入口是否已存在（B2 落地标志） */
 const F_DISTOF = (() => {
   const p = path.join(SRC, 'game', 'TacticalCommandSystem.ts');
@@ -230,7 +228,7 @@ const F_MOVE_WIRED = !!INTENT && !INTENT.__missing
 // 旗标可视：PENDING 时说清"是哪个特性还没落地"，避免"为什么这条一直 PEND"的来回问
 process.stdout.write(
   `旗标 F_FRESH=${F_FRESH} F_SWEEP=${F_SWEEP} F_MOVE=${F_MOVE} F_MOVE_WIRED=${F_MOVE_WIRED} ` +
-  `F_FIELDS=${F_FIELDS} F_DEST=${F_DEST} F_DISTOF=${F_DISTOF}\n`,
+  `F_FIELDS=${F_FIELDS} F_DISTOF=${F_DISTOF}\n`,
 );
 // "函数已存在但未接线"是一个**必须可见**的中间态：否则 S6-04/05 会永久 PENDING 而没人注意
 if (F_MOVE && !F_MOVE_WIRED) {
@@ -758,20 +756,42 @@ check('S6-01 clearEnemies 逐字保留（0.1）', () => {
   );
 });
 
-checkGated(F_DEST, 'S6-02 resolveFleetIntent 调用点 knownEnemy: null（0.4）', () => {
-  assert.ok(/knownEnemy:\s*null/.test(sceneSrc), '未找到 `knownEnemy: null` —— 读真值的入口可能被填上');
-});
-
-checkGated(F_DEST, 'S6-03 三处 mission=null 均清理 _searchDest（0.6）', () => {
-  const lines = sceneSrc.split('\n');
-  const offenders = [];
-  lines.forEach((l, i) => {
-    if (!/\.mission\s*=\s*null/.test(l)) return;
-    // 同一行或紧邻 3 行内必须出现 _searchDest = null
-    const win = lines.slice(i, i + 4).join('\n');
-    if (!/_searchDest\s*=\s*null/.test(win)) offenders.push(i + 1);
-  });
-  assert.deepEqual(offenders, [], `这些 mission=null 未清理 _searchDest: 行 ${offenders.join(',')}`);
+// ── S6-03：任何"清任务"的位置都必须在**同一代码块**内同清 `_missionDest` ──────
+// 为什么这条是硬不变量（不是"最好也清一下"）：
+//   `executeMissionTick` 的唯一调用点是 `if (fleet.mission) …`（1Hz，:920），
+//   而其内部清理通道 `if (!m) { _missionDest = null; return; }`（:3574）——当 mission 已被置 null，
+//   下一 tick **连函数都进不去** ⇒ 该通道**不可达** ⇒ 残留是**永久**的，不是"1 拍自愈"。
+//   ⇒ 所以每一处清 `mission` 的地方都必须自带清理，不能指望下游兜底。
+//
+// 为什么不用"固定 N 行窗口"：`applyStanceToFleet` 的清理行距 `mission = null` 有 17 行（含大段注释），
+//   而注释会继续变长 ⇒ 任何固定行数窗口都会在某次改注释后误红。
+//   ⇒ 改用**代码块边界**：从赋值处向后扫描花括号深度，直到深度转负（当前块结束）。
+//   ⚠ 代价：这是文本级块识别（已先剥注释），若将来在同块内出现含花括号的字符串字面量，需改断言。
+check('S6-03 所有 `mission = null` 处必须在同一代码块内清 _missionDest', () => {
+  const src = sceneSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  const sites = [...src.matchAll(/\.mission\s*=\s*null/g)].map((m) => m.index);
+  // 报告用的行号必须取**原始源码**（剥注释后行号会漂移，`5545` 会报成 `5061`，看的人找不到地方）
+  const origSites = [...sceneSrc.matchAll(/\.mission\s*=\s*null/g)].map((m) => m.index);
+  assert.equal(sites.length, origSites.length, '剥注释前后 mission=null 的处数不一致（剥离逻辑有误）');
+  assert.ok(sites.length >= 2, `只找到 ${sites.length} 处 mission=null（预期 ≥2：clearMission + applyStance）`);
+  const bad = [];
+  for (let k = 0; k < sites.length; k += 1) {
+    const i = sites[k];
+    let depth = 0;
+    let j = i;
+    for (; j < src.length; j += 1) {
+      const c = src[j];
+      if (c === '{') depth += 1;
+      else if (c === '}') { depth -= 1; if (depth < 0) break; }
+    }
+    const block = src.slice(i, j + 1);
+    if (!/_missionDest\s*=\s*null/.test(block)) {
+      const oi = origSites[k];
+      const line = sceneSrc.slice(0, oi).split('\n').length;
+      bad.push(`行 ${line}: ${sceneSrc.slice(oi, oi + 40).split('\n')[0]}`);
+    }
+  }
+  assert.deepEqual(bad, [], `这些清任务处未同清 _missionDest：\n${bad.join('\n')}`);
 });
 
 checkGated(F_MOVE_WIRED, 'S6-04 attack_fleet 分支不得用 tgt.x/tgt.y 直赋 _missionDest（C-1）', () => {
