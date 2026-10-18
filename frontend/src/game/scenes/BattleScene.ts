@@ -148,8 +148,12 @@ import {
 import {
     assessContact, resolveContactMemory, resolveIntelDisplay,
     createIntelArchive, recordKnownContact, getKnownContact, invalidateKnownTrack,
-    isMaterialIntelChange, type IntelContactState,
+    isMaterialIntelChange, isKnownTrackReliable, type IntelContactState,
 } from '../battle/IntelSystem';
+// [B0/B1] 任务 → 目的地（纯函数）：三段解析在 FleetIntentSystem 里，本文件只做接线。
+import { resolveMissionMove } from '../battle/FleetIntentSystem';
+// 档案新鲜度分档（消费者侧口径；档案本身无 TTL）——用于给 resolveMissionMove 预算 tier。
+import { intelAgeTier } from '../battle/intelFreshness';
 
 
 // 贴图 key → Vite URL 映射表
@@ -3611,9 +3615,45 @@ export class BattleScene extends Phaser.Scene {
                 },
             });
             if (tgts.length === 0) { clearMission(); return; } // 目标（舰队/阵营）已歼灭 → 任务完成
-            const tgt = tgts[0];
-            if (!this.isStanceLocked(fleet)) fleet.stance = 'siege';   // [V18-B · B2] L2 写前检查 L1 锁
-            fleet._missionDest = { x: tgt.x, y: tgt.y };
+
+            // ── [B1] 目的地改读**情报档案**（不再用 `tgt.x/tgt.y` 的活坐标）──────────────
+            //   为什么必须改：`tgt` 是 `globalFleets` 里的**真值对象**，直接拿它写目的地
+            //   = "AI 永远知道你在哪"（去全知要拆的就是这一行）。档案是团队域、只记录
+            //   **我方确认过**的位置，且带 age（用于分档：fresh 压上 / stale 只朝方向摸）。
+            const teamKey = myTeamV64 ?? -1;
+            const nowMs = this.time.now;
+            // ① **可靠性只在调用方判一次**：`isKnownTrackReliable` 是唯一真源
+            //   （纯函数 `resolveMissionMove` 刻意不判 reliable，否则会出现第二套约定）。
+            const records = this.globalFleets
+                .filter((fl: any) => isKnownTrackReliable(this.intelArchive, teamKey, fl.id))
+                .map((fl: any) => {
+                    const rec = getKnownContact(this.intelArchive, teamKey, fl.id)!;
+                    const ageMs = nowMs - rec.t;
+                    // ② 年龄/档位在调用方算（纯函数无时钟、零 import）
+                    return {
+                        targetId: fl.id, factionId: fl.factionId, x: rec.x, y: rec.y,
+                        ageMs, tier: intelAgeTier(ageMs), power: rec.power,
+                    };
+                });
+            // 已知敌基地：仅作"没有舰队情报时朝基地推进"的兜底
+            let enemyBaseRec: { x: number; y: number } | null = null;
+            for (const br of this.intelArchive.records.values()) {
+                if (br.team === teamKey && br.kind === 'base' && br.reliable !== false) {
+                    enemyBaseRec = { x: br.x, y: br.y };
+                    break;
+                }
+            }
+            const move = resolveMissionMove({
+                mission: m, myPos: { x: fleet.x, y: fleet.y }, records, enemyBaseRec,
+            });
+            // ③ 按 reason 分流：`no-intel` 只清目的地，**不 clearMission**（任务还在，搜索由 C 切片接管）
+            if (move.kind === 'mission' && move.dest) {
+                if (!this.isStanceLocked(fleet)) fleet.stance = move.stance;   // fresh→siege / stale→search
+                fleet._missionDest = { x: move.dest.x, y: move.dest.y };
+            } else {
+                if (!this.isStanceLocked(fleet)) fleet.stance = 'search';
+                fleet._missionDest = null;
+            }
         } else if (m.type === 'capture_planet') {
             let dest: any = null;
             if (m.targetId) {
@@ -7632,8 +7672,19 @@ export class BattleScene extends Phaser.Scene {
                 } else if (fleet.stance === 'search' && fuzzyTargets.length > 0) {
                     // v6 新增：索敌中只有模糊可疑目标 → 主动接近查证（替代旧版"强制转驻守"，
                     //   旧逻辑导致双方在视野边缘互判模糊 → 双双驻守 → 永远打不起来）
+                    // [C-3] **模糊接触不得读真值坐标**：模糊档只承诺"它在这一带"，不承诺精确点。
+                    //   有档案 ⇒ 去档案末次位置（我方确认过的点）；
+                    //   无档案 ⇒ 只给**格级精度**（量化到 hexRadius×2 的格心）——
+                    //     量化误差本身就是"模糊"的一部分，和"直接读敌人实时坐标"是两回事。
                     const fz = fuzzyTargets[0];
-                    fleetTargetX = fz.ef.x; fleetTargetY = fz.ef.y;
+                    const fzRec = getKnownContact(this.intelArchive, myFac.team, fz.ef.id);
+                    if (fzRec) {
+                        fleetTargetX = fzRec.x; fleetTargetY = fzRec.y;
+                    } else {
+                        const cell = Math.max(1, this.hexRadius * 2);
+                        fleetTargetX = Math.round(fz.ef.x / cell) * cell;
+                        fleetTargetY = Math.round(fz.ef.y / cell) * cell;
+                    }
                 } else if (fleet.stance === 'defend') {
                     // 驻守模式：坚守当前阵地
                     fleetTargetX = fleet.x; fleetTargetY = fleet.y;
