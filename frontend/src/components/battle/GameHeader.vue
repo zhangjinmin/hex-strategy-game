@@ -114,16 +114,16 @@ const handleImgError = (e: Event) => {
 /* [v57] 三细条行：标签 + 条 + 数值，扫读式提高面板信息密度 */
 .stat-row { display: flex; align-items: center; gap: 4px; margin-bottom: 2px; }
 .stat-k { width: 22px; flex-shrink: 0; font-size: 9px; color: var(--color-text-secondary); font-weight: 800; letter-spacing: 1px; }
-.stat-v { width: 20px; flex-shrink: 0; text-align: right; font-size: 9px; color: var(--color-text-secondary); font-family: monospace; font-weight: 800; }
+.stat-v { width: 20px; flex-shrink: 0; text-align: right; font-size: 9px; color: var(--color-text-secondary); font-family: var(--font-family); font-weight: 800; }
 .hp-bar-container { flex: 1; min-width: 0; height: 3px; background: var(--color-border); border-radius: 2px; overflow: hidden; }
 .hp-bar-fill { height: 100%; transition: width 0.3s; }
 .bg-cyan { background: var(--color-cyan); }
 .bg-red { background: var(--color-empire); }
 .bg-gold { background: var(--color-warning, #f59e0b); }
 .bg-green { background: #22c55e; }
-.mini-gold { color: var(--color-text-secondary); font-size: 11px; font-family: monospace; font-weight: 800; }
+.mini-gold { color: var(--color-text-secondary); font-size: 11px; font-family: var(--font-family); font-weight: 800; }
 /* [W2.3] 编成摘要（较小，单行省略） */
-.mini-comp { color: var(--color-text-disabled); font-size: 9px; font-family: monospace; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mini-comp { color: var(--color-text-disabled); font-size: 9px; font-family: var(--font-family); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .text-cyan { color: var(--color-cyan); }
 /* [v58] .battle-dialog-overlay 立绘对话框样式已随模板删除（banter 改走旗舰浮动气泡） */
 

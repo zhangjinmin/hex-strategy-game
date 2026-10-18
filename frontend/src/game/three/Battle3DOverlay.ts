@@ -6378,7 +6378,7 @@ export class Battle3DOverlay {
     el.className = 'b3d-fps';
     el.style.cssText =
       'position:absolute;right:10px;bottom:8px;z-index:7;pointer-events:none;' +
-      'font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;font-weight:700;' +
+      'font-family:var(--font-family);font-size:12px;font-weight:700;' +
       'line-height:1;color:#22d3ee;text-shadow:0 1px 2px #000;background:rgba(10,16,28,.5);' +
       'padding:3px 6px;border-radius:4px';
     el.textContent = '-- FPS';
@@ -6422,14 +6422,16 @@ export class Battle3DOverlay {
     const supplyFill = document.createElement('div');
     spBar.appendChild(supplyFill);
     spBar.title = '补给';
-    bars.appendChild(spBar);
 
     const moraleBar = document.createElement('div');
     moraleBar.className = 'b3d-bb-bar';
     const moraleFill = document.createElement('div');
     moraleBar.appendChild(moraleFill);
     moraleBar.title = '士气';
+    // [v65] 条的**上下顺序**也按面板（舰况 → 士气 → 补给）：三条没有文字标签，顺序就是唯一的语义线索；
+    //   只改颜色不改顺序 ⇒ 第二行仍是"浮动框绿 / 面板金"，看起来还是没对应上。
     bars.appendChild(moraleBar);
+    bars.appendChild(spBar);
     root.appendChild(bars);
 
     // ── 三概念之「态势」：当前指令 / 战术角色 / 交战状态 / 损管 + 意图行（design §Fleet billboard）──
@@ -6678,27 +6680,32 @@ export class Battle3DOverlay {
       if (bb.nameEl.textContent !== label) {
         bb.nameEl.textContent = label;
       }
-      const teamColor = team === 1 ? '#4a9eff' : '#ff5544';
+      // [v65] 三条配色对齐左上角 GameHeader 面板（同一语义必须同色，用户实报"上下颜色不一样"）：
+      //   舰况 = 阵营色（面板 .bg-cyan/--color-cyan #3498db、.bg-red/--color-empire #e74c3c）
+      //   士气 = 面板 .bg-gold（--color-warning #f39c12）；<=40 低士气告警转红 #ef4444
+      //   补给 = 面板 .bg-green #22c55e；<=30 低补给告警同用红 #ef4444（与"低士气"同义：
+      //         橙红两色已被士气正常态占用，故两级告警统一红，避免"低补给=士气正常"的误读）
+      const teamColor = team === 1 ? '#3498db' : '#e74c3c';
       if (bb.nameEl.style.color !== teamColor) bb.nameEl.style.color = teamColor;
       if (bb.lastHpPct !== hpPct) {
         bb.lastHpPct = hpPct;
         if (bb.hpFill) {
           bb.hpFill.style.width = `${(hpPct * 100).toFixed(1)}%`;
-          bb.hpFill.style.background = team === 1 ? '#4a9eff' : '#ff5544';
+          bb.hpFill.style.background = teamColor;
         }
       }
       if (bb.lastSupply !== supply) {
         bb.lastSupply = supply;
         if (bb.supplyFill) {
           bb.supplyFill.style.width = `${Math.max(0, Math.min(100, supply)).toFixed(1)}%`;
-          bb.supplyFill.style.background = supply > 30 ? '#22c55e' : '#f59e0b';
+          bb.supplyFill.style.background = supply > 30 ? '#22c55e' : '#ef4444';
         }
       }
       if (bb.lastMorale !== morale) {
         bb.lastMorale = morale;
         if (bb.moraleFill) {
           bb.moraleFill.style.width = `${morale.toFixed(1)}%`;
-          bb.moraleFill.style.background = morale > 40 ? '#a78bfa' : '#f59e0b';
+          bb.moraleFill.style.background = morale > 40 ? '#f39c12' : '#ef4444';
         }
       }
       const stance = String(fleet.stance || '');

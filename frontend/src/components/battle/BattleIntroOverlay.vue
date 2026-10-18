@@ -369,7 +369,7 @@ onBeforeUnmount(() => {
 /* [W2.2] 教范阵型 + 编成明细 */
 .io-doctrine { margin-top: 4px; display: flex; flex-direction: column; align-items: center; gap: 1px; }
 .io-form { font-size: 11px; font-weight: 900; color: #22d3ee; letter-spacing: 1px; }
-.io-comp { font-size: 9px; color: #64748b; font-family: monospace; max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.io-comp { font-size: 9px; color: #64748b; font-family: var(--font-family); max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .io-vs { align-self: center; margin-top: 76px; font-size: 14px; font-weight: 900; color: #f59e0b; letter-spacing: 2px; }
 
 .io-speech {

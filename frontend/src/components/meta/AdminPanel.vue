@@ -775,7 +775,7 @@ const intelLevels = computed(() => {
   background: var(--neo-body);
   border-left: 1px solid var(--color-border);
   box-shadow: -8px 0 24px var(--color-shadow);
-  font-family: "Nunito", -apple-system, sans-serif;
+  font-family: var(--font-family);
 }
 .admin-panel.open { transform: translateX(0); }
 
@@ -861,7 +861,7 @@ const intelLevels = computed(() => {
 .treasury-value {
   font-size: 28px;
   font-weight: 900;
-  font-family: monospace;
+  font-family: var(--font-family);
   color: var(--color-warning);
   letter-spacing: 1px;
 }
@@ -887,7 +887,7 @@ const intelLevels = computed(() => {
 .cell-value {
   font-size: 14px;
   font-weight: 800;
-  font-family: monospace;
+  font-family: var(--font-family);
 }
 .text-green { color: var(--color-green); }
 .text-empire { color: var(--color-empire); }
@@ -931,7 +931,7 @@ const intelLevels = computed(() => {
 .tax-value {
   font-size: 16px;
   font-weight: 900;
-  font-family: monospace;
+  font-family: var(--font-family);
   color: var(--color-cyan);
   min-width: 40px;
   text-align: right;
@@ -957,7 +957,7 @@ const intelLevels = computed(() => {
   font-size: 13px;
   font-weight: 800;
   color: var(--color-warning);
-  font-family: monospace;
+  font-family: var(--font-family);
 }
 .maint-list {
   display: flex;
@@ -985,14 +985,14 @@ const intelLevels = computed(() => {
 }
 .maint-detail {
   color: var(--color-text-secondary);
-  font-family: monospace;
+  font-family: var(--font-family);
   font-size: 10px;
   flex: 1;
   text-align: center;
 }
 .maint-cost {
   color: var(--color-warning);
-  font-family: monospace;
+  font-family: var(--font-family);
   font-weight: 700;
   flex-shrink: 0;
 }
@@ -1020,7 +1020,7 @@ const intelLevels = computed(() => {
 .loyalty-num {
   font-size: 16px;
   font-weight: 900;
-  font-family: monospace;
+  font-family: var(--font-family);
   color: var(--color-text-primary);
   min-width: 40px;
   text-align: right;
@@ -1093,7 +1093,7 @@ const intelLevels = computed(() => {
 .loyalty-text {
   font-size: 12px;
   font-weight: 800;
-  font-family: monospace;
+  font-family: var(--font-family);
   color: var(--color-text-primary);
   min-width: 30px;
   text-align: right;
@@ -1175,7 +1175,7 @@ const intelLevels = computed(() => {
 .tech-level {
   font-size: 12px;
   font-weight: 900;
-  font-family: monospace;
+  font-family: var(--font-family);
   color: var(--color-cyan);
 }
 .tech-tier-name {
@@ -1206,7 +1206,7 @@ const intelLevels = computed(() => {
 }
 .tech-progress-num {
   font-size: 10px;
-  font-family: monospace;
+  font-family: var(--font-family);
   color: var(--color-text-secondary);
   min-width: 30px;
   text-align: right;
@@ -1318,7 +1318,7 @@ const intelLevels = computed(() => {
 .empty-hint {
   font-size: 11px;
   color: var(--color-text-disabled);
-  font-family: monospace;
+  font-family: var(--font-family);
   text-align: center;
   padding: 16px 0;
   text-transform: uppercase;
@@ -1359,7 +1359,7 @@ const intelLevels = computed(() => {
   font-size: 11px;
   font-weight: 700;
   color: var(--color-warning);
-  font-family: monospace;
+  font-family: var(--font-family);
 }
 .action-effect {
   font-size: 10px;
@@ -1406,7 +1406,7 @@ const intelLevels = computed(() => {
 .rel-value, .intel-level-text {
   font-size: 11px;
   font-weight: 800;
-  font-family: monospace;
+  font-family: var(--font-family);
   min-width: 35px;
   text-align: right;
 }
@@ -1427,12 +1427,12 @@ const intelLevels = computed(() => {
 .treaty-icon, .revealed-icon { font-size: 14px; }
 .treaty-type { font-weight: 800; color: var(--color-text-primary); }
 .treaty-target { color: var(--color-text-secondary); flex: 1; }
-.treaty-expiry { color: var(--color-text-disabled); font-family: monospace; font-size: 10px; }
+.treaty-expiry { color: var(--color-text-disabled); font-family: var(--font-family); font-size: 10px; }
 .revealed-text { color: var(--color-text-secondary); }
 .intel-hint {
   font-size: 9px;
   color: var(--color-text-disabled);
-  font-family: monospace;
+  font-family: var(--font-family);
   line-height: 1.4;
   padding-top: 4px;
 }

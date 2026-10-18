@@ -41,9 +41,14 @@
   --dmc-danger: #e74c3c;
   --dmc-info: #3498db;
 
-  /* 字体 */
-  --dmc-font: 'Inter', 'Noto Sans SC', system-ui, -apple-system, sans-serif;
-  --dmc-font-mono: 'JetBrains Mono', 'Cascadia Code', monospace;
+  /* 字体：[v65] 内嵌乐米像素体为全局首选（@font-face 在 App.vue）；Inter 已移除联网 @import，
+     仅作拉丁后备。'Microsoft YaHei' 显式排在通用 sans-serif 之前 —— 缺字回落时锁定雅黑，
+     避免不同环境下 generic 族解析到宋体点阵（同段文字里出现两种汉字字形）。
+     --dmc-font-mono 保留是为了让"数值等宽"语义的调用点无需逐个改选择器；实测乐米像素体
+     **不是**等宽字体（1=454/1000 em，8=586/1000 em），但本项目所有数值位都用定宽盒 + 右/居中对齐，
+     不依赖字形等宽，故统一为像素体不破坏对齐（见交付报告）。 */
+  --dmc-font: 'LeMiPixel', 'Inter', 'Noto Sans SC', system-ui, -apple-system, 'Microsoft YaHei', sans-serif;
+  --dmc-font-mono: 'LeMiPixel', 'JetBrains Mono', 'Cascadia Code', 'Microsoft YaHei', monospace;
 
   /* 间距（4px基准） */
   --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px;

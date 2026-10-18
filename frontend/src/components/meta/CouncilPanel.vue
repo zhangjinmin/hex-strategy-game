@@ -306,7 +306,7 @@ const closePanel = () => {
   background: var(--neo-body);
   border-left: 1px solid var(--color-border);
   box-shadow: -8px 0 24px var(--color-shadow);
-  font-family: "Nunito", -apple-system, sans-serif;
+  font-family: var(--font-family);
 }
 .council-panel.open {
   transform: translateX(0);
@@ -336,7 +336,7 @@ const closePanel = () => {
 
 .header-date {
   font-size: 11px;
-  font-family: monospace;
+  font-family: var(--font-family);
   color: var(--color-text-disabled);
   flex: 1;
   text-align: center;
@@ -396,7 +396,7 @@ const closePanel = () => {
 
 .section-meta {
   font-size: 11px;
-  font-family: monospace;
+  font-family: var(--font-family);
   color: var(--color-text-secondary);
 }
 
@@ -453,7 +453,7 @@ const closePanel = () => {
 }
 
 .vote-label { color: var(--color-text-secondary); }
-.vote-value { color: var(--color-green); font-family: monospace; }
+.vote-value { color: var(--color-green); font-family: var(--font-family); }
 
 .vote-bar {
   width: 100%;
@@ -525,7 +525,7 @@ const closePanel = () => {
 
 .member-rank {
   color: var(--color-text-disabled);
-  font-family: monospace;
+  font-family: var(--font-family);
   font-size: 10px;
 }
 
@@ -568,7 +568,7 @@ const closePanel = () => {
 
 .proposal-tag {
   font-size: 9px;
-  font-family: monospace;
+  font-family: var(--font-family);
   color: var(--color-text-disabled);
   padding: 2px 8px;
   background: var(--color-background-muted);
@@ -661,7 +661,7 @@ const closePanel = () => {
 
 .vote-weight {
   color: var(--color-text-disabled);
-  font-family: monospace;
+  font-family: var(--font-family);
   font-size: 10px;
   flex-shrink: 0;
   width: 34px;
@@ -709,7 +709,7 @@ const closePanel = () => {
 
 .history-date {
   color: var(--color-text-disabled);
-  font-family: monospace;
+  font-family: var(--font-family);
   font-size: 10px;
   flex-shrink: 0;
 }
@@ -718,7 +718,7 @@ const closePanel = () => {
 .empty-state {
   color: var(--color-text-disabled);
   font-size: 11px;
-  font-family: monospace;
+  font-family: var(--font-family);
   text-align: center;
   padding: 12px 0;
   text-transform: uppercase;

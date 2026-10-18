@@ -1386,7 +1386,7 @@ export class ThreeStrategicMap {
       // ===== CSS2D 标签 =====
       const label = document.createElement('div');
       label.textContent = n.name;
-      label.style.cssText = `color:rgba(${pal.glow},0.95);font-size:${isCapital ? '13px' : '11px'};font-weight:bold;font-family:'Courier New',monospace;text-shadow:0 0 6px rgba(${pal.glow},0.5);white-space:nowrap;pointer-events:none;`;
+      label.style.cssText = `color:rgba(${pal.glow},0.95);font-size:${isCapital ? '13px' : '11px'};font-weight:bold;font-family:var(--font-family);text-shadow:0 0 6px rgba(${pal.glow},0.5);white-space:nowrap;pointer-events:none;`;
       const labelObj = new CSS2DObject(label);
       labelObj.position.set(0, radius + 1.1, 0);
       g.add(labelObj);
@@ -1787,7 +1787,7 @@ export class ThreeStrategicMap {
         this.fleetGroup.add(ring);
         // ETA 标签
         const etaEl = document.createElement('div');
-        etaEl.style.cssText = 'font-size:11px;font-weight:bold;font-family:"Courier New",monospace;color:#66ffcc;text-shadow:0 0 6px rgba(102,255,204,0.8);white-space:nowrap;pointer-events:none;text-align:center;';
+        etaEl.style.cssText = 'font-size:11px;font-weight:bold;font-family:var(--font-family);color:#66ffcc;text-shadow:0 0 6px rgba(102,255,204,0.8);white-space:nowrap;pointer-events:none;text-align:center;';
         const etaObj = new CSS2DObject(etaEl);
         this.scene.add(etaObj);
         entry = { mesh, ring, ringMat, etaEl, etaObj };

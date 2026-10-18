@@ -673,7 +673,7 @@ const phaseLabel = computed(() => {
 .hb-player-detail { display: flex; flex-direction: column; line-height: 1.15; flex: 1; min-width: 0; }
 .hb-rank { font-size: 10px; font-weight: 800; }
 .hb-name { font-size: 13px; font-weight: 900; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.hb-gold { font-size: 12px; font-weight: 900; font-family: monospace; white-space: nowrap; }
+.hb-gold { font-size: 12px; font-weight: 900; font-family: var(--font-family); white-space: nowrap; }
 .hb-time-row { display: flex; align-items: center; gap: 6px; }
 .hb-speed { display: flex; gap: 2px; flex: 1; }
 
@@ -786,7 +786,7 @@ const phaseLabel = computed(() => {
   white-space: nowrap; font-size: 12px;
 }
 .ut-k { color: var(--color-text-disabled); font-size: 11px; font-weight: 600; }
-.ut-v { font-weight: 800; color: var(--color-text-primary); font-size: 12px; font-family: monospace; }
+.ut-v { font-weight: 800; color: var(--color-text-primary); font-size: 12px; font-family: var(--font-family); }
 .nav-bar.faction-empire .holo-nav-group { border-color: rgba(248,113,113,0.3); }
 .nav-bar.faction-empire .holo-nav-group::before {
   content: ''; position: absolute; left: 10px; right: 0; top: 0; height: 2px;
@@ -837,7 +837,7 @@ const phaseLabel = computed(() => {
 .strategic-minimap .mm-corner {
   position: absolute; width: 16px; height: 16px; line-height: 16px; text-align: center;
   font-size: 11px; color: rgba(45,212,191,0.9); cursor: pointer; z-index: 21;
-  font-family: monospace; user-select: none; border-radius: 2px;
+  font-family: var(--font-family); user-select: none; border-radius: 2px;
 }
 .strategic-minimap .mm-corner:hover { background: rgba(45,212,191,0.2); }
 .strategic-minimap .mm-corner.tl { top: 2px; left: 2px; }

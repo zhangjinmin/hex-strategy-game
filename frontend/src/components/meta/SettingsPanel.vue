@@ -367,7 +367,7 @@ function onTrackSelect(e: Event) {
 
 /* 配色预览（下拉框下方色块预览） */
 .scheme-preview { display: flex; align-items: center; gap: 8px; padding: 4px 2px; flex-wrap: wrap; }
-.scheme-preview-label { font-size: 11px; color: var(--color-text-disabled); font-family: monospace; }
+.scheme-preview-label { font-size: 11px; color: var(--color-text-disabled); font-family: var(--font-family); }
 .swatch { width: 16px; height: 16px; border-radius: 3px; display: inline-block; box-shadow: 0 0 6px rgba(0,0,0,0.4); }
 .swatch.ally { border: 1px solid rgba(255,255,255,0.3); }
 .swatch.empire { border: 1px solid rgba(255,255,255,0.3); }

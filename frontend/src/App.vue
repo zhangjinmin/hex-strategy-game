@@ -547,9 +547,22 @@ watch(gameState, (newState, oldState) => {
 </script>
 
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
+/* [v65] 内嵌像素字体（乐米像素体 / LemiXiangSuTi，2.4MB TTF，随包打进 assets，不依赖系统安装）。
+   · 只用单一字面（w400），font-weight 700/800/900 由浏览器合成加粗 —— 实测 9~30px 下观感可接受。
+   · 刻意**不**写 `font-weight: 100 900`：那会让 400 字面同时匹配 900，加粗失效、标题层级全平。
+   · font-display:block：字体来自本地资产（几十 ms），宁可短暂不可见也不要先闪一帧雅黑再跳字形。
+   · 缺字（◆ ★ ％ 等符号、约 369 个生僻汉字）自动回落到链尾的系统字体，不会出现豆腐块。
+   · 字体族名与 @font-face 里声明的 'LeMiPixel' 对齐；tokens.css 的 --dmc-font/--dmc-font-mono 已把它排在最前。 */
+@font-face {
+  font-family: 'LeMiPixel';
+  src: url('./assets/fonts/lemi-pixel.ttf') format('truetype');
+  font-style: normal;
+  font-display: block;
+}
 
-*, *::before, *::after { box-sizing: border-box; font-family: 'Inter', sans-serif; }
+/* 全局兜底字体：原为 'Inter', sans-serif（Inter 靠 Google Fonts 联网加载、且无 CJK 字形 ⇒
+   正文实际混了"Inter 拉丁 + 系统汉字"两套字体）。统一走 --font-family（首选项即 LeMiPixel）。 */
+*, *::before, *::after { box-sizing: border-box; font-family: var(--font-family); }
 
 html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
 
@@ -595,7 +608,7 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
 .game-logo { font-size: 16px; font-weight: 800; color: var(--color-text-primary); white-space: nowrap; }
 .version-tag { font-size: 10px; background: rgba(0,0,0,0.3); padding: 3px 6px; border-radius: 99px; margin-left: 6px; color: var(--color-text-secondary); }
 
-.btn-toggle-sidebar { background: transparent; border: none; color: var(--color-text-secondary); cursor: pointer; transition: color 0.2s; font-family: monospace; }
+.btn-toggle-sidebar { background: transparent; border: none; color: var(--color-text-secondary); cursor: pointer; transition: color 0.2s; font-family: var(--font-family); }
 .btn-toggle-sidebar:hover { color: var(--color-text-primary); }
 
 .menu-nav { display: flex; flex-direction: column; gap: 12px; margin-top: 10px; }
@@ -654,9 +667,9 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
 .deck-slots { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
 .slot-item { aspect-ratio: 1/1; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s; border: 1px solid transparent; border-radius: 8px; }
 .slot-item:hover { border-color: var(--color-empire); color: var(--color-empire); }
-.slot-shape { font-size: 16px; margin-bottom: 4px; font-family: monospace; font-weight: bold; padding: 3px 6px; background: var(--overlay-hover); border-radius: 4px; }
+.slot-shape { font-size: 16px; margin-bottom: 4px; font-family: var(--font-family); font-weight: bold; padding: 3px 6px; background: var(--overlay-hover); border-radius: 4px; }
 .slot-name { font-size: 10px; font-weight: 800; text-align: center; line-height: 1.2;}
-.empty-slot { font-size: 24px; color: var(--color-border-emphasized); font-family: monospace; }
+.empty-slot { font-size: 24px; color: var(--color-border-emphasized); font-family: var(--font-family); }
 
 .synergy-list { display: flex; flex-wrap: wrap; gap: 6px; overflow-y: auto; }
 .synergy-item { background: var(--neo-surface); padding: 4px 8px; border-radius: 4px; border: 1px solid var(--neo-surface-raised); display: inline-flex; align-items: baseline; gap: 6px; width: auto; flex: 1 1 calc(50% - 6px); }
@@ -674,7 +687,7 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
 .q-1 { background: var(--color-text-secondary); } .q-2 { background: var(--color-green); } .q-3 { background: var(--color-alliance); } .q-4 { background: var(--color-purple); } .q-5 { background: var(--color-warning); }
 
 .troop-header { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
-.neo-icon-inset { width: 36px; height: 36px; box-shadow: inset 3px 3px 6px var(--neo-surface-inset), inset -3px -3px 6px var(--neo-surface-inset); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 14px; color: var(--color-text-primary); flex-shrink:0; font-family: monospace; font-weight: bold; }
+.neo-icon-inset { width: 36px; height: 36px; box-shadow: inset 3px 3px 6px var(--neo-surface-inset), inset -3px -3px 6px var(--neo-surface-inset); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 14px; color: var(--color-text-primary); flex-shrink:0; font-family: var(--font-family); font-weight: bold; }
 .level-tag { background: var(--neo-surface); padding: 2px 6px; border-radius: 4px; font-size: 10px; color: var(--color-text-secondary); margin-left: 6px; }
 .tags-row { font-size: 11px; color: var(--color-text-disabled); margin-top: 4px; }
 .btn-equip { padding: 6px 12px; font-size: 11px; }
@@ -726,7 +739,7 @@ body.battle3d-mode .fleet-ui-layer { display: none; }
 }
 .legend-title { font-size: 12px; font-weight: 800; color: var(--color-text-primary); border-bottom: 1px solid var(--overlay-border); padding-bottom: 6px; margin-bottom: 4px; }
 .legend-item { font-size: 11px; color: var(--color-text-secondary); display: flex; align-items: center; gap: 8px; }
-.legend-item .icon { font-family: monospace; font-size: 14px; font-weight: bold; width: 16px; text-align: center; }
+.legend-item .icon { font-family: var(--font-family); font-size: 14px; font-weight: bold; width: 16px; text-align: center; }
 
 /* [v36c] 空域地形图例（战场左下角）。独立命名，避免与战略地图的 .map-legend 耦合 */
 .terrain-legend {

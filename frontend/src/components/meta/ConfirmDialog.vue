@@ -160,7 +160,7 @@ const formatNum = (n: number): string => {
 .cost-value {
   font-size: 20px;
   font-weight: 900;
-  font-family: monospace;
+  font-family: var(--font-family);
   color: var(--color-warning);
 }
 

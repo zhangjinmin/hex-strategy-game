@@ -455,7 +455,7 @@ const formatTime = (ts: number) => {
 
 /* ===== 提督表格（与 AdmiralSelectModal 一致）===== */
 .table-wrapper { flex: 1; overflow: auto; border-radius: 8px; border: 1px solid var(--overlay-hover); min-height: 0; }
-.admiral-table { width: 100%; border-collapse: collapse; font-size: 11px; font-family: 'Segoe UI', sans-serif; }
+.admiral-table { width: 100%; border-collapse: collapse; font-size: 11px; font-family: var(--font-family); }
 .admiral-table thead { position: sticky; top: 0; z-index: 10; background: var(--neo-surface); }
 .admiral-table th {
   padding: 8px 5px; font-weight: 800; color: var(--color-text-secondary);
@@ -476,7 +476,7 @@ const formatTime = (ts: number) => {
 .col-name { min-width: 70px; font-weight: 800; }
 .col-rank { min-width: 56px; }
 .col-flagship { min-width: 72px; font-size: 10px; }
-.num-col { text-align: center; font-family: 'Courier New', monospace; font-weight: 700; width: 38px; }
+.num-col { text-align: center; font-family: var(--font-family); font-weight: 700; width: 38px; }
 .col-total { width: 46px; }
 
 .row-portrait { width: 32px; height: 40px; object-fit: cover; border-radius: 4px; border: 1px solid var(--color-border); vertical-align: middle; }
@@ -519,8 +519,8 @@ const formatTime = (ts: number) => {
 .slot-meta { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .slot-admiral { font-size: 11px; color: var(--color-cyan); font-weight: 700; }
 .slot-admiral.text-red { color: var(--color-empire); }
-.slot-date { font-size: 11px; color: var(--color-warning); font-weight: 700; font-family: monospace; }
-.slot-time { font-size: 11px; font-family: monospace; font-weight: 600; color: var(--color-text-disabled); }
+.slot-date { font-size: 11px; color: var(--color-warning); font-weight: 700; font-family: var(--font-family); }
+.slot-time { font-size: 11px; font-family: var(--font-family); font-weight: 600; color: var(--color-text-disabled); }
 .slot-arrow { font-size: 17px; color: var(--color-cyan); flex-shrink: 0; }
 .autosave-tag { font-size: 10px; padding: 2px 7px; border-radius: 99px; background: var(--color-warning)22; color: var(--color-warning); font-weight: 800; border: 1px solid rgba(251,191,36,0.3); }
 .slot-actions-manage { display: flex; gap: 8px; flex-shrink: 0; }

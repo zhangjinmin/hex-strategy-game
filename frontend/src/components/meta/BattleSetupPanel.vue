@@ -526,13 +526,13 @@ const launchBattle = () => {
 .adm-slot-name { font-size: 13px; font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .slot-rank { font-size: 10px; color: var(--color-text-disabled); white-space: nowrap; flex-shrink: 0; }
 .slot-stats { display: flex; flex-wrap: wrap; gap: 2px 6px; }
-.slot-stats span { font-size: 10px; font-family: monospace; font-weight: 700; color: var(--color-text-secondary); white-space: nowrap; }
+.slot-stats span { font-size: 10px; font-family: var(--font-family); font-weight: 700; color: var(--color-text-secondary); white-space: nowrap; }
 .slot-bottom { display: flex; align-items: center; gap: 4px; flex-wrap: nowrap; }
 .slot-ships { font-size: 10px; color: var(--color-warning); font-weight: 800; white-space: nowrap; }
 /* [W2.2] 教范阵型 + 编成明细（P2 成果可见） */
 .slot-doctrine { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
 .doctrine-form { font-size: 10px; font-weight: 800; color: #22d3ee; white-space: nowrap; }
-.doctrine-comp { font-size: 9px; color: var(--color-text-secondary); font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.doctrine-comp { font-size: 9px; color: var(--color-text-secondary); font-family: var(--font-family); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .empty-mark { color: var(--color-border-emphasized); font-weight: 800; font-size: clamp(12px, 1.6vh, 14px); margin: auto; }
 .slot-remove { position: absolute; top: 2px; right: 4px; color: var(--color-empire); font-weight: 800; font-size: 16px; display: none; }
 .dispatch-slot:hover .slot-remove { display: block; }
@@ -573,7 +573,7 @@ const launchBattle = () => {
 .roster-row .cell-portrait { text-align: left; }
 .cell-name { font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 8px; }
 .cell-rank { font-size: 12px; color: var(--color-text-secondary); }
-.cell-stat { font-family: monospace; font-weight: 800; }
+.cell-stat { font-family: var(--font-family); font-weight: 800; }
 .trait-cell { display: flex; flex-wrap: nowrap; gap: 3px; align-items: center; justify-content: center; overflow: hidden; }
 .trait-tag { display: inline-block; padding: 0 4px; font-size: 9px; color: #a78bfa; background: rgba(139,92,246,0.12); border-radius: 2px; white-space: nowrap; }
 .trait-more { font-size: 8px; color: var(--color-text-disabled); }

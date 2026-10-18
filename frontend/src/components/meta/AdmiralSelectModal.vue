@@ -309,7 +309,7 @@ const confirmSelect = () => {
 .col-name { min-width: 75px; font-weight: 800; }
 .col-rank { min-width: 52px; }
 .col-flagship { min-width: 72px; font-size: 11px; }
-.num-col { text-align: center; font-family: 'Courier New', monospace; font-weight: 700; width: 30px; font-size: 11px; }
+.num-col { text-align: center; font-family: var(--font-family); font-weight: 700; width: 30px; font-size: 11px; }
 .col-traits { min-width: 80px; }
 .col-total { width: 42px; }
 
