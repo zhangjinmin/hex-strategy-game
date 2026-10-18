@@ -513,6 +513,7 @@ if (INTENT.__missing || typeof INTENT.computeForceRatio !== 'function') {
     'S4-15 样本全无效（cold/null）⇒ 仍为 1',
     'S4-16 stale 权重必须是 0.7（不是 1）',
     'S4-17 clamp 两端都生效（上限 6 / 下限 0.15）',
+    'S4-21 敌均战力 = 0 ⇒ 1（不是 6）',
   ]) pending(n, '导出缺失: computeForceRatio');
 } else {
   check('S4-06 空档案 ⇒ forceRatio = 1（不是 999）', () => {
@@ -551,6 +552,14 @@ if (INTENT.__missing || typeof INTENT.computeForceRatio !== 'function') {
       ],
     });
     assert.equal(v, 1, `实际 ${v}`);
+  });
+  // ── S4-21：敌方均战力为 0 的退化 ⇒ 均势 1（不是 6）──────────────────────
+  // 实现里有一支 `if (!(meanEnemy > 0)) return 1;`：
+  //   若不判，`myPower / 0 === Infinity` 会被 clamp 成 **6** ⇒ 又回到"我无敌"（与 999 同族）。
+  //   ⇒ 这条断言是它唯一的存在理由；删掉那支守卫必红。
+  check('S4-21 敌均战力 = 0 ⇒ 1（不是 Infinity 被 clamp 成 6）', () => {
+    const v = INTENT.computeForceRatio({ myPower: 500, records: [{ targetId: 1, power: 0, tier: 'fresh' }] });
+    assert.equal(v, 1, `期望 1；实际 ${v}（6 说明除以 0 后被 clamp，而不是走均势分支）`);
   });
   // ── S4-16：`stale` 的权重必须是 0.7（这条是"变异测试"逼出来的）───────────
   // 单靠 fresh/null 样本，把 `w = tier==='fresh' ? 1 : 0.7` 改成 `? 1 : 1` 也不会红 ——
