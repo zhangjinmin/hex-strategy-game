@@ -2986,6 +2986,8 @@ export class BattleScene extends Phaser.Scene {
                         //   `tgt` 可能已不在场（报告跨帧）⇒ 一律 null（未知 ≠ 0）。
                         factionId: tgt ? tgt.factionId : null,
                         power: tgt ? this.calculateFleetPower(tgt) : null,
+                        // `typeof === 'number'` 防的是**未初始化**（`vx/vy` 在移动积分前才惰性赋值），
+                        // 不是防 NaN：`undefined` ⇒ null（没算过/不知道）；`0` ⇒ 真的是静止。
                         vx: typeof tgt?.vx === 'number' ? tgt.vx : null,
                         vy: typeof tgt?.vy === 'number' ? tgt.vy : null,
                     });
@@ -3009,6 +3011,10 @@ export class BattleScene extends Phaser.Scene {
                             //   power/vx/vy 会在"首次接触后"被这条刷新抹成 null。
                             factionId: trackedFleet.factionId,
                             power: this.calculateFleetPower(trackedFleet),
+                            // `typeof === 'number'` 防的不是 NaN，而是**未初始化**：
+                            // `vx/vy` 在移动积分前才惰性赋值（见 :7982 的 `if (typeof fleet.vx !== 'number')`）
+                            // ⇒ `undefined` = 还没算过 ⇒ 传 null（不知道）；
+                            //   只有真的算出来且为 0 才写 0（静止）。两者对拦截点含义相反。
                             vx: typeof trackedFleet.vx === 'number' ? trackedFleet.vx : null,
                             vy: typeof trackedFleet.vy === 'number' ? trackedFleet.vy : null,
                         });
