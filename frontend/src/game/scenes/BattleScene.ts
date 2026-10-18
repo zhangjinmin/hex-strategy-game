@@ -3528,6 +3528,22 @@ export class BattleScene extends Phaser.Scene {
     private executeMissionTick(fleet: any, fac: any) {
         const m = fleet.mission as Mission | null;
         if (!m) { fleet._missionDest = null; return; }
+        // [FIX-⑪] **活跃直接指令期间挂起任务解算**（mission 保留，不销毁）。
+        //
+        //   病灶：`commitDirectOrder` 只写 `directOrder`，不清 `mission`；而本函数仍以 1Hz 运行，
+        //   `attack_fleet` / `capture_planet` 分支**每秒把 stance 写回 'siege'**（只受 12s 姿态锁约束），
+        //   同时持续把 `_missionDest` 钉在旧任务点上
+        //   ⇒ 玩家右键下直接指令后，舰队的姿态/目的地仍被旧任务持续改写
+        //     （用户实报"我右键了，但它好像还在按原来的想法走"）。
+        //
+        //   为什么在这里拦而不是在 commitDirectOrder 里清 mission：
+        //   权威链 `resolveAuthority` 本就把 direct 排在 mission 之前（运动/火控已由 direct_order 独占），
+        //   缺的只是这条**旁路写入**；清掉 mission 会让"玩家改主意后回不到原任务"。
+        //   现在 mission 对象原样保留：directOrder 被清除（溃散 / 换令 / 将来"到位即完成"）后，
+        //   下一次 1Hz tick 自动恢复解算。
+        //   ⚠ `_missionDest = null`：挂起期间不得保留旧任务点的目的地牵引（含看门狗的
+        //     objective_pressure / 快照显示），恢复时本函数会立即重新写入。
+        if ((fleet as any).directOrder) { fleet._missionDest = null; return; }
         const clearMission = () => { fleet.mission = null; fac.mission = null; fleet._missionDest = null; };
         const dist = (x: number, y: number) => Phaser.Math.Distance.Between(fleet.x, fleet.y, x, y);
 
@@ -5450,12 +5466,20 @@ export class BattleScene extends Phaser.Scene {
         //   撤退(fallback)恒用圆阵（全向防御，与战略层口径一致）；其余姿态用教范偏好；
         //   **提督无标签时回退原硬编码表**（零回归）。
         const doc = this.fleetDoctrine(fleet);
+        const _prevFormation = fleet.formation;
         if (doc) fleet.formation = payload === 'fallback' ? 'circle' : doc.formation;
         else if (payload === 'search') fleet.formation = 'spindle';
         else if (payload === 'siege') fleet.formation = 'wedge';
         else if (payload === 'defend') fleet.formation = 'circle';
         else if (payload === 'fallback') fleet.formation = 'line';
         else if (payload === 'stealth') fleet.formation = 'spindle';
+
+        // [FIX-⑨] 玩家（或 AI 姿态指令）变阵后**必须撤销交战阵型承诺**。
+        //   病灶：本函数只写 `fleet.formation`，不动 `_combatFormation`；而同一目标任务仍在交火时
+        //   `aiDirector.stabilizeCombatFormation` 返回 `previous.formation`（:359-360 的 held 分支）
+        //   ⇒ 下一帧把刚下的阵型改回去 ⇒ HUD 提示"变阵"但实际没变。
+        //   正解：清空承诺 ⇒ 下一帧 `opening = true` ⇒ 以 `existingFormation`（= 本次新阵型）重建承诺。
+        if (fleet.formation !== _prevFormation) (fleet as any)._combatFormation = null;
 
         const stanceNames: Record<string, string> = {
             search: '索敌-纺锤阵', siege: '攻坚-雁行阵', fallback: '撤退-线型阵',
@@ -6788,8 +6812,17 @@ export class BattleScene extends Phaser.Scene {
                 if (stallOut.directive !== 'none' && !w1DOrder
                     && !(w1PlayerFleet && stallOut.directive === 'withdrawal')) {
                     if (stallOut.directive === 'advance') {
-                        // 推进：向最近敌的临时运动目标（_stall.override；有进展即撤下）
-                        if (closestEnemyFleet) st.override = { x: closestEnemyFleet.x, y: closestEnemyFleet.y };
+                        // [FIX-②] **看门狗不得越权改写交战站位**。
+                        //   原实现：12s 无进展（位移<40 且 距离未拉近 25 且 目标无进展 且 未开火）
+                        //   ⇒ chooseStallAction 返回 advance ⇒ 目标直接改成敌军坐标 ⇒ 冲够 40px 撤销
+                        //   ⇒ 形成「两军站定 → 12s 后突然直冲 → 退回 → 再 12s 再冲」的周期性抽搐，
+                        //     与战术/兵力/阵型完全无关（用户问"这种突击是什么"——答案是死锁自愈补丁）。
+                        //   现在：只有在**没有交战目标**时才允许 advance；有交战目标时只保留
+                        //   objective_pressure（任务点施压）/ withdrawal（撤退）两条不碰交战站位的通路。
+                        //   ⚠ 注意 `canAdvance` 入参本身已要求存在交战目标 ⇒ advance 只可能在
+                        //     "有交战目标"时出现 ⇒ 本分支**不再产出任何临时目标**（保留分支与
+                        //     directive 记账，以便下方窗口重置逻辑与将来引入非交战目标坐标时复用）。
+                        //   若确认长期不需要，可整支删除；此处保留是为了不改变 stalledSec 的重置时机。
                     } else if (stallOut.directive === 'objective_pressure') {
                         // 目标施压：向任务目的地
                         if (fleet._missionDest) st.override = { x: fleet._missionDest.x, y: fleet._missionDest.y };
@@ -7331,7 +7364,11 @@ export class BattleScene extends Phaser.Scene {
                         // [v32] 例外：被战法指定侧翼时不适用——**战法优先于提督属性**
                         // [P2·提前量] 同 siege 直冲：追汇合点而非追尾。
                         fleetTargetX = _lead.x; fleetTargetY = _lead.y;
-                        fleet.formation = 'wedge';
+                        // [FIX-④] 此处原有 `fleet.formation = 'wedge'` 是**死写**：同帧更晚的
+                        //   `fleet.formation = formationCommit.formation`（本段末尾 `stabilizeCombatFormation` 之后）无条件覆盖它
+                        //   ⇒ 从未生效，只会让读者误以为"低统帅会强制楔形"。
+                        //   已删除（零行为变更）。若将来真要表达"低统帅偏好楔形"，
+                        //   必须并入下方 chooseFormation 的 candidate 入参，而不是在这里旁路赋值。
                     } else if (_mPhase === 2) {
                         // 极近距离：脱离缠斗，拉开到理想距离
                         //   [v46-C] 判据由瞬时 `minFleetDist < idealDist*0.35` 改为**相位**（双阈值滞回）：
@@ -7693,17 +7730,53 @@ export class BattleScene extends Phaser.Scene {
             const reformed = prevControl.phase === 'reform'
                 && headingDistance(previousFormFacing, fleet.facingSmooth ?? fAngle) <= 0.05
                 && this.maxSlotGap(fleet) <= REFORM_SLOT_GAP_PX;
+            // [v69] 舰种运动学剖面（**必须早于 headingStep 声明** —— const 无 TDZ 提升）。
+            //   按 hullLen²（面积/质量感）加权聚合 ⇒ 8 战列 + 2 驱逐的转向接近纯战列，
+            //   而非被算术平均拉到"中速"。排除 '补给'（运输舰极重会拖垮整队）。
+            //   ⚠ 空编队/纯补给 ⇒ EMPTY_FLEET_PROFILE，退化路径与新表一致不突变。
+            //   [FIX-⑥] 声明位置再次上移到 advanceManeuver 之前：brake 相超时需按舰种刹停时间计算。
+            const kinProfile: FleetKinematicsProfile = fleetProfile(fleet.units);
+            // [FIX-⑥] brake 相超时 = 1.2 × 刹停帧数 / 60（秒）。
+            //   刹停帧数 = (vMax − stopped 阈值) / accel；这里用 vMax/accel 略保守（含 0.02 死区）。
+            //   战列：1.2×0.22/0.00042/60 ≈ 10.5s（旧固定值 5s ⇒ 43% 残速就进 turn）。
+            const _brakeTimeoutSec = Math.max(
+                5, 1.2 * kinProfile.vMax / Math.max(1e-6, kinProfile.accel) / 60,
+            );
+            // [FIX-⑤] 近距离缠斗（< 250px）不进入原地转向序列，见 combatControl.ManeuverInput.closeContact。
+            const _closeContact = minFleetDist < 250;
             const control = advanceManeuver(prevControl, {
                 engaged: contact.engaged,
                 retreatRequested: isRetreating || fleet.stance === 'fallback',
                 headingError,
                 stopped: Math.hypot(fleet.vx ?? 0, fleet.vy ?? 0) < 0.02,
                 reformed,
+                closeContact: _closeContact,
+                brakeTimeoutSec: _brakeTimeoutSec,
             }, Math.min(delta, 100) / 1000 * dt);
             const controlOrder = maneuverOrder(control.phase);
             (fleet as any)._combatControl = control;
             (fleet as any)._uturn = controlOrder.rotateInPlace;
             (fleet as any)._uturnJustEnded = prevControl.phase === 'turn' && control.phase === 'reform';
+            // [FIX-①] **转向序列开始时**记录舰首朝向 —— 供 turn→reform 交接帧判定"本次转了多少度"。
+            //   原实现把这一笔记录写在交接帧（下方 formFacing 管理器内），与读取同帧且**读在写之前**：
+            //     · 首次掉头 `_reformFromFacing` 仍为 undefined ⇒ flipMag=0 ⇒ 不镜像 ⇒ 全队横穿阵型换位；
+            //     · 之后比较的是"上一次掉头开始时的朝向"⇒ 用上一次的转角决定这一次是否镜像。
+            //   现在：「本轮机动开始（进入 brake）」记一次，「出 turn 相」比较一次，语义即"本次转角"。
+            //   ⚠ 起点必须取 **brake 入口**而不是 turn 入口：brake 相期间舰首仍在按常规速率旋转
+            //     （战列 ~12.6°/s，刹停 7.9s 可吃掉 ~100°），从 turn 入口量会低估总转角
+            //     ⇒ 180° 掉头可能只量到 80° ⇒ 又不镜像。
+            //   ⚠ 必须记 `facingSmooth`（舰首），不是 formFacing：turn 相期间 formFacing 被冻结，
+            //     拿它比较恒为 0（旧实现正是因此才写成"比上一轮"）。
+            {
+                const _prevPhase = prevControl.phase;
+                const _startedWheel = (control.phase === 'brake' && _prevPhase !== 'brake' && _prevPhase !== 'turn')
+                    || (control.phase === 'turn' && _prevPhase !== 'turn' && _prevPhase !== 'brake');
+                if (_startedWheel) {
+                    (fleet as any)._reformFromFacing = typeof fleet.facingSmooth === 'number'
+                        ? fleet.facingSmooth
+                        : (fleet.facingAngle ?? fAngle);
+                }
+            }
 
             // [R10-B1] FIX-3 限速航向角：把"本帧瞬时确定的方向"平滑为有限角速度。两个同速率平滑器：
             //   · `fleet.heading`      = 平滑后的**位移航向**（moveAngle）⇒ 驱动位移方向 ⇒ 舰队走弧线，
@@ -7715,11 +7788,7 @@ export class BattleScene extends Phaser.Scene {
             //   该分离是此前"船尾给敌人"实报的修复，硬点 3 要求保留 ⇒ 单值方案无法同时满足，故用双平滑器。
             //   时间基准：与位移同源（位移 = speed * dt 每帧）⇒ 步长 = HEADING_TURN_RATE * dt。
             // [R10-B1-BEGIN]
-            // [v69] 舰种运动学剖面（**必须早于 headingStep 声明** —— const 无 TDZ 提升）。
-            //   按 hullLen²（面积/质量感）加权聚合 ⇒ 8 战列 + 2 驱逐的转向接近纯战列，
-            //   而非被算术平均拉到"中速"。排除 '补给'（运输舰极重会拖垮整队）。
-            //   ⚠ 空编队/纯补给 ⇒ EMPTY_FLEET_PROFILE，退化路径与新表一致不突变。
-            const kinProfile: FleetKinematicsProfile = fleetProfile(fleet.units);
+            // [v69] 舰种运动学剖面声明已上移到 `advanceManeuver` 之前（[FIX-⑥] 需要）。
             // [v69] 满转率改由**舰种**决定 + **高速舵效衰减**（旧实现角速率与速度完全无关）。
             //   战列 omegaMax=0.00367 ⇒ 180° 需 14.3s（旧 HEADING_TURN_RATE=π/240 ⇒ 4.0s，快 3.6 倍），
             //   且满速时再降 45% ⇒ ~25.9s ⇒ 「掉头是一次战术决策」而非随手操作。
@@ -7794,13 +7863,15 @@ export class BattleScene extends Phaser.Scene {
                         aggression: ((this.factionMap.get(fleet.factionId) as any)?._aggression) ?? 0.5,
                     });
                     (fleet as any)._turnDisc = _td;
-                    if (_td.mode === 'denied') {
-                        // [v46-E] 「还在对战就不能转向」⇒ **保持航向**（清速率、不写朝向）。
-                        //   原实现按 `rateMul = 0.06~0.16` 极慢蠕动：转 180° 要 ~5 秒，既没做到"不转"
-                        //   （航向仍在持续变），也没做到"转过去"⇒ 最坏的中间态，观感即「摇头晃脑」。
-                        //   配合 v46-D 的距离口径，denied 只在真正接舷（<250px）时出现。
-                        fleet.facingRate = 0;
-                    } else {
+                    // [FIX-⑤] **denied 不再把转速按死为 0**。
+                    //   病灶：turn 相的退出条件是 headingError ≤ π/24（7.5°），而 denied 把
+                    //   `facingRate` 硬置 0 ⇒ 航向一帧都不变 ⇒ 结构性永不收敛 ⇒ 只能等 35s
+                    //   超时 → reform → cruise → headingError 仍 >30° → 1 帧后又进 brake
+                    //   ⇒ 「5s + 35s」死循环，期间 motion='hold'（用户实报"舰队不动")。
+                    //   现在：denied 也走**同一套角速度积分**，只是速率被 `_td.rateMul`（0.06~0.16）
+                    //   压到极低 —— 与 turnDiscipline 自述「denied 时仍给一个小修正角，不是死 0」
+                    //   的原意一致；航向缓慢收敛 ⇒ 相位能自行退出，不依赖超时。
+                    {
                         // [v69] 掉头快档也必须走**舰种**角速率，不能用旧 HEADING_TURN_RATE。
                         //   ⚠ 这是「移动还是不行」的直接原因：快档乘 RATE_MUL=6 ⇒
                         //   旧实现战列 180° 掉头仅 0.67s（270°/s，物理不可能），
@@ -7971,7 +8042,15 @@ export class BattleScene extends Phaser.Scene {
                 rawVY = (Math.sin(thrustDir) * fleetBaseSpeed * terrainSpeedMul + repulseY) * dt * congestionSlowdown;
             }
 
-            if (controlOrder.motion === 'hold') {
+            // [FIX-③] `hold` 只在**没有更高优先级指令**时生效。
+            //   病灶：`hold` 是 brake/turn/reform 三相的 maneuverOrder（最长 ~50s），而这段清零
+            //   写在目标解算**之后** ⇒ 这三个相位期间：玩家直接指令、任务牵引、撤退、看门狗 override
+            //   全部被静默吞掉（用户实报"下达军议命令也无动作"）。
+            //   现在：direct_order（玩家直接指令）与撤退/脱离不受 hold 约束；其余情形保持原语义
+            //   （brake/turn/reform 仍会停船）。
+            const _holdOverriddenByAuthority = authDecision.layer === 'direct_order'
+                || isRetreating || fleet.stance === 'fallback';
+            if (controlOrder.motion === 'hold' && !_holdOverriddenByAuthority) {
                 rawVX = 0;
                 rawVY = 0;
             }
@@ -8088,9 +8167,13 @@ export class BattleScene extends Phaser.Scene {
                     //   ⚠ 90° 是硬 90°：低于它原队形的首尾关系仍成立（船仍在原位置侧），
                     //   高于它则新舰首朝向与原阵型长轴夹角 >90°，同序号槽位落到对侧。
                     if ((fleet as any)._uturnJustEnded) {
-                        const flipMag = headingDistance(
-                            (fleet as any)._reformFromFacing ?? ff0, ff0,
-                        );
+                        // [FIX-①] 比较"本次机动转了多少度"：起点 = 本轮 brake 入口记录的舰首朝向
+                        //   （见 `_startedWheel` 处），终点 = 当前舰首。旧实现在此处读
+                        //   `_reformFromFacing` 而在同帧更晚才写它 ⇒ 首次恒 0（不镜像）/ 之后滞后一轮。
+                        const _fromFacing = (fleet as any)._reformFromFacing;
+                        const flipMag = typeof _fromFacing === 'number'
+                            ? headingDistance(_fromFacing, fleet.facingSmooth ?? ff0)
+                            : 0;
                         if (flipMag >= SLOT_FLIP_MIN_RAD) {
                             (fleet as any)._slotFlip = !(fleet as any)._slotFlip;
                         }
@@ -8112,10 +8195,9 @@ export class BattleScene extends Phaser.Scene {
                     //   新口径：**与舰首角速度同源**（同一 kinOmegaNow，dt 同倍），
                     //   阵面与舰首同步旋转 ⇒ 格位目标相对舰船「近似静止」，
                     //   舰船几乎不需要横向追赶 ⇒ 无论 45° 还是 180° 都不挤压。
-                    // 记录 reform 起始时的阵面（供 SLOT_FLIP 判据比较"转了多少"）
-                    if ((fleet as any)._uturnJustEnded) {
-                        (fleet as any)._reformFromFacing = ff0;
-                    }
+                    // [FIX-①] 原实现在此处把 `_reformFromFacing` 覆盖为 `ff0`（= 冻结的阵面朝向），
+                    //   与上方读取同帧且**读在前、写在后** ⇒ 永远比较到"上一轮"的值（首轮为 undefined）。
+                    //   起点记录已移到 `_uturnJustEnded` 判定处（进 turn 相时），此处不得再写。
                     // [v72] 阵面速率 = **纯舰首角速率**（v71 的 max() 是无效改动）。
                     //   v71 取证复盘：`max(FORM_FACING_RATE*dt, kinOmegaNow*dt)` 中
                     //   FORM_FACING_RATE=90°/s 比战列 kinOmegaNow(12.6°/s) **大 7 倍**
@@ -8142,10 +8224,10 @@ export class BattleScene extends Phaser.Scene {
             //   收口后：克制方 ×FORMATION_COUNTER_BONUS(1.30)、被克方 ×FORMATION_COUNTERED_PENALTY(0.70)。
             //   ⚠ 值取 0.70（= 原内联值）而非该常量原来的 0.90 —— 那是从未被消费的死代码，
             //     这样收口只改"关系"不改"幅度"，把行为变更面压到最小。
-            let damageMultiplier = 1.0;
-            if (isEngaging && closestEnemyFleet) {
-                damageMultiplier = formationCounterMul(fleet.formation, closestEnemyFleet.formation);
-            }
+            // [FIX-⑩] 乘区**挪到开火结算处**按 `fireTargetFleet` 现算（原在此处按 `closestEnemyFleet`
+            //   预算一次）：return_fire 打攻击者时，`fireTargetFleet`（攻击者）与 `closestEnemyFleet`
+            //   （最近敌）可能不是同一支舰队 ⇒ 互克/拦截乘区会算到错误对象上。
+            //   见 :8660 附近的 `_dmgMul` / `interceptMul`。
 
             // [阵型] 格位枚举（单一真源 config/formationLayout.ts）。
             // 原实现是「每阵型 8 个硬编码坐标 + 按循环下标取值」：下标 ≥ 8 时全部塌到
@@ -8615,11 +8697,15 @@ export class BattleScene extends Phaser.Scene {
                         // P1-4.2 受击方拦截减伤（1/(1+rate)；巡航舰防空最高 ⇒ 打掉防空舰即削弱拦截）
                         //   ⚠ 走 `interceptRateOf`（250ms TTL 缓存）——直接调 `fleetInterceptRate`
                         //     会逐发遍历受击方全部单位，是 O(N²)/帧。
-                        const interceptMul = interceptDamageMul(this.interceptRateOf(closestEnemyFleet));
+                        // [FIX-⑩] 受击方 = `fireTargetFleet`（本分支已判空），不是 `closestEnemyFleet`：
+                        //   return_fire 时受击的是**攻击者**，与"最近敌"可能不是同一支舰队。
+                        const interceptMul = interceptDamageMul(this.interceptRateOf(fireTargetFleet));
                         const v33Combo = Math.max(TACTICAL_COMBO_CLAMP.MIN, Math.min(TACTICAL_COMBO_CLAMP.MAX,
                             colMul * bandMul * collapseFireMul * interceptMul));
+                        // [FIX-⑩] 阵型互克乘区同样按**实际命中目标**现算（见本帧上方 [FIX-⑩] 说明）。
+                        const _dmgMul = formationCounterMul(fleet.formation, fireTargetFleet.formation);
 
-                        let finalDmg = Math.max(1, baseDmg * damageMultiplier * backstabMulti * cpDmgMult * cpMoraleMult * adversityMult * finalMult * moraleDmgMult * retreatFireMul * v33Combo);
+                        let finalDmg = Math.max(1, baseDmg * _dmgMul * backstabMulti * cpDmgMult * cpMoraleMult * adversityMult * finalMult * moraleDmgMult * retreatFireMul * v33Combo);
                         // 战损保底：最低造成目标 1% 最大舰数的破甲伤害
                         const minDmg = Math.max(1, Math.floor(targetShip.maxHp * 0.01));
                         finalDmg = Math.max(finalDmg, minDmg);

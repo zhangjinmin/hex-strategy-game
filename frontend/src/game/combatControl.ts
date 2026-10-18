@@ -28,6 +28,25 @@ export interface ManeuverInput {
   headingError: number;
   stopped: boolean;
   reformed: boolean;
+  /**
+   * [FIX-⑤] 是否处于**近距离缠斗**（调用方口径：最近敌距离 < 250px）。
+   *
+   * 近距离**不得**进入"刹车→原地转向→重排"序列，原因有二：
+   *   ① 物理：贴脸交战时应保持航速，原地掉头等于送给对方一个静止靶；
+   *   ② 结构性：`turn` 相的退出条件是 headingError ≤ π/24，而交战中大角度转向会被
+   *      `turnDiscipline` 判成 denied ⇒ 转速 0 ⇒ **永不收敛**，只能等 35s 超时
+   *      ⇒ `motion='hold'` 冻结数十秒（用户实报"舰队不动 / 乱动"）。
+   * 近距离时保持 cruise，让常规限速转向在航行中完成（画弧，而不是原地扭）。
+   */
+  closeContact?: boolean;
+  /**
+   * [FIX-⑥] 本舰种**刹停所需时间**（秒）；缺省用 `MANEUVER_PHASE_TIMEOUT.brake`。
+   *
+   * 原固定 5s 小于重舰实际刹停时间（战列 vMax=0.22、accel=0.00042 ⇒ (0.22−0.02)/0.00042
+   * ≈ 476 帧 ≈ 7.9s）⇒ 超时先到，舰队带着约 43% 残余速度进入 turn 相（原地转向）。
+   * 调用方按 `1.2 × vMax / accel / 60` 传入（战列 ≈ 10.5s）。
+   */
+  brakeTimeoutSec?: number;
 }
 
 export interface ManeuverOrder {
@@ -55,7 +74,8 @@ export const TURN_THRESHOLD = Math.PI / 6;
  *     因为 hold 清零点在目标解算之后）。
  *   ⇒ 本超时是**安全阀**：到点后强制推进到下一相位，保证链路一定可恢复。
  *   ⚠ 取值须大于「该相位的正常最长耗时」（否则会打断正常机动）：
- *     · brake 5s（停船）
+ *     · brake 5s（停船；[FIX-⑥] 调用方可按舰种覆盖为 1.2×vMax/accel，战列约 10.5s
+ *       —— 固定 5s 短于战列实际刹停 7.9s ⇒ 带着 ~43% 残速进入 turn）
  *     · turn 35s（大编队 180° 掉头最慢约 28.8s — 见 shipKinematics.turn180Seconds）
  *     · reform 10s（阵面重排只需数秒；卡住必是收敛失败）
  */
@@ -93,6 +113,15 @@ export function advanceManeuver(state: ManeuverState, input: ManeuverInput, dtSe
   if (state.phase === 'disengage') {
     return { phase: input.headingError > TURN_THRESHOLD ? 'brake' : 'cruise', phaseSeconds: 0 };
   }
+  // [FIX-⑤] 近距离缠斗 ⇒ **立即退出**原地转向序列（brake/turn/reform 全都 motion='hold'）。
+  //   为什么必须放在 disengage 之后：撤退（disengage）是更高优先级的姿态，不能被它打断
+  //   —— 上面两支已把 disengage 分流完毕，能走到这里的只可能是 cruise/brake/turn/reform。
+  //   为什么直接回 cruise 而不是 brake→reform：reform 相同样 hold，且 formFacing 追赶新
+  //   航向所需时间与舰首同源（战列 180° ≈ 14s）⇒ 仍是十几秒零位移。近距离时**航速优先**，
+  //   转向交给常规限速转向（舰首边走边转），零位移时长归零。
+  if (input.closeContact) {
+    return { phase: 'cruise', phaseSeconds: 0 };
+  }
   if (state.phase === 'cruise' && input.headingError > TURN_THRESHOLD) {
     return { phase: 'brake', phaseSeconds: 0 };
   }
@@ -107,7 +136,8 @@ export function advanceManeuver(state: ManeuverState, input: ManeuverInput, dtSe
   }
   // [v94] **超时兜底**：正常退出依赖物理量收敛（见上方）；超时仍未收敛 ⇒ 强制推进。
   //   防「永不收敛 ⇒ 永久 hold ⇒ 舰队冻结」（用户实报「舰队都不动」）。
-  if (state.phase === 'brake' && elapsed > MANEUVER_PHASE_TIMEOUT.brake) {
+  // [FIX-⑥] brake 超时改为**按舰种**（`brakeTimeoutSec`）；缺省仍用旧常量。
+  if (state.phase === 'brake' && elapsed > (input.brakeTimeoutSec ?? MANEUVER_PHASE_TIMEOUT.brake)) {
     return { phase: 'turn', phaseSeconds: 0 };
   }
   if (state.phase === 'turn' && elapsed > MANEUVER_PHASE_TIMEOUT.turn) {

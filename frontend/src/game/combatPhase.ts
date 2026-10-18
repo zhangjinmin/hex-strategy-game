@@ -132,22 +132,38 @@ export interface PhaseThresholds {
 /**
  * 由地图跨度导出四阶段阈值。
  * @param span 地图有效跨度（px），即两方部署位置的最大可能间距
- * @param maxRange 本方最大武器射程（用于夹逼下限，避免"射程 300 打 1300 的 S1 站位"）
+ * @param maxRange 本方最大武器射程 —— [FIX-⑦] 用作 **S1/S2 站位的上限**（站位不得超出射程），
+ *   S3 仍用其 0.45 作为下限（近距阶段必须真正进入射程深处）。
  */
 export function phaseThresholdsFrom(span: number, maxRange: number): PhaseThresholds {
   const s = Math.max(200, span);
-  const far = Math.round(s * PHASE_DIST_RATIO.far);
-  const approach = Math.round(s * PHASE_DIST_RATIO.approach);
-  const assault = Math.round(s * PHASE_DIST_RATIO.assault);
-  const brawl = Math.round(s * PHASE_DIST_RATIO.brawl);
-  return {
-    far: Math.max(far, Math.round(maxRange * 1.15)),
-    // 下限不得低于射程，否则会站到"打不到"的位置（v55 修过的"站得比打得远"同类问题）
-    approach: Math.max(approach, Math.round(maxRange * 0.80)),
-    assault: Math.max(assault, Math.round(maxRange * 0.45)),
-    brawl,
-    span: s,
-  };
+  const farR = Math.round(s * PHASE_DIST_RATIO.far);
+  const approachR = Math.round(s * PHASE_DIST_RATIO.approach);
+  const assaultR = Math.round(s * PHASE_DIST_RATIO.assault);
+  const brawlR = Math.round(s * PHASE_DIST_RATIO.brawl);
+  // [FIX-⑦] S1/S2 由「射程下限」改为「射程上限」夹逼。
+  //
+  //   病灶（实测 maxRange=880，战列）：原式 `Math.max(比例值, 1.15×射程)` 在**大编队**上
+  //   反过来把站位推到射程之外 ——
+  //     span 2200（12 舰）⇒ far 1760 / approach 924
+  //     span 2500（16+ 舰）⇒ far 2000 / approach 1050
+  //   而阶段推进要求 `engaged = dist < maxRange`（BattleScene 的 w1Engaged）
+  //   ⇒ S1/S2 站位本身就在 880 射程外 ⇒ 永远不接敌 ⇒ 阶段机只能靠"被打"或看门狗推进
+  //     ⇒ 远距对射阶段永远进不去。
+  //
+  //   现在：站位**不得超出本舰射程**（0.95/0.85 留余量给阵型半径与机动误差），
+  //   比例值只在"比例值本来就小于射程"时生效 ⇒ 小图仍按跨度分层，大图不会站到打不到的地方。
+  //   ⚠ 这会明显改变战斗观感（从"贴脸互殴"变成"有距离层次"），属预期修复。
+  //   ⚠ maxRange ≤ 0（无武器/空编队）时不做夹逼，保持旧的纯比例行为（退化路径不突变）。
+  const clampToRange = maxRange > 0;
+  const far = clampToRange ? Math.min(farR, Math.round(maxRange * 0.95)) : farR;
+  const approach = clampToRange ? Math.min(approachR, Math.round(maxRange * 0.85)) : approachR;
+  // S3/S4 仍是**下限**（近距阶段必须真正进入射程深处），
+  //   但夹逼后必须保证 `far > approach > assault > brawl` 严格递减 ——
+  //   否则 nominalPhase 会出现"距离越近阶段越远"的错判（台架 H/nominalPhase 断言依赖此不变量）。
+  const assault = Math.min(Math.max(assaultR, Math.round(maxRange * 0.45)), approach - 1);
+  const brawl = Math.min(brawlR, assault - 1);
+  return { far, approach, assault, brawl, span: s };
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -232,29 +248,38 @@ export function advancePhase(state: PhaseState, input: PhaseInput): PhaseState {
   const { prev, thresholds: t, dtSeconds, dist, lossRatio, engaged } = input;
   const dwell = prev.dwell + dtSeconds;
   const elapsed = prev.elapsed + dtSeconds;
-  const keep = (p: CombatPhase): PhaseState => ({ phase: p, dwell, elapsed });
+  // [FIX-⑧] 阶段**真正跃迁**时 `dwell` 必须归零。
+  //   病灶：`keep(p)` 恒用 `prev.dwell + dt`，全文件没有任何一处把 dwell 清零
+  //   ⇒ `PHASE_MIN_DWELL` 实际判的是"开战以来的总时长"，第一次 14s 之后防抖完全失效
+  //     ⇒ 距离快速震荡时阶段可在 1 帧内连跳。
+  //   现在：`next(p)` 在 p === 当前阶段时保留累计值，否则重置为 0（"停留时长"语义）。
+  const next = (p: CombatPhase): PhaseState => ({
+    phase: p,
+    dwell: p === prev.phase ? dwell : 0,
+    elapsed,
+  });
 
   // (1) 未接敌：强制远距对射（时间照常累计，供 S1 最短时长达标）
-  if (!engaged) return keep('far');
+  if (!engaged) return next('far');
 
   // (2) 损失率独立触发 S4：被打残了就该脱离，与当前距离无关。
   //     这是 S4 的独立入口，也是「变化」的一个非 DPS 来源。
-  if (lossRatio >= BRAWL_LOSS_RATIO && prev.phase !== 'brawl') return keep('brawl');
+  if (lossRatio >= BRAWL_LOSS_RATIO && prev.phase !== 'brawl') return next('brawl');
 
   // (3) 最小停留时间：不足则原地不动（时间继续累计）
-  if (dwell < PHASE_MIN_DWELL[prev.phase]) return keep(prev.phase);
+  if (dwell < PHASE_MIN_DWELL[prev.phase]) return next(prev.phase);
 
   // (4) 驻留带：距离落在当前阶段进入线的滞回带内 => 保持不动
-  if (inDwellBand(prev.phase, dist, t)) return keep(prev.phase);
+  if (inDwellBand(prev.phase, dist, t)) return next(prev.phase);
 
   // (5) 目标阶段 = 由距离唯一确定的名义阶段（nominalPhase）
   const target = nominalPhase(dist, t);
 
   // (6) 已退 S4 且损失回落 => 允许按距离重新定位（不强制回 assault）
-  if (prev.phase === 'brawl' && lossRatio > BRAWL_LOSS_RELEASE) return keep('brawl');
+  if (prev.phase === 'brawl' && lossRatio > BRAWL_LOSS_RELEASE) return next('brawl');
 
   // (7) 目标 == 当前 => 不动
-  if (target === prev.phase) return keep(prev.phase);
+  if (target === prev.phase) return next(prev.phase);
 
   // ⚠ 方向判读（v67 二次修正，避免索引歧义）：
   //   PHASE_ORDER = [far, approach, assault, brawl]，索引**越大 = 距离越近**。
@@ -267,12 +292,12 @@ export function advancePhase(state: PhaseState, input: PhaseInput): PhaseState {
 
   if (closer) {
     // 接近：跨多级时**逐级**推进（每 tick 一格），避免阵型瞬变
-    if (curIdx - tgtIdx === 1) return canEnter(target, dist, t) ? keep(target) : keep(prev.phase);
+    if (curIdx - tgtIdx === 1) return canEnter(target, dist, t) ? next(target) : next(prev.phase);
     const stepped = PHASE_ORDER[curIdx + 1];
-    return canEnter(stepped, dist, t) ? keep(stepped) : keep(prev.phase);
+    return canEnter(stepped, dist, t) ? next(stepped) : next(prev.phase);
   }
   // 拉远：允许直接回退到目标（阵型本就要松散，跳级无观感风险）
-  return canEnter(target, dist, t) ? keep(target) : keep(prev.phase);
+  return canEnter(target, dist, t) ? next(target) : next(prev.phase);
 }
 
 /** 初始状态 */

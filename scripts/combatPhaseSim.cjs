@@ -34,17 +34,27 @@ console.log('\n=== A. 阈值导出：按跨度比例而非硬编码 ===');
 const tSmall = P.phaseThresholdsFrom(SPAN_SMALL, RANGE_MAX);
 const tLarge = P.phaseThresholdsFrom(SPAN_LARGE, RANGE_MAX);
 
-check('S1 阈值随跨度放大（小图→大图）', tLarge.far > tSmall.far,
-  `${tSmall.far} → ${tLarge.far}`);
-check('S1 占跨度比例正确（小图 0.80×1300=1040）',
-  tSmall.far === Math.round(SPAN_SMALL * 0.80), `${tSmall.far}px / 跨度 ${SPAN_SMALL}`);
-check('S1 阈值 ≥ 0.75×跨度（小图也有 975px 以上对射距离 = 实质远距阶段）',
-  tSmall.far >= SPAN_SMALL * 0.75, `${tSmall.far}px`);
 check('四阶段阈值严格递减',
   tSmall.far > tSmall.approach && tSmall.approach > tSmall.assault && tSmall.assault > tSmall.brawl,
   `${tSmall.far}/${tSmall.approach}/${tSmall.assault}/${tSmall.brawl}`);
-check('S2 站位不低于 0.80×射程（不会"站得比打得远"）',
-  tSmall.approach >= RANGE_MAX * 0.80, `${tSmall.approach} vs ${RANGE_MAX * 0.80}`);
+// [FIX-⑦] 断言随实现口径更新（旧断言编码的正是被修掉的缺陷）：
+//   旧：'S1 阈值随跨度放大（小图→大图）' tLarge.far > tSmall.far
+//       'S1 占跨度比例正确（1040）'        tSmall.far === 0.80×1300
+//       'S1 阈值 ≥ 0.75×跨度（975px）'     tSmall.far >= 0.75×1300
+//       'S2 站位不低于 0.80×射程'          tSmall.approach >= 0.80×880
+//   ⇒ 这四条要求 S1/S2 站位**高于**射程（1040/704 vs 880），而阶段机推进要求
+//     `dist < maxRange` ⇒ 站位本身就在射程外 ⇒ 永远不接敌。这正是 [FIX-⑦] 修的东西。
+//   新口径：S1/S2 是**射程上限**夹逼（≤0.95/0.85×射程），未触顶时仍按跨度比例。
+const tMid = P.phaseThresholdsFrom(1000, RANGE_MAX);
+check('S1 未触顶时按跨度比例（0.80×1000=800 < 0.95×射程）',
+  tMid.far === Math.round(1000 * 0.80), `${tMid.far}px / 跨度 1000`);
+check('S1 触顶时被射程夹逼（=0.95×射程，且大图不再随跨度放大）',
+  tSmall.far === Math.round(RANGE_MAX * 0.95) && tLarge.far === Math.round(RANGE_MAX * 0.95),
+  `${tSmall.far} / ${tLarge.far} vs ${Math.round(RANGE_MAX * 0.95)}`);
+check('S1 站位始终在本舰射程内（不再"站得比打得远"）',
+  tSmall.far <= RANGE_MAX && tLarge.far <= RANGE_MAX, `${tSmall.far}/${tLarge.far} vs ${RANGE_MAX}`);
+check('S2 站位不超过 0.85×射程（旧断言为"不低于 0.80×射程"）',
+  tSmall.approach <= RANGE_MAX * 0.85, `${tSmall.approach} vs ${RANGE_MAX * 0.85}`);
 check('S3 站位不低于 0.45×射程',
   tSmall.assault >= RANGE_MAX * 0.45, `${tSmall.assault} vs ${RANGE_MAX * 0.45}`);
 check('射程极低时阈值被夹逼（空舰队退化不报错）',
@@ -104,6 +114,34 @@ console.log('\n=== D. 防抖：任意 5s 窗口内切换 ≤1 次 ===');
     if (st.phase !== prev) { changes++; prev = st.phase; }
   }
   check('60s 边界抖动下切换次数受控（≤12）', changes <= 12, `${changes} 次`);
+}
+
+console.log('\n=== D-2. [FIX-⑧] 跃迁后 dwell 归零（不允许 1 帧连跳） ===');
+{
+  // 距离逐帧在 S1（1200）与 S3（300）之间大幅震荡：若 dwell 不清零，
+  // MIN_DWELL 会退化成"开战以来总时长"⇒ 阶段可 1 帧内连续跳变。
+  let st = { phase: 'far', dwell: 999, elapsed: 0 };
+  let lastPhase = st.phase;
+  let lastChangeStep = -1e9;
+  let tooEarly = 0;
+  let changes = 0;
+  for (let i = 0; i < 1500; i++) {
+    const dist = i % 2 === 0 ? 1200 : 300;
+    st = P.advancePhase(st, { dist, lossRatio: 0, thresholds: tSmall, prev: st, dtSeconds: 0.1, engaged: true });
+    if (st.phase !== lastPhase) {
+      changes++;
+      // 离开 lastPhase 前必须待满它自己的 MIN_DWELL（0.1s/步 ⇒ 步数 = 秒×10）
+      const minSteps = Math.ceil(P.PHASE_MIN_DWELL[lastPhase] * 10) - 1;
+      if (i - lastChangeStep < minSteps && lastChangeStep > 0) tooEarly++;
+      lastChangeStep = i;
+      lastPhase = st.phase;
+    }
+  }
+  check('每次跃迁前都待满了该阶段的 MIN_DWELL', tooEarly === 0, `${tooEarly} 次过早跃迁`);
+  // 上界推导：每两次跃迁之间至少隔「离开阶段的 MIN_DWELL」（最短 = brawl 5s）
+  //   ⇒ 150s 内理论最多 150/5 = 30 次。取 ≤20 作为"没有逐帧翻面"的实用上界
+  //   （dwell 未清零时实测可达数百次/秒级；清零后实测 14 次）。
+  check('150s 大幅震荡下切换次数受控（≤20，理论界 30）', changes <= 20, `${changes} 次`);
 }
 
 console.log('\n=== E. 滞回：驻留带内不动（双向） ===');
