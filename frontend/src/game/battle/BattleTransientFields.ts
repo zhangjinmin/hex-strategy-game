@@ -28,6 +28,8 @@ export const BATTLE_TRANSIENT_FIELDS: readonly string[] = [
   '_reformFromFacing',
   // [v73] 紧凑转收拢系数（0=展开 / 1=完全收拢；战局重开必须复位）
   '_compactTurn',
+  // [v99] 距离保持三态（StandoffOrder）的滞回记忆、目标 id 与逐帧倒车标志
+  '_standoffKind', '_standoffTargetId', '_standoffBacking',
 ];
 
 const TRANSIENT_SET: ReadonlySet<string> = new Set(BATTLE_TRANSIENT_FIELDS);
