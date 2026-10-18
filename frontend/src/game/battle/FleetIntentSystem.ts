@@ -203,3 +203,88 @@ export function resolveMissionMove(input: MissionMoveInput): MissionMoveResult {
   }
   return { kind: 'search', dest: null, stance: 'search', reason: 'no-intel', record: null };
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// B3 · 战力比 + 攻坚闸（**纯函数**，零 import、不读时钟）
+// ══════════════════════════════════════════════════════════════════════
+//
+// ⚠ 本文件只提供**计算**，**接线是独立一步（B3）**：
+//   现有的 `BattleScene` 力比计算点（`totalEnemyPower` 用 `find` 只取每阵营第一支）
+//   必须与"分子"（我方战力口径）**同时改**，否则会变成"分母改了、分子没改"的半成品。
+//   ⇒ 在那之前，这两个函数**没有任何调用方** ⇒ 行为零变化。
+
+export interface ForceRatioInput {
+  /** 我方战力（调用方口径，与本文件无关） */
+  myPower: number;
+  /** 敌方已知档案（`power` / `tier` 由调用方算好） */
+  records: readonly MissionRecordLike[];
+}
+
+/**
+ * 战力比 = 我方战力 / 敌方**已知均战力**（加权）。
+ *
+ * 有效样本 = `power !== null`（未知战力 ≠ 0）**且** `tier !== 'cold'`（过期不计）。
+ *   ⚠ 两者都是**排除**，不是"计 0"：
+ *     · `power: null` 若当 0 进分子，会把均值稀释；
+ *     · `cold` 若以权重 0 计入分母，同样会稀释（`Σw` 不该包含 0 权重样本）。
+ *
+ * 权重：fresh = 1.0、stale = 0.7（越新越可信）。
+ *
+ * 无有效样本 ⇒ **返回 1**（"不知道敌方多强" ⇒ 视为均势），
+ *   ⚠ **不是 999**：999 会让 AI 认为"我无敌" ⇒ 无条件压上（v 系列旧 bug 的形态）。
+ *   ⚠ **也不是 0**：0 会让 AI 认为"我必败" ⇒ 永不接战。
+ *
+ * 结果再 `clamp(0.15, 6)`：下限防止"一支残兵算出 0.002 后完全放弃"，
+ *   上限防止"多支档案叠出天文数字"。这两个数是**可调参数**（不是物理常数）。
+ */
+export function computeForceRatio(input: ForceRatioInput): number {
+  let sumPowerWeighted = 0;
+  let sumWeight = 0;
+  for (const r of input.records) {
+    if (r.power === null || r.power === undefined) continue;   // 未知 ≠ 0：整条排除
+    if (r.tier === 'cold') continue;                            // 过期：整条排除（权重 0 也不该进 Σw）
+    const w = r.tier === 'fresh' ? 1 : 0.7;
+    sumPowerWeighted += r.power * w;
+    sumWeight += w;
+  }
+  if (!(sumWeight > 0)) return 1;                               // 无有效样本 ⇒ 均势
+  const meanEnemy = sumPowerWeighted / sumWeight;
+  if (!(meanEnemy > 0)) return 1;                               // 敌方均战力为 0（退化）⇒ 均势
+  const my = Number.isFinite(input.myPower) ? input.myPower : 0;
+  return Math.min(6, Math.max(0.15, my / meanEnemy));
+}
+
+export interface SiegeGateInput {
+  forceRatio: number;
+  /** 已识别的敌方舰队数（"看清了几支"） */
+  identifiedCount: number;
+  /**
+   * 敌方的**活阵营数** —— ⚠ 口径必须是"**仍有战斗舰队的**阵营数"，
+   *   不是 `faction.active`（那会把"只剩据点、已无舰队"的僵尸阵营算进去 ⇒ 永久死闸）。
+   */
+  enemyLiveFactionCount: number;
+}
+
+/**
+ * 是否允许进入攻坚（`siege`）姿态。
+ *
+ *   `forceRatio > 2.30`（优势阈值，可调）**且** `identifiedCount >= need`，
+ *   其中 `need = max(1, enemyLiveFactionCount)`。
+ *
+ * 为什么 `need` 只数**阵营**、不含"我方舰队数"：
+ *   用我方数量当分母的代理，会在"我方多、敌方少"时把门槛抬到够不着
+ *   （例：10v1 时 need 被抬到 2，而敌方只有 1 支可识别 ⇒ **永不攻坚**）。
+ *   用敌方阵营数是**可判定的事实**（每个活阵营至少一支），且上限天然是 2~3。
+ *
+ * ⚠ 已知代价（有意接受）："1 个阵营有 3 支、只识别到 1 支"会放行 —— 它与
+ *   "敌方真的只有 1 支"在任何可观测数据上都**无法区分**（不可判定，不是没设计好）。
+ *   在"不可判定"面前，宁可误压上（代价有限、随接触展开自动收敛），
+ *   也不要确定性死闸（每局必现、玩家看得见、靠玩法改善不了）。
+ */
+export function canCommitSiege(input: SiegeGateInput): boolean {
+  const rawFactions = input.enemyLiveFactionCount;
+  const factions = Number.isFinite(rawFactions) ? rawFactions : 1;
+  const need = Math.max(1, factions);
+  const identified = Number.isFinite(input.identifiedCount) ? input.identifiedCount : 0;
+  return input.forceRatio > 2.30 && identified >= need;
+}
