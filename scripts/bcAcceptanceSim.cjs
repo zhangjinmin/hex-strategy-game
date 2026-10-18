@@ -219,6 +219,8 @@ const F_DISTOF = (() => {
  *     ⇒ 函数存在但还没接线时，旧代码当然还留着旧写法 ⇒ 此时报红是**误红**（"还没做"被当成"做错了"）。
  *   ⇒ 旗标必须对齐断言的真实依赖，而不是复用"同类功能"的旗标。
  */
+/** `countLiveEnemyFactions` 是否已导出（僵尸阵营口径的唯一真源） */
+const F_LIVE_FACTIONS = !!INTENT && !INTENT.__missing && typeof INTENT.countLiveEnemyFactions === 'function';
 const F_MOVE_WIRED = !!INTENT && !INTENT.__missing
   && typeof INTENT.resolveMissionMove === 'function'
   && /\bresolveMissionMove\s*\(/.test(SCENE_SRC);
@@ -503,25 +505,137 @@ if (INTENT.__missing || typeof INTENT.resolveMissionMove !== 'function') {
 
 // —— forceRatio 与 siege 闸：必须由纯函数导出，否则四条防线无法单测 ——
 if (INTENT.__missing || typeof INTENT.computeForceRatio !== 'function') {
-  pending('S4-06 空档案 ⇒ forceRatio = 1（不是 999）', '导出缺失: computeForceRatio');
+  for (const n of [
+    'S4-06 空档案 ⇒ forceRatio = 1（不是 999）',
+    'S4-14 分母纯净：power=null 不进分子也不进分母',
+    'S4-15 样本全无效（cold/null）⇒ 仍为 1',
+    'S4-16 stale 权重必须是 0.7（不是 1）',
+    'S4-17 clamp 两端都生效（上限 6 / 下限 0.15）',
+  ]) pending(n, '导出缺失: computeForceRatio');
 } else {
   check('S4-06 空档案 ⇒ forceRatio = 1（不是 999）', () => {
     const v = INTENT.computeForceRatio({ myPower: 500, records: [] });
     assert.equal(v, 1);
     assert.notEqual(v, 999);
   });
+  // ── S4-14：分母纯净 —— `power === null` 既**不进分子也不进分母** ─────────
+  // 之所以要一组"能让两种算法结果显著不同"的数据：
+  //   样本 = [100(fresh), 100(fresh), null(fresh)]，myPower = 200
+  //   · 正确（丢弃 null）：200 / 100                = 2.0   ← 低于 2.30 ⇒ 不攻坚
+  //   · 错误 A（null 当 0 进分子但计权重）：200/66.67 = 3.0   ← 越过 2.30 ⇒ 误判优势
+  //   · 错误 B（丢弃样本但 Σw 仍用 3）：  200/66.67 = 3.0   ← 同上
+  // ⇒ 三种算法给出 2.0 / 3.0 / 3.0，且**跨过 siege 阈值**，所以这条不只看"算得对"，还看"决策对不对"。
+  check('S4-14 分母纯净：power=null 的样本既不进分子也不进分母（结果 = 2.0，不是 3.0）', () => {
+    const v = INTENT.computeForceRatio({
+      myPower: 200,
+      records: [
+        { targetId: 1, power: 100, tier: 'fresh' },
+        { targetId: 2, power: 100, tier: 'fresh' },
+        { targetId: 3, power: null, tier: 'fresh' },
+      ],
+    });
+    assert.ok(Math.abs(v - 2.0) < 1e-9, `期望 2.0（丢弃 null）；实际 ${v}` +
+      `（≈3.0 说明 null 被当 0 计入，或 Σw 把 null 样本也算了）`);
+  });
+  // ── S4-15：样本存在但**全部无效**（cold / null）⇒ 与"无情报"同处理 ────────
+  // 这条与 S4-06 不同：S4-06 是空数组，这条是"有记录但一条都用不上"。
+  //   若实现写成 `records.length === 0 ? 1 : …`，就会掉进 0/0 或除以 0，得到 NaN/Infinity。
+  check('S4-15 样本全无效（cold/null）⇒ 仍为 1（不是 0/NaN/Infinity）', () => {
+    const v = INTENT.computeForceRatio({
+      myPower: 500,
+      records: [
+        { targetId: 1, power: 100, tier: 'cold' },
+        { targetId: 2, power: null, tier: 'fresh' },
+      ],
+    });
+    assert.equal(v, 1, `实际 ${v}`);
+  });
+  // ── S4-16：`stale` 的权重必须是 0.7（这条是"变异测试"逼出来的）───────────
+  // 单靠 fresh/null 样本，把 `w = tier==='fresh' ? 1 : 0.7` 改成 `? 1 : 1` 也不会红 ——
+  //   因为等权样本下加权与不加权结果相同。必须用**不等权重的样本**才能分辨：
+  //   样本 [100(stale), 100(stale), 400(fresh)]，myPower = 450
+  //     · 正确：(70+70+400)/2.4 = 225  ⇒ 450/225 = 2.00
+  //     · 变异（stale 当 1）：(100+100+400)/3 = 200 ⇒ 450/200 = 2.25
+  check('S4-16 stale 权重 = 0.7（结果 2.00，不是 2.25）', () => {
+    const v = INTENT.computeForceRatio({
+      myPower: 450,
+      records: [
+        { targetId: 1, power: 100, tier: 'stale' },
+        { targetId: 2, power: 100, tier: 'stale' },
+        { targetId: 3, power: 400, tier: 'fresh' },
+      ],
+    });
+    assert.ok(Math.abs(v - 2.0) < 1e-9, `期望 2.00；实际 ${v}（2.25 ⇒ stale 被当成 1）`);
+  });
+  // ── S4-17：clamp 两端都生效 ───────────────────────────────────────────────
+  // 上限 6：一支 100 打一支 1 ⇒ 原始 100 ⇒ 必须夹到 6，否则"绝对优势"会溢出到决策层；
+  // 下限 0.15：1 打 1000 ⇒ 原始 0.001 ⇒ 必须夹到 0.15，否则"残兵"被算成毫无希望。
+  check('S4-17 clamp 两端生效（上限 6 / 下限 0.15）', () => {
+    const hi = INTENT.computeForceRatio({ myPower: 100, records: [{ targetId: 1, power: 1, tier: 'fresh' }] });
+    assert.equal(hi, 6, `上限未生效：实际 ${hi}`);
+    const lo = INTENT.computeForceRatio({ myPower: 1, records: [{ targetId: 1, power: 1000, tier: 'fresh' }] });
+    assert.equal(lo, 0.15, `下限未生效：实际 ${lo}`);
+  });
 }
 
 if (INTENT.__missing || typeof INTENT.canCommitSiege !== 'function') {
-  for (const n of ['S4-07', 'S4-08']) pending(n, '导出缺失: canCommitSiege');
+  for (const n of ['S4-07', 'S4-08', 'S4-12', 'S4-13', 'S4-18']) pending(n, '导出缺失: canCommitSiege');
 } else {
+  // ── 四条 siege 防线（互为反向守卫；缺一条，闸就会被调歪一个方向）──────────
+  // 每条对应的反例都真实发生过：3v1（永不攻坚）、10v2（非对称修过头）、僵尸阵营（死闸）。
   // B-1：3 个敌阵营、只识别 1 支 ⇒ 拦住
   check('S4-07 3 敌阵营识 1 支 ⇒ 不许 siege', () => {
     assert.equal(INTENT.canCommitSiege({ forceRatio: 2.5, identifiedCount: 1, enemyLiveFactionCount: 3 }), false);
   });
-  // B-2：敌方仅 1 支 ⇒ 允许（防"永不攻坚"）
+  // B-2：敌方仅 1 支 ⇒ 允许（防"永不攻坚"：3v1/10v1 时 identified 上限就是 1）
   check('S4-08 敌 1 阵营识 1 支 + 2.5 倍 ⇒ 允许 siege', () => {
     assert.equal(INTENT.canCommitSiege({ forceRatio: 2.5, identifiedCount: 1, enemyLiveFactionCount: 1 }), true);
+  });
+  // B-3：10v2 —— 我方 10 支、敌方 1 阵营 2 支、两支全识别 ⇒ 必须允许
+  //   锁的是"门槛不得随我方数量抬升"（这正是早期用 max(1, 我方数) 当分母时崩掉的形态）
+  check('S4-12 10v2 识别 2 支 ⇒ 允许 siege（防非对称修过头）', () => {
+    assert.equal(INTENT.canCommitSiege({ forceRatio: 2.5, identifiedCount: 2, enemyLiveFactionCount: 1 }), true);
+  });
+  // B-4：终盘僵尸阵营 —— 2 个 active 但只有 1 个还有舰队 ⇒ 调用侧口径应为 need=1 ⇒ 允许
+  check('S4-13 终盘仅 1 个阵营有舰队 ⇒ need=1 ⇒ 允许 siege（防死闸）', () => {
+    assert.equal(INTENT.canCommitSiege({ forceRatio: 2.5, identifiedCount: 1, enemyLiveFactionCount: 1 }), true);
+  });
+  // B-5：阈值边界 2.30 必须真的在判据里（这条也是变异测试逼出来的）──────
+  // 单靠 2.5 的样本，把 `> 2.30` 改成 `> 2.0` 不会红（2.5 两边都过）⇒ 阈值本身没有被钉住。
+  //   · 2.29 ⇒ false（差 0.01 就不该过）
+  //   · 2.31 ⇒ true
+  // ⚠ 2.30 属"受保护常量"（裁决已冻结）。若将来裁决允许调参，**本条需与裁决同步改**，
+  //   而不是"因为它红了就去改阈值"。
+  check('S4-18 优势阈值边界 2.30（2.29⇒false / 2.31⇒true）', () => {
+    assert.equal(INTENT.canCommitSiege({ forceRatio: 2.29, identifiedCount: 1, enemyLiveFactionCount: 1 }), false,
+      '2.29 不该过（阈值被调低了？）');
+    assert.equal(INTENT.canCommitSiege({ forceRatio: 2.31, identifiedCount: 1, enemyLiveFactionCount: 1 }), true,
+      '2.31 该过（阈值被调高了？）');
+  });
+
+  // ── S4-19：`countLiveEnemyFactions` 必须排除僵尸阵营 ──────────────────────
+  // 为什么必须是纯函数而不是"源码审查"：源码审查不进回归面，下次重构照样退化、台架还绿。
+  // 僵尸阵营 = `active: true` 但 `combatFleetCount === 0`（已被打光、尚未置 inactive）
+  //   ⇒ 若把它数进去，`need` 会被抬到永远达不成 ⇒ **终盘永不攻坚**。
+  // 三种情形都要覆盖，缺一条都会留下一个死闸方向。
+  checkGated(F_LIVE_FACTIONS, 'S4-19 countLiveEnemyFactions 排除僵尸 / 未参战 / 空数组', () => {
+    const f = INTENT.countLiveEnemyFactions;
+    // ① 僵尸阵营不计（active 但无战斗舰队）
+    assert.equal(f({ factions: [
+      { id: 'a', active: true, combatFleetCount: 0 },
+      { id: 'b', active: true, combatFleetCount: 2 },
+    ] }), 1, '僵尸阵营被计入 ⇒ need 会永久偏高');
+    // ② 未参战阵营不计（active=false 但仍有舰队）
+    assert.equal(f({ factions: [{ id: 'c', active: false, combatFleetCount: 3 }] }), 0,
+      '未参战阵营被计入');
+    // ③ 空数组 ⇒ 0；且 0 经 canCommitSiege 的 max(1,·) 兜底后仍**允许**攻坚
+    //    ← 这条防"空 ⇒ 永远不许"的死闸（若有人把 need 写成 max(0,·) 或对 0 特判）
+    assert.equal(f({ factions: [] }), 0, '空数组结果应为 0');
+    assert.equal(
+      INTENT.canCommitSiege({ forceRatio: 3, identifiedCount: 1, enemyLiveFactionCount: 0 }),
+      true,
+      'enemyLiveFactionCount=0 时被闸死 ⇒ 终盘永不攻坚',
+    );
   });
 }
 
