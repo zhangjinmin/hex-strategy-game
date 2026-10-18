@@ -12,15 +12,19 @@
       <div class="fleet-ui-layer">
         <div v-for="fleet in fleetsUI" :key="fleet.id"
             class="fleet-float-ui"
+            :class="{ 'fleet-ghost': fleet.ghost }"
             :style="{ left: fleet.x + 'px', top: (fleet.y - 45) + 'px' }">
-          <img v-if="!fleet.contactState || fleet.contactState === 'identified'" :src="getPortrait(fleet.imageId)" class="fleet-portrait" @error="handleImgError" />
+          <img v-if="!fleet.ghost && (!fleet.contactState || fleet.contactState === 'identified')" :src="getPortrait(fleet.imageId)" class="fleet-portrait" @error="handleImgError" />
           <div class="fleet-info">
             <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
                 <div class="fleet-name" :class="fleet.team === 1 ? 'text-cyan' : 'text-red'">{{ fleet.name }}</div>
-                <div v-if="!fleet.contactState || fleet.contactState === 'identified'" style="font-size: calc(9px * var(--font-scale)); color: var(--color-text-secondary); font-weight: 800;">{{ fleet.unitCount }} 艘</div>
+                <!-- [迷雾·末次位置] ghost 卡片只是档案坐标的"图钉"，不得显示兵力/血条：
+                     它是"曾经见过"，不是"现在还是这样"。 -->
+                <div v-if="fleet.ghost" style="font-size: calc(9px * var(--font-scale)); color: var(--color-text-secondary); font-weight: 800;">已丢失</div>
+                <div v-else-if="!fleet.contactState || fleet.contactState === 'identified'" style="font-size: calc(9px * var(--font-scale)); color: var(--color-text-secondary); font-weight: 800;">{{ fleet.unitCount }} 艘</div>
                 <div v-else style="font-size: calc(9px * var(--font-scale)); color: var(--color-warning); font-weight: 800;">{{ fleet.contactState === 'anomaly' ? '◌' : '◇' }}</div>
             </div>
-            <template v-if="!fleet.contactState || fleet.contactState === 'identified'">
+            <template v-if="!fleet.ghost && (!fleet.contactState || fleet.contactState === 'identified')">
             <div class="fleet-hp-bar">
               <div class="hp-fill" :class="fleet.team === 1 ? 'bg-cyan' : 'bg-red'" :style="{ width: Math.max(0, (fleet.hp / fleet.maxHp) * 100) + '%' }"></div>
             </div>
@@ -882,6 +886,15 @@ body.battle3d-mode .fleet-ui-layer { display: none; }
 }
 
 .fleet-portrait { width: 28px; height: 36px; object-fit: cover; border-radius: 3px; border: 1px solid var(--color-border); background: var(--neo-surface-raised); }
+/* [迷雾·末次位置] 幽灵卡片：虚线框 + 半透明 + 缩排 —— 读作"档案图钉"，不是一支活着的舰队 */
+.fleet-float-ui.fleet-ghost {
+  background: rgba(11, 12, 16, 0.55);
+  border: 1px dashed var(--overlay-border);
+  opacity: 0.8;
+  padding: 2px 5px;
+}
+.fleet-float-ui.fleet-ghost .fleet-info { width: auto; }
+.fleet-float-ui.fleet-ghost .fleet-name { color: var(--color-text-secondary); font-weight: 700; }
 .fleet-info { display: flex; flex-direction: column; gap: 4px; width: 90px; }
 .fleet-name { font-size: calc(11px * var(--font-scale)); font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1; }
 .fleet-hp-bar { width: 100%; height: 4px; background: var(--color-border); border-radius: 2px; overflow: hidden; }

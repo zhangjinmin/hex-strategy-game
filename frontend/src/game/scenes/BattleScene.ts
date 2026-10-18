@@ -9133,6 +9133,8 @@ export class BattleScene extends Phaser.Scene {
                         record,
                     });
                     (fl as any)._intelDisplayMode = display.mode;
+                    // 呈现层文案与档位同源写出（仅作 3D 接触符号的文字，不参与任何判定/瞄准/视野）
+                    (fl as any)._intelLabel = display.label;
                     if (display.mode === 'last_known') {
                         (fl as any)._intelLastKnown = { x: display.x, y: display.y, t: display.t };
                     }
@@ -9157,14 +9159,17 @@ export class BattleScene extends Phaser.Scene {
                             if (u.hpBar) u.hpBar.setVisible(false);
                             if (u.text) u.text.setVisible(false);
                         });
-                        const gx = ((display.x ?? 0) - cam.worldView.x) * cam.zoom;
-                        const gy = ((display.y ?? 0) - cam.worldView.y) * cam.zoom;
+                        // 档案缺坐标（字段缺失）时回落到舰队锚点 —— 绝不让卡片掉到世界原点
+                        const ix = display.x ?? fl.x ?? 0;
+                        const iy = display.y ?? fl.y ?? 0;
+                        const gx = (ix - cam.worldView.x) * cam.zoom;
+                        const gy = (iy - cam.worldView.y) * cam.zoom;
                         uiData.push({
                             id: fl.id, x: gx, y: gy, name: '末次位置', imageId: fac.imageId,
                             hp: 0, maxHp: 1, unitCount: 0,
                             supply: 0, morale: 0, contactState: contact.state,
                             team: fac.team, stance: 'hidden', ghost: true,
-                            intelX: display.x, intelY: display.y, intelT: display.t,
+                            intelX: ix, intelY: iy, intelT: display.t,
                         });
                     } else if (fac.team !== playerFac?.team) {
                         // fuzzy / hidden：真实模型不渲染（fuzzy 的接触符号由 B3O 按 _intelDisplayMode 绘制）

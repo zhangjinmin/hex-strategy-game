@@ -577,6 +577,26 @@ interface FleetMark {
   midV: number;
 }
 
+/**
+ * 未识别 / 末次位置接触的 3D 符号记录（**只画符号，绝不建舰船实体**）。
+ *
+ * 存在理由：`resolveIntelDisplay` 输出 4 档，此前 3D 层只有 `live` 一档被消费
+ * （`isFleetIntelVisible` 二值门）⇒ `fuzzy`（异常信号/未识别舰队）与 `last_known`
+ * （末次已知位置）在战场里**完全没有呈现**，玩家只经历"完整模型 / 什么都没有"两态。
+ * 本记录把这两档补成"接触符号 + 文字"，使情报梯度（信号 → 轮廓 → 识别）第一次可见。
+ *
+ * ⚠ 刻意**不建舰船模型/不画血条**：一旦画出轮廓，玩家就能数出对方几艘，"未识别"就失去意义。
+ */
+interface IntelMark {
+  /** 档位（fuzzy / last_known）—— 变化即重建几何（两种符号形状不同） */
+  kind: 'fuzzy' | 'last_known';
+  /** 单个 LineSegments 承载整枚符号（环 + 刻度 / 四角括号 + 十字）⇒ **1 draw call** */
+  line: THREE.LineSegments;
+  mat: THREE.LineBasicMaterial;
+  /** 上一帧写过的模式色（避免每帧 setHex） */
+  lastColor: number;
+}
+
 /** 单支舰队的 billboard DOM 句柄（3D 模式下的 HP/补给/姿态呈现层） */
 interface FleetBillboard {
   root: HTMLDivElement;
@@ -707,6 +727,13 @@ const BB_CSS = `
   padding:3px 8px;border-radius:4px;background:rgba(6,10,20,.88);border:1px solid;text-shadow:0 1px 2px #000}
 .b3d-cmd-notice.ok{color:#7dd3fc;border-color:#66ccff}
 .b3d-cmd-notice.fail{color:#fca5a5;border-color:#ff5544}
+/* 未识别 / 末次位置接触标签：**刻意做小做暗**——它是"情报"不是"舰队名牌"，
+   视觉权重必须明显低于友方/已识别舰队，否则玩家会以为是完整目标。 */
+.b3d-intel{position:absolute;left:0;top:0;transform:translate(-50%,-100%);pointer-events:none;
+  font-family:inherit;font-size:9px;font-weight:800;line-height:1.25;white-space:nowrap;letter-spacing:.02em;
+  padding:1px 5px;border-radius:3px;background:rgba(6,10,20,.62);border:1px solid;text-shadow:0 1px 2px #000}
+.b3d-intel.fuzzy{color:#fbbf24;border-color:rgba(251,191,36,.5)}
+.b3d-intel.last{color:#cbd5e1;border-color:rgba(148,163,184,.42)}
 `;
 
 // ── 尾焰粒子系统（原型移植）──
@@ -725,6 +752,11 @@ const BB_CSS = `
  *  （现行点径/点距 = `DOT_DIAM_K = 0.90`）。 */
 const DOT_IN_LO = 3.2;
 const DOT_IN_HI = 5.0;
+/** 未识别/末次位置接触符号的**同屏上限**（按相机距离取最近 N 支）。
+ *  符号是纯 UI 标记、**不占 MAX_MESHES 实体预算**（不进 ships / unitVis / 光点缓冲），
+ *  但一次大规模遭遇战里几十枚细环会同时抬高 draw call 与叠加密度 ⇒ 只画最近的这些。
+ *  14 的依据：正常会战里"非 live 敌舰队"通常 ≤ 6 支（分队 + 侦察分队），14 留一倍余量。 */
+const INTEL_MARK_MAX = 14;
 /** px：实体淡入区间。34px 是能看清舰体轮廓的下限，56px 后完全交给实体 */
 /* 【v75】**恢复 v60-v66 的阈值**（用户实报「最早的版本这个没问题」）。
    v73 曾把本组收紧到 9/15/12/10，实测后果（用户截图）：
@@ -1545,6 +1577,16 @@ export class Battle3DOverlay {
   private fleetMarks = new Map<number, FleetMark>();
   /** 每帧复用的"舰队 → 队内最低舰高 / 最长舰长"聚合（避免每帧分配） */
   private markAgg = new Map<number, { fleet: any; minY: number; maxShipLen: number; maxShipW: number }>();
+
+  // ---------- 未识别 / 末次位置接触符号层（迷雾的信息梯度）----------
+  /** 接触符号容器（舰船对象之外独立一层；不参与 MAX_MESHES 实体预算） */
+  private intelGroup: THREE.Group | null = null;
+  /** 每支非 live 敌舰队一条符号记录（fleet 对象 → 符号） */
+  private intelMarks = new Map<any, IntelMark>();
+  /** 符号上方的文字标签（DOM，跟随投影；与 billboard 分开，绝不复用"舰队名牌"） */
+  private intelLabels = new Map<any, HTMLDivElement>();
+  /** 本帧选中的接触舰队（按相机距离最近的 N 支）——标签/符号共用同一份，避免两处各排一次序 */
+  private intelPicked: { fleet: any; mode: string; x: number; y: number; d2: number }[] = [];
   /** 上帧分层统计（__b3dStats 调试口 / 验收用） */
   private lastStats = {
     units: 0, meshes: 0, points: 0, halos: 0,
@@ -1561,6 +1603,8 @@ export class Battle3DOverlay {
     marks: 0,
     /** 本帧全队统一的标记透明度 = max(1−sstep(refPx), MARKER_FLOOR) × (1−sstep(meshIn, refPx)) */
     markerAlpha: 0,
+    /** 本帧实际绘出的未识别/末次位置接触符号数（fuzzy + last_known；不含 live/hidden） */
+    intelContacts: 0,
     /** [WS7] 本帧实际生效的实体池预算（未开 governor 时恒 = MAX_MESHES） */
     meshBudget: MAX_MESHES,
     /** [WS7] 帧时 EMA（ms），未开 governor 时不做统计保持 0 */
@@ -1887,6 +1931,8 @@ export class Battle3DOverlay {
       // （远景 ≈ 1，中景降到 MARKER_FLOOR 支路，近景随 meshOff 归零；见 writeFleetMarks 的分支）
       marks: this.lastStats.marks,
       markerAlpha: this.lastStats.markerAlpha,
+      // 未识别/末次位置接触符号数（fuzzy + last_known；live/hidden 不计）
+      intelContacts: this.lastStats.intelContacts,
       // 主场景 GPU 提交量（[WS7] 修：取主场景 render 后的快照，不是 CRT 后处理的 1 个 quad）
       renderCalls: this.lastRender.calls,
       renderPoints: this.lastRender.points,
@@ -6612,6 +6658,221 @@ export class Battle3DOverlay {
     });
   }
 
+  // ---------- 未识别 / 末次位置接触符号层（迷雾的信息梯度）----------
+  /**
+   * 接触符号几何：两种形状都用**一个** LineSegments 承载 ⇒ 每个接触 1 draw call。
+   *   · fuzzy      = 细环 + 四向内指刻度（读作"传感器接触"，区别于补给范围圈）；
+   *   · last_known = 四角括号 + 中心十字（"虚框"读法：框里没有实物，只有档案坐标）。
+   * 顶点写**局部坐标**（原点即接触点），落位由 object.position 完成 ⇒ 换位不重建几何。
+   */
+  private makeContactSymbolGeo(kind: 'fuzzy' | 'last_known', r: number): THREE.BufferGeometry {
+    const p: number[] = [];
+    if (kind === 'fuzzy') {
+      const SEG = 40;
+      for (let i = 0; i < SEG; i++) {
+        const a0 = (i / SEG) * Math.PI * 2;
+        const a1 = ((i + 1) / SEG) * Math.PI * 2;
+        p.push(Math.cos(a0) * r, 0, Math.sin(a0) * r, Math.cos(a1) * r, 0, Math.sin(a1) * r);
+      }
+      for (let k = 0; k < 4; k++) {
+        const a = (k * Math.PI) / 2;
+        p.push(Math.cos(a) * r * 0.6, 0, Math.sin(a) * r * 0.6);
+        p.push(Math.cos(a) * r * 0.86, 0, Math.sin(a) * r * 0.86);
+      }
+    } else {
+      const arm = r * 0.45;
+      for (const sx of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          p.push(sx * r, 0, sz * r, sx * (r - arm), 0, sz * r);
+          p.push(sx * r, 0, sz * r, sx * r, 0, sz * (r - arm));
+        }
+      }
+      p.push(-r * 0.2, 0, 0, r * 0.2, 0, 0);
+      p.push(0, 0, -r * 0.2, 0, 0, r * 0.2);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
+    return g;
+  }
+
+  private disposeIntelMark(rec: IntelMark) {
+    if (this.intelGroup) this.intelGroup.remove(rec.line);
+    rec.line.geometry.dispose();
+    rec.mat.dispose();
+  }
+
+  private destroyIntelLabel(fleet: any) {
+    const el = this.intelLabels.get(fleet);
+    if (!el) return;
+    el.remove();
+    this.intelLabels.delete(fleet);
+  }
+
+  /** 接触符号的落点：fuzzy 用实时观测位（在传感器内 ⇒ 位置本就可知，只缺"是谁"）；
+   *  last_known 用**档案末次坐标**（绝不实时跟位 —— 否则等于把迷雾关掉）。 */
+  private contactAnchorOf(fl: any, mode: string): { x: number; y: number } {
+    if (mode === 'last_known') {
+      const lk: any = (fl as any)._intelLastKnown;
+      if (lk && Number.isFinite(lk.x) && Number.isFinite(lk.y)) return { x: lk.x, y: lk.y };
+    }
+    const x = Number(fl?.x);
+    const y = Number(fl?.y);
+    if (Number.isFinite(x) && Number.isFinite(y)) return { x, y };
+    const s = fl?.units?.[0]?.sprite;
+    return { x: Number(s?.x) || 0, y: Number(s?.y) || 0 };
+  }
+
+  /**
+   * 每帧绘制「未识别 / 末次位置」接触符号（**纯呈现层**）。
+   *
+   * 档位真源 = BattleScene 写出的 `_intelDisplayMode`（即 `resolveIntelDisplay` 的输出），
+   * 本函数只读取它，不复算、不改写：
+   *   · live       —— 完整模型由 syncShips 建，这里**不画**（避免重复表示）；
+   *   · fuzzy      —— 细环 + 内指刻度 + 「? 异常信号 / ? 未识别舰队」；
+   *   · last_known —— 四角括号 + 中心十字 + 「末次位置 · Ns 前」，画在档案坐标上；
+   *   · hidden     —— 不画。
+   *
+   * ⚠ **不建舰船实体、不画血条/兵力**：`sprite.visible` 仍由 BattleScene 关掉 ⇒
+   *   syncShips 第一遍不会登记 unitVis ⇒ 模型/光点/名牌/意图线全都不产生。
+   *   画了模型玩家就能数出对方几艘，"未识别"就没意义了。
+   * ⚠ DOM 文字标签只用 `b3d-intel` 自己的类（App.vue 的 `.fleet-float-ui` 是 scoped，拿不到）。
+   */
+  private updateIntelContacts() {
+    if (!this.intelGroup) {
+      this.intelGroup = new THREE.Group();
+      this.intelGroup.name = 'intelContacts';
+      this.scene.add(this.intelGroup);
+    }
+    const bs: any = this.battleScene;
+    const fleets: any[] = bs?.globalFleets || [];
+    const player = ((this.store as any).factions || []).find((f: any) => f.type === 'player');
+    const playerTeam = player?.team ?? 1;
+    const R = this.hexR;
+    const nowMs = typeof bs?.time?.now === 'number' ? bs.time.now : 0;
+
+    // LOD 强度：与 writeFleetMarks 同一 refPx 真源（相机 → controls.target 的战列舰像素长）。
+    // 近景 1 → 极远景 0.45：雷达全局视角下符号整体减淡（不堆成一片亮环），
+    // 但**绝不清零** —— 非 live 接触没有模型/光点兜底，归零就等于"情报凭空消失"。
+    const refPx = this.pxOf(this.controls.target, this.dimsOf('battleship').L);
+    const lodK = 0.45 + 0.55 * sstep(DOT_IN_LO, MESH_IN_HI, refPx);
+
+    // 1) 候选（非本队 / 非 live / 非 hidden 的存活舰队），按相机距离取最近 N 支
+    const picked = this.intelPicked;
+    picked.length = 0;
+    const camPos = this.camera.position;
+    for (const fl of fleets) {
+      if (!fl || !((fl.units as any[])?.length > 0)) continue;
+      const fac: any = this.getFac(fl.factionId);
+      if (!fac || fac.team === playerTeam) continue;
+      const mode = (fl as any)._intelDisplayMode;
+      if (mode !== 'fuzzy' && mode !== 'last_known') continue;
+      const a = this.contactAnchorOf(fl, mode);
+      const dx = a.x - camPos.x;
+      const dz = -a.y - camPos.z;
+      picked.push({ fleet: fl, mode, x: a.x, y: a.y, d2: dx * dx + dz * dz });
+    }
+    if (picked.length > INTEL_MARK_MAX) {
+      picked.sort((p, q) => p.d2 - q.d2);
+      picked.length = INTEL_MARK_MAX;
+    }
+    const shown = new Set<any>();
+    for (const e of picked) shown.add(e.fleet);
+
+    // 2) 回收：本帧不再命中（转 live / 转 hidden / 被上限挤出 / 阵亡）⇒ 符号 + 标签一起摘除
+    this.intelMarks.forEach((rec, fl) => {
+      if (shown.has(fl)) return;
+      this.disposeIntelMark(rec);
+      this.intelMarks.delete(fl);
+    });
+    this.intelLabels.forEach((el, fl) => { if (!shown.has(fl)) this.destroyIntelLabel(fl); });
+
+    // 3) 落位 + 透明度
+    let drawn = 0;
+    for (const e of picked) {
+      const { fleet, mode, x, y } = e;
+      const fac: any = this.getFac(fleet.factionId) || {};
+      const baseColor = factionColor(fac);
+
+      let rec = this.intelMarks.get(fleet);
+      if (!rec || rec.kind !== mode) {
+        if (rec) this.disposeIntelMark(rec);
+        const r = mode === 'fuzzy' ? R * 1.15 : R * 1.0;
+        const geo = this.makeContactSymbolGeo(mode as 'fuzzy' | 'last_known', r);
+        // NormalBlending（**不是** Additive）：加色会在远景堆成"孤立光斑"，而符号要读作"线条"
+        const mat = new THREE.LineBasicMaterial({
+          color: baseColor, transparent: true, opacity: 0, depthWrite: false, depthTest: true,
+        });
+        const line = new THREE.LineSegments(geo, mat);
+        line.frustumCulled = false;
+        line.renderOrder = 4;   // 在阵型底板（-2/-1）之上；透明队列内后画
+        line.name = `${mode === 'fuzzy' ? 'intelFuzzy' : 'intelLast'}_${fleet.id}`;
+        this.intelGroup!.add(line);
+        rec = { kind: mode as 'fuzzy' | 'last_known', line, mat, lastColor: -1 };
+        this.intelMarks.set(fleet, rec);
+      }
+
+      // 高度：贴在地图平面**之上**、舰船巡航高度**之下**（与阵型底板同一语义）——
+      // 既不与地面网格共面（z-fighting），也不飘到舰体上方遮挡。
+      const gy = this.groundYAt(x, y) + this.cruiseClearance * MARKER_DROP_K;
+      rec.line.position.set(x, gy, -y);
+
+      // 透明度 = 基色强度 × LOD 衰减 × （last_known）龄期衰减：
+      // "多久以前看到的"本身就是情报强度的一部分 —— 越旧越淡，玩家一眼能读出新旧。
+      let alpha = (mode === 'fuzzy' ? 0.38 : 0.34) * lodK;
+      if (mode === 'last_known') {
+        const t = Number((fleet as any)._intelLastKnown?.t);
+        const ageS = Number.isFinite(t) && nowMs > 0 ? Math.max(0, (nowMs - t) / 1000) : 0;
+        alpha *= Math.max(0.42, 1 / (1 + ageS / 18));
+      }
+      rec.mat.opacity = alpha;
+      rec.line.visible = alpha > 0.02;
+      if (rec.lastColor !== baseColor) {
+        rec.mat.color.setHex(baseColor);
+        rec.lastColor = baseColor;
+      }
+      if (rec.line.visible) drawn += 1;
+    }
+    this.lastStats.intelContacts = drawn;
+
+    // 4) 文字标签（DOM）：锚在符号正上方（比符号高约一格），屏幕坐标与 billboard 同口径
+    if (!this.bbLayer) return;
+    const w = this.container.clientWidth || 1;
+    const h = this.container.clientHeight || 1;
+    for (const e of picked) {
+      const gy = this.groundYAt(e.x, e.y) + this.cruiseClearance * MARKER_DROP_K;
+      const v = this.bbProjV.set(e.x, gy + R * 1.15, -e.y);
+      v.project(this.camera);
+      const onFrustum = v.z > -1 && v.z < 1 && Math.abs(v.x) < 1.05 && Math.abs(v.y) < 1.05;
+      let el = this.intelLabels.get(e.fleet);
+      if (!el) {
+        el = document.createElement('div');
+        this.bbLayer.appendChild(el);
+        this.intelLabels.set(e.fleet, el);
+      }
+      const isFuzzy = e.mode === 'fuzzy';
+      const cls = `b3d-intel ${isFuzzy ? 'fuzzy' : 'last'}`;
+      if (el.className !== cls) el.className = cls;
+      let txt: string;
+      if (isFuzzy) {
+        txt = `? ${String((e.fleet as any)._intelLabel || '未识别')}`;
+      } else {
+        const t = Number((e.fleet as any)._intelLastKnown?.t);
+        const ageS = Number.isFinite(t) && nowMs > 0 ? Math.max(0, (nowMs - t) / 1000) : 0;
+        txt = ageS >= 1 ? `末次位置 · ${Math.round(ageS)}s 前` : '末次位置';
+      }
+      if (el.textContent !== txt) el.textContent = txt;
+      if (!onFrustum) {
+        if (el.style.display !== 'none') el.style.display = 'none';
+        continue;
+      }
+      if (el.style.display === 'none') el.style.display = '';
+      const sx = (v.x * 0.5 + 0.5) * w;
+      const sy = (-v.y * 0.5 + 0.5) * h;
+      el.style.transform = `translate(-50%,-100%) translate(${sx.toFixed(1)}px,${sy.toFixed(1)}px)`;
+      el.style.opacity = (0.55 + 0.45 * lodK).toFixed(2);
+    }
+  }
+
   /** 每帧投影更新：舰队 3D 锚点（所属舰船质心 + 抬高）→ 屏幕坐标 */
   private updateBillboards() {
     if (!this.bbLayer) return;
@@ -7905,6 +8166,9 @@ export class Battle3DOverlay {
       this.updateBillboards();
       this.updateSupplyViz();
       this.updateCastleIntelVisibility();
+      // 未识别 / 末次位置接触符号（迷雾的信息梯度）：必须在 syncShips 之后 ——
+      // 它读 BattleScene 本帧写出的 `_intelDisplayMode`。
+      this.updateIntelContacts();
       this.updateIntentLines();
       // [v56 性能] 修复 v37 重构引入的**双重调用块**：updateFlames / drainFx3d / updateFx /
       // updateBoats / updateCaptures 曾被连续跑两遍（pre_refactor_backup 为单份）——
@@ -8129,6 +8393,13 @@ export class Battle3DOverlay {
     this.fleetMarks.clear();
     this.markAgg.clear();
     this.markGroup = null;
+    // 未识别/末次位置接触符号层：逐条释放几何/材质 + DOM 标签；引用表必须清空防串场
+    this.intelMarks.forEach((rec) => this.disposeIntelMark(rec));
+    this.intelMarks.clear();
+    this.intelLabels.forEach((el) => el.remove());
+    this.intelLabels.clear();
+    this.intelPicked.length = 0;
+    this.intelGroup = null;
     // v5: 舰载机引用表清空（几何体/材质由下方 scene.traverse 统一释放）
     this.strikes.length = 0;
     this.shields.length = 0;   // [v12.2 R3-a] 对称清空护盾池引用表（几何/材质由下方 scene.traverse 释放；防实例复用串场）
