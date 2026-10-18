@@ -5545,6 +5545,21 @@ export class BattleScene extends Phaser.Scene {
             fleet.mission = null;
             const f = this.factionMap.get(fleet.factionId);
             if (f) (f as any).mission = null;
+            // ⚠ `_missionDest` 必须在这里手清 —— **不是冗余**。
+            //
+            //   ① 为什么 `executeMissionTick` 不会替我们清：
+            //      它的唯一调用点是 `if (fleet.mission) this.executeMissionTick(...)`（1Hz，见 :920），
+            //      而其内部清理通道是 `if (!m) { fleet._missionDest = null; return; }`（:3574）。
+            //      上面刚把 `mission` 置 null ⇒ 下一 tick 连函数都进不去 ⇒ **清理通道不可达**。
+            //      ⇒ 这不是"残留一拍"，是**永久残留**（曾被误判为"1 秒后自愈"）。
+            //   ② 为什么残留有害：`_missionDest` 被**独立于 `mission`** 消费 ——
+            //      看门狗 objective 覆盖（:6919 `st.override`）、目标快照（:6867/#6886）、
+            //      快照显示（:7652）。这些点不检查 `mission` 是否为空。
+            //      ⇒ 玩家下姿态（"索敌/驻守"）后，舰队仍被旧任务点持续牵引
+            //        = 用户实报"我点了索敌，它好像还在按原来的想法走"的机制来源之一。
+            //   ③ 口径与 `:3591 clearMission` 一致（该处三件套同清：mission / fac.mission / _missionDest）。
+            //      ⇒ 任何"清任务"的动作都必须同清 `_missionDest`，否则清理入口会随 mission 一起消失。
+            fleet._missionDest = null;
             (fleet as any)._playerDefaultMission = false;
         }
         fleet.stance = payload;
