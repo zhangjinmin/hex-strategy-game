@@ -609,7 +609,9 @@ if (INTEL_ARCHIVE.__missing || typeof INTEL_ARCHIVE.recordKnownContact !== 'func
 //   B+C 的核心链是"侦察报告 → 档案 → 目标解析/战力比/拦截点"，
 //   报告点漏传 ⇒ 链断在中间，而 S7-01 仍会绿。
 check('S7-03 所有 kind=fleet 的写入点都传了 4 字段（源码断言）', () => {
-  const src = fs.readFileSync(path.join(SRC, 'game', 'scenes', 'BattleScene.ts'), 'utf8');
+  const raw = fs.readFileSync(path.join(SRC, 'game', 'scenes', 'BattleScene.ts'), 'utf8');
+  // ⚠ 必须先剥注释：否则"注释里写了 `power:`" 会让漏传的键被误判为已传
+  const src = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
   const blocks = [...src.matchAll(/recordKnownContact\([^,]+,\s*\{([\s\S]*?)\}\)/g)].map((m) => m[1]);
   const fleetBlocks = blocks.filter((b) => b.includes("kind: 'fleet'"));
   assert.ok(fleetBlocks.length >= 3, `fleet 写入点只有 ${fleetBlocks.length} 处（预期 >=3）`);
@@ -634,7 +636,11 @@ checkGated(F_FIELDS, 'S7-02 IntelSystem.d.ts 声明 4 个新字段', () => {
 // ══════════════════════════════════════════════════════════════════════
 // 汇总
 // ══════════════════════════════════════════════════════════════════════
-process.stdout.write(`\n──────── 汇总 ────────\nPASS ${pass}   FAIL ${failures.length}   PENDING ${pendings.length}\n`);
+const total = pass + failures.length + pendings.length;
+process.stdout.write(`\n──────── 汇总 ────────\nPASS ${pass}   FAIL ${failures.length}   PENDING ${pendings.length}   TOTAL ${total}\n`);
+// ⚠ TOTAL 是隐含守恒量：每步的 TOTAL 变化必须能解释（加了 N 条 / 删了 N 条），
+//   否则"某条断言被悄悄删掉"看不出来。
+
 if (pendings.length > 0) {
   process.stdout.write('\n待实现（不计失败）：\n');
   pendings.forEach((p) => process.stdout.write(`  · ${p}\n`));
