@@ -2732,7 +2732,13 @@ export class BattleScene extends Phaser.Scene {
         // [v66 #20] 与地面右键同源解析受令编队（无选中时默认唯一可控 = 我方提督编队）
         const fleet = this.resolveDirectOrderFleet();
         const target = this.globalFleets.find((f: any) => f.id === targetFleetId) ?? null;
-        if (!fleet || !target || (target as any)._intelDisplayMode !== 'live') return false;
+        // [v99] **去掉 `_intelDisplayMode !== 'live'` 门槛**。
+        //   拾取器 `pickFleetAtScreen` 的数据源是 `unitVis`，而 `unitVis` 只包含
+        //   `sprite.visible !== false` 的单位 —— 也就是说"能点到"本身就已经过了一遍迷雾。
+        //   再要求 `live` 的结果是：对**未识别但已渲染**的敌舰右键 ⇒ 攻击令被静默拒绝，
+        //   随后落到下面的地面点击分支 ⇒ 变成一条"移动到敌舰脚下"的机动令
+        //   ⇒ 玩家看到的就是"右键打它，它却自己跑出去了"（用户实报）。
+        if (!fleet || !target) return false;
         const ownFac = this.factionMap.get(fleet.factionId);
         const targetFac = this.factionMap.get(target.factionId);
         if (!ownFac || !targetFac || ownFac.team === targetFac.team) return false;
@@ -9836,6 +9842,13 @@ export class BattleScene extends Phaser.Scene {
                     if (display.mode === 'live') {
                         fl.units.forEach((u: any) => { u.sprite.setVisible(true); });
                         if (fac.type !== 'player') fac.inVision = true;
+                        // [v99] **发现敌舰提醒**（每支舰队每局只提示一次）。
+                        //   用 `_detectedAlerted` 而不是"每帧比档位"：档位会在 live/fuzzy 之间
+                        //   反复切换（贴近/拉开），逐帧提示会刷屏。
+                        if (fac.team !== playerFac?.team && !(fl as any)._detectedAlerted) {
+                            (fl as any)._detectedAlerted = true;
+                            this.store.triggerToast?.(`⚠ 发现敌舰：${fac.name}（${fl.units.length} 艘）`);
+                        }
 
                         const screenX = (flagship.sprite.x - cam.worldView.x) * cam.zoom;
                         const screenY = (flagship.sprite.y - cam.worldView.y) * cam.zoom;

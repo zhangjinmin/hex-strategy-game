@@ -71,7 +71,15 @@ function uniqueCount(text, needle) {
 console.log('\n=== ① DOM 侧对应实现存在性 ===');
 
 const bannerHasDom = (b = banner) => b.includes('battle-banner') && b.includes('battleBanner');
-const lossHasDom = (b = banner) => b.includes('battle-loss') && b.includes('battleLossText');
+// [v99] 契约变更：战损**不再**在战斗中常驻（用户实报：盖住画面 + 跨局不清零），
+//   改为只在战后结算呈现。因此这里断言的是"旧角标已移除 + 新宿主已接线"，
+//   而不是原来那条"角标必须存在"。
+const lossMovedToSettlement = (b = banner) => {
+  const settle = read('frontend/src/components/battle/SettlementModal.vue');
+  return !b.includes('class="battle-loss"')
+    && settle.includes('battleLossText')
+    && settle.includes('战役损失');
+};
 const deployFooterHasDom = (f = footer) => f.includes('text-deploy') && f.includes('battleDeployPhase');
 const introCountdownHasDom = (i = intro) => i.includes('io-cd') && i.includes('deployCountdownSec');
 const sceneWritesStoreBanner = (s = scene) => /this\.store\.showBattleBanner\?\.\(/.test(s);
@@ -80,13 +88,14 @@ const storeExposesBanner = (s = store) => s.includes('showBattleBanner') && s.in
 check('store.showBattleBanner / battleLossText 存在（DOM 可见层数据源）', () => storeExposesBanner());
 check('BattleScene.showBattleBanner 写 store（3D 下 Phaser 版不可见 ⇒ 必须镜像 DOM）', () => sceneWritesStoreBanner());
 check('BattleBanner.vue 渲染阶段横幅（.battle-banner ← store.battleBanner）', () => bannerHasDom());
-check('BattleBanner.vue 渲染战损角标（.battle-loss ← store.battleLossText）', () => lossHasDom());
+check('战损已迁到结算：BattleBanner 无角标 + SettlementModal 渲染战役损失', () => lossMovedToSettlement());
 check('GameFooter.vue 渲染部署期常驻提示（.text-deploy ← battleDeployPhase）', () => deployFooterHasDom());
 check('BattleIntroOverlay.vue 渲染部署倒计时（.io-cd ← deployCountdownSec）', () => introCountdownHasDom());
 
 // 反例行（改坏后必须 FAIL）
 check('反例：BattleBanner.vue 去掉 .battle-banner 声明 ⇒ 断言 FAIL', () => bannerHasDom(banner.split('battle-banner').join('X')) === false);
-check('反例：BattleBanner.vue 去掉 battleLossText 绑定 ⇒ 断言 FAIL', () => lossHasDom(banner.split('battleLossText').join('X')) === false);
+check('反例：把战损角标加回 BattleBanner ⇒ 断言 FAIL',
+  () => lossMovedToSettlement(banner + '<div class="battle-loss">') === false);
 check('反例：GameFooter.vue 去掉 .text-deploy ⇒ 断言 FAIL', () => deployFooterHasDom(footer.split('text-deploy').join('X')) === false);
 check('反例：BattleIntroOverlay.vue 去掉 deployCountdownSec ⇒ 断言 FAIL', () => introCountdownHasDom(intro.split('deployCountdownSec').join('X')) === false);
 check('反例：BattleScene 不再镜像 store 横幅 ⇒ 断言 FAIL', () => sceneWritesStoreBanner(scene.split('this.store.showBattleBanner?.(').join('noop(')) === false);
