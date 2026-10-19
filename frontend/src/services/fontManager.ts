@@ -37,8 +37,16 @@ const BUILTIN_FAMILY: Record<string, string> = {
 
 /** 内置字体的显示名（品牌名，比自动生成的 "Lemi Pixel" 好认）。 */
 const DISPLAY_NAME_OVERRIDE: Record<string, string> = {
-  'lemi-pixel.ttf': '乐米像素体（内置）',
+  'lemi-pixel.ttf': '乐米像素体',
   'nunito-v16-latin-regular.woff2': 'Nunito（仅拉丁）',
+  // [v99] 显示名优先与**字体文件内置名称**一致 —— 用户按名字找字体，
+  //   而 `Smiley-Sans.ttf` 自动美化成 "Smiley Sans" 后，中文用户反而找不到"得意黑"。
+  //   下面是按 OpenType `name` 表实测结果登记的（不是猜的）：
+  //     jiangjunti.ttf  → family "平方将军体"
+  //     Smiley-Sans.ttf → family "Smiley Sans Oblique"（**斜体字重**，故标注出来）
+  'Smiley-Sans-Regular.ttf': '得意黑',
+  'Smiley-Sans.ttf': '得意黑（斜体）',
+  'jiangjunti.ttf': '平方将军体',
 };
 
 /** 用户丢进 assets/fonts 的所有字体文件 → URL 映射（编译期收集）。 */
@@ -92,12 +100,40 @@ export const FONT_CATALOG: FontEntry[] = Object.keys(FONT_URLS)
     return a.displayName.localeCompare(b.displayName, 'zh-Hans-CN');
   });
 
-/** 「系统默认」选项的 id（空串 = 不指定自定义字体）。 */
-export const SYSTEM_FONT_ID = '';
+/** 「系统字体」选项的 id。
+ *
+ *  [v99] 从空串改为显式哨兵 `'system'`：
+ *   默认值变成得意黑之后，**空串必须让位给"未设置过"**（老存档里存的就是空串），
+ *   否则老用户会永远停在系统栈上，看不到新的默认字体；
+ *   而"我就是要系统字体"这个选择也需要一个能被持久化、且不会被迁移覆盖的值。
+ */
+export const SYSTEM_FONT_ID = 'system';
 
-/** 系统字体栈（与 tokens.css 的默认值保持一致，去掉自定义字体段）。 */
-const SYSTEM_SANS = "'Inter', 'Noto Sans SC', system-ui, -apple-system, 'Microsoft YaHei', sans-serif";
-const SYSTEM_MONO = "'JetBrains Mono', 'Cascadia Code', 'Microsoft YaHei', monospace";
+/**
+ * [v99] 默认界面字体：**得意黑**（OFL 授权、随包分发）。
+ *
+ * 为什么换默认为自定义字体：原默认是"系统字体栈"，在 Windows 上会落到 **微软雅黑** ——
+ * 雅黑是商业授权字体，不能随程序分发/嵌入，作为默认渲染链的一环在法务上不成立。
+ *
+ * ⚠ **优先 Regular 字重**：目录里现有 `Smiley-Sans.ttf` 实测是 **Oblique（斜体）** 字重
+ *   （OpenType `name` 表 family = "Smiley Sans Oblique"，`head.macStyle` italic=1）。
+ *   斜体不适合做界面正文，所以这里按候选表选第一个**实际存在**的文件：
+ *   用户把 Regular 版丢进 `assets/fonts/`（文件名 `Smiley-Sans-Regular.ttf`）即自动生效，
+ *   无需改代码；只有斜体版时退回斜体，并在列表里明确标出「斜体」。
+ */
+const DEFAULT_FONT_CANDIDATES = ['Smiley-Sans-Regular.ttf', 'Smiley-Sans.ttf'];
+export const DEFAULT_UI_FONT_ID: string =
+  DEFAULT_FONT_CANDIDATES.find((id) => FONT_CATALOG.some((f) => f.id === id)) ?? SYSTEM_FONT_ID;
+
+/** 系统字体栈（与 tokens.css 的默认值保持一致，去掉自定义字体段）。
+ *
+ *  [v99] **移除 `Microsoft YaHei`**：雅黑是商业授权字体，不能随程序分发，
+ *  也不该作为默认渲染链的一环（缺字回落直接落到它＝实质依赖）。改用各平台自带的无衬线：
+ *   Windows ⇒ `system-ui` 解析到 Segoe UI + 系统中文字体；macOS ⇒ PingFang SC；
+ *   Linux ⇒ Noto Sans SC（若已安装）。缺字由通用 `sans-serif` 兜底，不会出豆腐块。
+ */
+const SYSTEM_SANS = "'Inter', 'Noto Sans SC', system-ui, -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif";
+const SYSTEM_MONO = "'JetBrains Mono', 'Cascadia Code', ui-monospace, monospace";
 
 export function findFont(id: string): FontEntry | null {
   return FONT_CATALOG.find((f) => f.id === id) ?? null;
@@ -145,7 +181,7 @@ export function applyFontFamily(id: string): FontEntry | null {
     return null;
   }
   ensureFontFacesInjected();
-  // 自定义族排最前；后面整条系统栈保留 —— 该字体缺字（生僻汉字、★◆ 等符号）时逐字回落到雅黑，
+  // 自定义族排最前；后面整条系统栈保留 —— 该字体缺字（生僻汉字、★◆ 等符号）时逐字回落到系统字体，
   // 不会出现豆腐块，也不会让「拉丁用字体 A、汉字用字体 B」的观感断层扩大到整段变形。
   root.style.setProperty('--dmc-font', `'${entry.family}', ${SYSTEM_SANS}`);
   root.style.setProperty('--dmc-font-mono', `'${entry.family}', ${SYSTEM_MONO}`);
@@ -200,7 +236,7 @@ async function hasGlyphs(family: string, text: string): Promise<boolean> {
 }
 
 export interface FontCoverage {
-  /** 是否含中日韩字形（决定中文会不会回落到雅黑） */
+  /** 是否含中日韩字形（决定中文会不会回落到系统字体） */
   cjk: boolean;
   /** 是否含拉丁字形 */
   latin: boolean;

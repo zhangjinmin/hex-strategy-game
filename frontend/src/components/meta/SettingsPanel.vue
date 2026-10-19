@@ -192,7 +192,7 @@
       </div>
       <div class="setting-hints">
         <div class="setting-hint">字体：把 .ttf / .otf / .woff2 丢进 <code>frontend/src/assets/fonts/</code>，重新 build（dev 下自动热更）后就会出现在下拉里，无需改代码。选中即时生效。</div>
-        <div class="setting-hint" v-if="currentCoverage && !currentCoverage.cjk">⚠ 当前字体不含中文字形：中文会回落到「微软雅黑」，只有英文/数字变化。</div>
+        <div class="setting-hint" v-if="currentCoverage && !currentCoverage.cjk">⚠ 当前字体不含中文字形：中文会回落到「系统字体」，只有英文/数字变化。</div>
         <div class="setting-hint" v-if="currentCoverage && currentCoverage.cjk && !currentCoverage.latin">当前字体不含拉丁字形：英文/数字会回落。</div>
         <div class="setting-hint">字号：只放大文字（100%~140%），不动按钮/面板/间距，与「全局缩放」互相独立、可叠加。</div>
       </div>
@@ -246,7 +246,9 @@ const settings = useSettingsStore() as any;
 // 打开设置页时确保动态 @font-face 已注入，否则预览/切换拿不到族名。
 ensureFontFacesInjected();
 
-const SYSTEM_FONT_HINT = '雅黑 / 系统栈';
+// [v99] 不再写"雅黑"：雅黑是商业授权字体，项目既不默认使用、也不应该出现在选项文案里，
+//   否则等于向用户暗示"这就是本项目的字体"。
+const SYSTEM_FONT_HINT = '系统字体栈';
 
 /** 各字体的字形覆盖检测结果（异步填充；未检测时下拉里只显示字体名）。 */
 const coverageMap = ref<Record<string, FontCoverage>>({});

@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
 import type { FactionSchemeKey } from '../config/factionThemes';
+import { DEFAULT_UI_FONT_ID, SYSTEM_FONT_ID, findFont } from '../services/fontManager';
 
 export const useSettingsStore = defineStore('settings', () => {
   // ===== 音频 =====
@@ -16,9 +17,10 @@ export const useSettingsStore = defineStore('settings', () => {
   const uiScale = ref(100);
   /**
    * [v66] 界面字体：assets/fonts 下某个字体文件的文件名（见 services/fontManager.ts 的 FONT_CATALOG）。
-   * 空串 = 系统默认字体栈。切换后 App.vue 会立刻改写 --dmc-font / --dmc-font-mono（所见即所得）。
+   * [v99] 默认值改为 `DEFAULT_UI_FONT_ID`（得意黑）—— 原先默认是系统栈，在 Windows 上实际落到
+   * **微软雅黑**，那是商业授权字体，不能作为项目默认依赖。空串仍保留为"系统字体"选项。
    */
-  const uiFont = ref('');
+  const uiFont = ref<string>(DEFAULT_UI_FONT_ID);
   /**
    * [v66] 字号独立缩放（100~140%）：**只放大文字**，不动间距与容器尺寸。
    * 与 uiScale（zoom，整体等比放大）分离 —— 用户抱怨"100% 字太小，但 120% 界面又太大"的正是这个。
@@ -112,8 +114,13 @@ export const useSettingsStore = defineStore('settings', () => {
         apiUrl.value = data.apiUrl ?? 'https://api.openai.com/v1';
         briefingDisabled.value = data.briefingDisabled ?? false;
         uiScale.value = data.uiScale ?? 100;
-        // [v66] 字体：值非法（用户删了字体文件 / 手改存档）一律回落系统默认，不静默用错字体
-        uiFont.value = typeof data.uiFont === 'string' ? data.uiFont : '';
+        // [v66] 字体：值非法（用户删了字体文件 / 手改存档）一律回落默认，不静默用错字体。
+        // [v99] 空串 = **老存档的"未设置"**（旧默认值），映射到新的默认字体；
+        //   "系统字体"改由显式哨兵 `SYSTEM_FONT_ID` 表示，因此不会被这次迁移吃掉。
+        {
+          const raw = typeof data.uiFont === 'string' ? data.uiFont : DEFAULT_UI_FONT_ID;
+          uiFont.value = raw === SYSTEM_FONT_ID || findFont(raw) ? raw : DEFAULT_UI_FONT_ID;
+        }
         // 字号缩放：钳制到 100~140（100 以下没有意义，且会让本来就小的字更难看清）
         {
           const raw = Number(data.fontScale);
@@ -178,7 +185,7 @@ export const useSettingsStore = defineStore('settings', () => {
     apiUrl.value = 'https://api.openai.com/v1';
     briefingDisabled.value = false;
     uiScale.value = 100;
-    uiFont.value = '';
+    uiFont.value = DEFAULT_UI_FONT_ID;
     fontScale.value = 120;
   };
 
