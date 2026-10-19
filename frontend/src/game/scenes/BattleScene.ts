@@ -9332,13 +9332,23 @@ export class BattleScene extends Phaser.Scene {
                         // inside this unit's forward arc. Picking randomly first
                         // and rejecting afterwards can suppress a valid shot just
                         // because the random candidate happened to be astern.
+                        // ── [v99] **近距离不受舰首射界约束**（炮塔 360° 回转）──────────────
+                        //   用户实报："距离都这么近了，但是不开火"；同屏舰船也不朝敌。
+                        //   根因：射界判定 `isTargetWithinFireArc(visibleHeading, ...)` 用的是**舰首**，
+                        //   而 `formFacing`/`facingSmooth` 在停船与巡航时只跟**航向**
+                        //   （见停船分支的注释："炮塔可 360° 回转，舰首朝向由航行决定、不由火控决定"）。
+                        //   ⇒ 那一层"炮塔层"在本项目里**从未实现** ⇒ 舰首不对着敌人时就永远打不出弹。
+                        //   现在补齐口径：**进入炮战距离后，射界不再卡舰首**（银英设定：主炮塔可全向回转）；
+                        //   远距/接近段仍保留射界要求，维持"必须先转过来"的观感。
+                        const _brawlRange = this.getIdealEngageDist(fleet) * 1.2;
+                        const arcFree = Phaser.Math.Distance.Between(u.sprite.x, u.sprite.y, fireTargetFleet.units?.[0]?.sprite?.x ?? fireTargetFleet.x, fireTargetFleet.units?.[0]?.sprite?.y ?? fireTargetFleet.y) <= _brawlRange;
                         const inRangeUnits = this.targetableUnitsOf(fireTargetFleet).filter((eu: any) =>
                             Phaser.Math.Distance.Between(u.sprite.x, u.sprite.y, eu.sprite.x, eu.sprite.y) <= effectiveRange
-                            && isTargetWithinFireArc(
+                            && (arcFree || isTargetWithinFireArc(
                                 visibleHeading,
                                 { x: u.sprite.x, y: u.sprite.y },
                                 { x: eu.sprite.x, y: eu.sprite.y },
-                            )
+                            ))
                         );
                         // [P1·集火] 舰队级集火表（共享黑板）：TTL 1s / 换目标舰队重建。
                         //   表是"火力分配共识"，不需要逐发重算；陈旧条目零成本失效

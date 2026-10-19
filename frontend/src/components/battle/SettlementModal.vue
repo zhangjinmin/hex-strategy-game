@@ -9,7 +9,10 @@
              损失账本由 BattleScene 逐帧维护、写入 store.battleLossText；
              现在它是唯一的呈现点（战斗中的常驻角标已移除）。 -->
         <p>战役损失: <span class="text-red">{{ store.battleLossText || '无舰船损失' }}</span></p>
-        <p class="loss-sub">结算经费: <span class="text-gold">+{{ store.rewardGold }} 亿</span></p>
+        <!-- [v99] **不再显示"结算经费"**：用户质疑"打完一仗不是该花钱吗，怎么还赚 245 亿"。
+             这个数是战役胜利的财政奖励，与"这一仗付出什么"是两件事，放在同一个框里只会打架。
+             胜负与损失在一处说清；经费去战报/经济面板看。
+             ⚠ 只是**不在这里显示**，`store.rewardGold` 的结算逻辑本身没动。 -->
       </div>
       
       <button @click="store.returnToMetaMenu()" class="neo-btn w-full mt-6 py-3 text-lg">返回统合作战本部</button>
