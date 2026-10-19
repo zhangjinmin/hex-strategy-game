@@ -2935,6 +2935,16 @@ export class BattleScene extends Phaser.Scene {
         const sprite = this.add.container(flight.x, flight.y).setDepth(4);
         const dot = this.add.circle(0, 0, 5, fac.color ?? 0x94a3b8, 0.9);
         sprite.add([dot]);
+        // [v99] **迷雾：敌方侦察分队建队即隐藏**。
+        //   这些伪舰队不在 `globalFleets` 里，营以上的逐队显隐循环（每帧情报遍历）
+        //   永远碰不到它们 ⇒ `sprite.visible` 一直是 true ⇒ 3D 层照单全收
+        //   （`syncShips` 只认 `u.sprite.visible`）。用户实报的"右下角三艘敌方侦察舰
+        //   一开始就看得见、却没有名牌"正是这条路径。
+        //   ⚠ 与本函数同一条口径：只控可见性，不改任何数据（AI 侦察逻辑不受影响）。
+        const _playerTeam = this.store.factions.find((f: any) => f.type === 'player')?.team;
+        if (typeof _playerTeam === 'number' && fac?.team !== _playerTeam) {
+            sprite.setVisible(false);
+        }
         const unit = {
             sprite, factionId: fac.id,
             hp: flight.hp, maxHp: flight.maxHp, atk: 5, def: 0,
@@ -3142,7 +3152,12 @@ export class BattleScene extends Phaser.Scene {
         const extras: any[] = [];
         this.scoutDetachments.forEach((det) => {
             for (const sf of det.scoutFlights) {
-                if (sf.flight?.phase !== 'lost') extras.push(sf);
+                if (sf.flight?.phase === 'lost') continue;
+                // [v99] 被迷雾隐藏的侦察分队**不进渲染池**。
+                //   3D 层虽然也会按 `u.sprite.visible === false` 跳过建模，但那是最后一道闸；
+                //   在这里挡掉可以顺带省掉 billboard / 拾取池的工作，也让 2D 降级路径一致。
+                if ((sf as any).units?.[0]?.sprite?.visible === false) continue;
+                extras.push(sf);
             }
         });
         return extras.length > 0 ? this.globalFleets.concat(extras) : this.globalFleets;

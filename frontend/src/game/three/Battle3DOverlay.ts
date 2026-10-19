@@ -703,24 +703,29 @@ interface StrikeSquad {
 const BB_STYLE_ID = 'b3d-billboard-style';
 const BB_CSS = `
 .b3d-bb-layer{position:absolute;inset:0;pointer-events:none;z-index:6;overflow:hidden}
-.b3d-bb{position:absolute;left:0;top:0;transform:translate(-50%,-100%);pointer-events:none;box-sizing:border-box;width:154px;
+.b3d-bb{position:absolute;left:0;top:0;transform:translate(-50%,-100%);pointer-events:none;box-sizing:border-box;width:184px;
   font-family:inherit;white-space:nowrap;will-change:transform,opacity;
-  padding:4px 6px;border-radius:5px;background:rgba(10,16,28,.84);
+  padding:5px 7px;border-radius:5px;background:rgba(10,16,28,.88);
   border:1px solid rgba(148,163,184,.35);backdrop-filter:blur(3px)}
-.b3d-bb-name{font-size:10px;font-weight:800;line-height:1.25;margin-bottom:2px;text-shadow:0 1px 2px #000;overflow:hidden;text-overflow:ellipsis}
+/* [v99] 「态势」标签：此前**没有任何 CSS 规则** ⇒ 回落浏览器默认 16px，
+   而旁边信息只有 8~9px ⇒ 用户实报"态势两个字那么大，其余字一点点、看不清"。
+   这里把它降为**小号分组标签**（比舰名小、加字距、灰色），信息字号整体抬一档，
+   让"标题 ≪ 正文"的层级反过来。 */
+.b3d-bb-grouptag{font-size:9.5px;font-weight:800;line-height:1.2;color:#94a3b8;letter-spacing:.18em;display:block;margin-bottom:2px}
+.b3d-bb-name{font-size:12.5px;font-weight:800;line-height:1.3;margin-bottom:3px;text-shadow:0 1px 2px #000;overflow:hidden;text-overflow:ellipsis}
 .b3d-bb-bars{display:flex;flex-direction:column;gap:2px}
-.b3d-bb-bar{height:3px;border-radius:2px;background:rgba(30,41,59,.9);overflow:hidden}
+.b3d-bb-bar{height:4px;border-radius:2px;background:rgba(30,41,59,.9);overflow:hidden}
 .b3d-bb-bar>div{height:100%;transition:width .2s linear}
-.b3d-bb-stances{display:flex;gap:3px;margin-top:4px}
-.b3d-bb-btn{pointer-events:auto;cursor:pointer;font-family:inherit;font-size:9px;font-weight:700;flex:1 1 0;min-width:0;
-  padding:2px 3px;line-height:1.3;border-radius:3px;color:#94a3b8;
+.b3d-bb-stances{display:flex;gap:3px;margin-top:5px}
+.b3d-bb-btn{pointer-events:auto;cursor:pointer;font-family:inherit;font-size:11px;font-weight:700;flex:1 1 0;min-width:0;
+  padding:3px 3px;line-height:1.3;border-radius:3px;color:#94a3b8;
   background:rgba(15,23,42,.9);border:1px solid rgba(148,163,184,.4)}
 .b3d-bb-btn:hover{color:#0a0f1c;background:#4a9eff;border-color:#4a9eff}
 .b3d-bb-btn.active{color:#0a0f1c;background:#4a9eff;border-color:#4a9eff}
-.b3d-bb-mission{font-size:9px;font-weight:700;line-height:1.2;margin-top:3px;color:#22d3ee;
-  text-shadow:0 1px 2px #000;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.b3d-bb-mission{font-size:11px;font-weight:700;line-height:1.25;margin-top:4px;color:#22d3ee;
+  text-shadow:0 1px 2px #000;max-width:176px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .b3d-bb-mission.idle{color:#94a3b8}
-.b3d-bb-maneuver{font-size:8px;font-weight:700;line-height:1.2;margin-top:2px;color:#cbd5e1;
+.b3d-bb-maneuver{font-size:10.5px;font-weight:700;line-height:1.25;margin-top:3px;color:#cbd5e1;
   text-shadow:0 1px 2px #000;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .b3d-cmd-notice{position:absolute;left:0;top:0;transform:translate(-50%,-100%);pointer-events:none;
   font-family:inherit;font-size:10px;font-weight:800;line-height:1.25;white-space:nowrap;
@@ -7049,7 +7054,10 @@ export class Battle3DOverlay {
       const inFrustum = v.z > -1 && v.z < 1 && Math.abs(v.x) < 1.15 && Math.abs(v.y) < 1.15;
       // 过远淡化/隐藏：地形遮挡不做精确射线检测（3169 格 InstancedMesh 逐帧 raycast 太贵），
       // 用距离衰减近似——这与"远处标签让位给战场"的观感目标一致。
-      const fade = THREE.MathUtils.clamp(1.35 - dist / (this.mapSpan * 1.8 || 1), 0.12, 1);
+      // [v99] 下限 0.12 → 0.32：0.12 等于"只剩个影子"，用户实报"模模糊糊看不清"。
+      //   远景让位给战场是对的，但**读不清**和**让位**是两件事 —— 让位靠缩小与减淡，
+      //   不该减到看不清字。0.32 仍明显低于近景（1.0），层级保住了。
+      const fade = THREE.MathUtils.clamp(1.35 - dist / (this.mapSpan * 1.8 || 1), 0.32, 1);
       const show = inFrustum && dist < (this.mapSpan * 2.4 || Infinity);
       if (!show) {
         if (bb.root.style.display !== 'none') bb.root.style.display = 'none';
