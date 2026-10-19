@@ -1656,6 +1656,12 @@ export class BattleScene extends Phaser.Scene {
 
                 if (!fleetData.slots) return;
 
+                // [v99] 同 `spawnInitialFleets`：敌方舰队入场期不得有广告牌
+                //   （`_intelDisplayMode` 可能是上一场残留的 'live'）。
+                if (!this.isPlayerTeamFaction(this.factionMap.get(fleetData.factionId))) {
+                    (fleetObj as any)._intelDisplayMode = 'hidden';
+                }
+
                 // [阵型] 本舰队参与阵型定位的阵位计数器（运输舰不占位，见下方 formationSlot）
                 let formationSlotCounter = 0;
 
@@ -1683,7 +1689,7 @@ export class BattleScene extends Phaser.Scene {
                     //   ⚠ 只在**能确定阵营**时隐藏：`factionMap` 查不到就保持可见，
                     //     宁可漏隐一支敌舰，也不能把玩家自己的舰队藏起来（那是致命回归）。
                     const _deployFac = this.factionMap.get(fleetData.factionId) as any;
-                    if (_deployFac && _deployFac.type !== 'player') {
+                    if (_deployFac && !this.isPlayerTeamFaction(_deployFac)) {
                         unitContainer.setVisible(false);
                     }
 
@@ -1853,11 +1859,15 @@ export class BattleScene extends Phaser.Scene {
             const spawnList = this.spawnUnitsForFaction(fac);
             if (spawnList.length === 0) return;
 
+            // [v99] 与 `deploySide` 同一条口径：战略层 `castlePos` 与战场格网是两套尺度，
+            //   直接拿来当出生点会让整支舰队落在网格之外。夹回场内并对齐格心。
+            const _facSpawn = this.clampToBattlefield(fac.castlePos.x, fac.castlePos.y, this.hexRadius * 2.5);
+
             const fleetId = Math.random();
             const fleet: any = {
                 id: fleetId, displayId: this.globalFleets.length + 1, factionId: fac.id,
                 commanderId: fac.id, flagshipName: (fac as any).flagshipName || (this.store.allAdmirals as any[]).find((a: any) => a.id === fac.id)?.flagshipName || '',
-                x: fac.castlePos.x, y: fac.castlePos.y, target: null, state: 'assembling', units: [] as any[],
+                x: _facSpawn.x, y: _facSpawn.y, target: null, state: 'assembling', units: [] as any[],
                 // [P2] 阵型来自提督教范（`MILITARY_STYLE_PARAMS` 唯一真源），**不再随机**。
                 //   透传路径：initFactions 已把 `admiralTags` / `admiralStyleTag`（作战风格的唯一入口：
                 //   标签优先、无军事标签时由基础 stats 兜底）挂到 faction 上（玩家 / 敌方各一）。
@@ -1871,6 +1881,12 @@ export class BattleScene extends Phaser.Scene {
             this.time.delayedCall(800, () => this.showFleetDialogue(fleet, 'spawn')); // 延迟触发舰队出击语录
 
             this.globalFleets.push(fleet);
+
+            // [v99] 敌方舰队在入场阶段也不该有**广告牌**：3D 侧按 `_intelDisplayMode` 判定，
+            //   而该字段在情报循环跑起来之前可能是上一次战斗残留的 `'live'`
+            //   ⇒ 名牌照画（用户截图里"能看到敌方舰队名"）。这里显式置 `hidden`，
+            //   开战后由情报循环按真实档位改写。
+            if (!this.isPlayerTeamFaction(fac)) (fleet as any)._intelDisplayMode = 'hidden';
 
             // [阵型] 本舰队参与阵型定位的阵位计数器（运输舰不占位，见下方 formationSlot）
             let formationSlotCounter = 0;
@@ -1888,8 +1904,13 @@ export class BattleScene extends Phaser.Scene {
                 // 口径与战役路径一致：运输舰不进 fleet.units，故不占用阵位号。
                 const formationSlot = isSupplyDeck ? -1 : formationSlotCounter;
                 
-                const unitContainer = this.add.container(fac.castlePos.x, fac.castlePos.y).setDepth(isFlagship ? 6 : 5);
+                const unitContainer = this.add.container(_facSpawn.x, _facSpawn.y).setDepth(isFlagship ? 6 : 5);
                 unitContainer.setSize(16, 16);
+                // [v99] 迷雾从建舰那一刻生效：非玩家阵营的舰只建舰即隐藏。
+                //   战略发起攻击走的是**本函数**（不是 `deploySide`），此前只补了 `deploySide`
+                //   ⇒ 从战略层发起的战斗里，敌方在入场传送阶段就是可见的（用户实报截图）。
+                //   之后由情报循环在 `live` 档显形；入场期游戏暂停、循环不跑，敌方自然保持不可见。
+                if (!this.isPlayerTeamFaction(fac)) unitContainer.setVisible(false);
                 const shipTypeCode = getShipTypeCode(fac.trait, cls);
                 
                 // 1. 判断该用什么贴图
@@ -2941,10 +2962,7 @@ export class BattleScene extends Phaser.Scene {
         //   （`syncShips` 只认 `u.sprite.visible`）。用户实报的"右下角三艘敌方侦察舰
         //   一开始就看得见、却没有名牌"正是这条路径。
         //   ⚠ 与本函数同一条口径：只控可见性，不改任何数据（AI 侦察逻辑不受影响）。
-        const _playerTeam = this.store.factions.find((f: any) => f.type === 'player')?.team;
-        if (typeof _playerTeam === 'number' && fac?.team !== _playerTeam) {
-            sprite.setVisible(false);
-        }
+        if (!this.isPlayerTeamFaction(fac)) sprite.setVisible(false);
         const unit = {
             sprite, factionId: fac.id,
             hp: flight.hp, maxHp: flight.maxHp, atk: 5, def: 0,
@@ -4340,6 +4358,20 @@ export class BattleScene extends Phaser.Scene {
         }
         if (typeof best?.x !== 'number' || typeof best?.y !== 'number') return { x: cx, y: cy };
         return { x: best.x, y: best.y };
+    }
+
+    /**
+     * [v99] 是否属于**玩家阵营**（含同队友军）。战争迷雾的"我方可见"口径统一走这里。
+     *
+     * 为什么不用 `fac.type === 'player'`：玩家阵营只有一个，但**友军**（team 相同、type='ai'）
+     * 的舰队同样应该始终可见；反之敌方 AI 可能有多个阵营。
+     * 找不到玩家阵营（数据未就绪）时退回 `type === 'player'`，绝不默认把所有舰队都判成敌方。
+     */
+    private isPlayerTeamFaction(fac: any): boolean {
+        if (!fac) return false;
+        const playerTeam = this.store.factions.find((f: any) => f.type === 'player')?.team;
+        if (typeof playerTeam !== 'number') return fac.type === 'player';
+        return fac.team === playerTeam;
     }
 
     private getIdealEngageDist(fleet: any): number {
