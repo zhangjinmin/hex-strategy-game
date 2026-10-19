@@ -15,6 +15,8 @@
  *    所以整站（含 mono 语义的数值位）会一起换，不会出现「只换了一半」。
  */
 
+import { parseFontNameTable } from './fontNameTable';
+
 export interface FontEntry {
   /** 稳定标识：相对 assets/fonts 的文件名（含扩展名），用于持久化 */
   id: string;
@@ -62,6 +64,36 @@ function toDisplayName(fileName: string): string {
   // 去掉常见的字重/字面后缀，避免列表里出现一长串 "Regular"
   const cleaned = base.replace(/[-_ ](regular|normal|book|medium|bold|light|thin|black)$/i, '');
   return cleaned.replace(/[-_]+/g, ' ').trim() || base;
+}
+
+
+/** 显示名解析结果缓存（同一文件只读一次；字体二进制本身由浏览器 HTTP 缓存兜底）。 */
+const resolvedNameCache = new Map<string, string>();
+
+/**
+ * [v99] 解析各字体的**真实显示名**（字体内部名优先，手写覆盖表最高优先，最后才回落文件名）。
+ * 失败/不支持格式一律回落，绝不抛错（设置页不能因为一个坏字体打不开）。
+ */
+export async function resolveDisplayNames(): Promise<FontEntry[]> {
+  const out: FontEntry[] = [];
+  for (const f of FONT_CATALOG) {
+    const manual = DISPLAY_NAME_OVERRIDE[f.id];
+    if (manual || f.format === 'woff2') { out.push({ ...f, displayName: manual ?? f.displayName }); continue; }
+    if (resolvedNameCache.has(f.id)) { out.push({ ...f, displayName: resolvedNameCache.get(f.id)! }); continue; }
+    try {
+      const res = await fetch(f.url);
+      const names = parseFontNameTable(await res.arrayBuffer());
+      const name = names?.family || names?.full;
+      if (name) resolvedNameCache.set(f.id, name);
+      out.push({ ...f, displayName: name ?? f.displayName });
+    } catch {
+      out.push(f);
+    }
+  }
+  return out.sort((a, b) => {
+    if (a.builtin !== b.builtin) return a.builtin ? -1 : 1;
+    return a.displayName.localeCompare(b.displayName, 'zh-Hans-CN');
+  });
 }
 
 /**

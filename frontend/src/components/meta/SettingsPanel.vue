@@ -177,7 +177,7 @@
       <div class="setting-row">
         <span class="setting-label">界面字体</span>
         <select class="neo-select" :value="settings.uiFont ?? ''" @change="onFontChange">
-          <option v-for="f in FONT_CATALOG" :key="f.id" :value="f.id">{{ f.displayName }}{{ coverageTag(f.id) }}</option>
+          <option v-for="f in catalog" :key="f.id" :value="f.id">{{ f.displayName }}{{ coverageTag(f.id) }}</option>
         </select>
       </div>
       <div class="setting-row">
@@ -232,9 +232,11 @@ import { FACTION_SCHEMES } from '../../config/factionThemes';
 import { getState, addListener, removeListener, skipToNext, playTrack, getTrackEntries, type MusicManagerState } from '../../services/MusicManager';
 import {
   FONT_CATALOG,
+  resolveDisplayNames,
   ensureFontFacesInjected,
   detectFontCoverage,
   type FontCoverage,
+  type FontEntry,
 } from '../../services/fontManager';
 
 const settings = useSettingsStore() as any;
@@ -249,6 +251,9 @@ ensureFontFacesInjected();
 
 /** 各字体的字形覆盖检测结果（异步填充；未检测时下拉里只显示字体名）。 */
 const coverageMap = ref<Record<string, FontCoverage>>({});
+
+/** 字体列表（显示名会被 `resolveDisplayNames()` 升级为**字体内部登记名**）。 */
+const catalog = ref<FontEntry[]>(FONT_CATALOG);
 
 function coverageTag(id: string): string {
   const c = coverageMap.value[id];
@@ -268,6 +273,10 @@ function onFontChange(e: Event) {
 }
 
 onMounted(async () => {
+  // [v99] 先把**字体内部名**读出来（`name` 表），再渲染列表：
+  //   文件名是作者随手起的英文缩写，内部名才是字体工具里看到的那串中文。
+  //   读失败/woff2 会自动回落文件名，不影响列表可用性。
+  try { catalog.value = await resolveDisplayNames(); } catch { /* 保持文件名推导结果 */ }
   // 逐个字体测字形覆盖：必须真的把文件加载进来才能判「有没有这个字」，
   // 所以只在本面板打开时做（不在启动时预加载）。并发跑，几 MB 的字体也能在 1s 内出标注。
   await Promise.all(
