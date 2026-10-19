@@ -106,7 +106,16 @@ function wedgeCells(n: number): FormationCell[] {
     }
     if (!changed) break;
   }
-  if (sum < n) { w[R - 1] += n - sum; }
+  // 亏空：只往"跳变还没到 +2"的排上加（从末排往前扫），保证任何 n 都不会出现
+  //   "某排突然宽 3 格"——那正是 n=38 这类舰数会出现的后缘横杠。
+  let guard = 0;
+  while (sum < n && guard++ < 4096) {
+    let added = false;
+    for (let i = R - 1; i >= 1 && sum < n; i--) {
+      if (w[i] - w[i - 1] < 2) { w[i] += 1; sum += 1; added = true; }
+    }
+    if (!added) { w[R - 1] += n - sum; sum = n; }   // 兜底：所有排都贴到上限
+  }
 
   const out: FormationCell[] = [];
   for (let row = 0; row < R; row++) {
