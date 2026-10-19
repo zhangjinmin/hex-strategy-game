@@ -97,19 +97,26 @@ const handleImgError = (e: Event) => {
 /* 完全独立锚定：faction-infos 绝对定位贴左、GameControls 绝对定位贴右，
    二者不在同一 flex 流里，舰队卡再多/换行也不会把右侧按钮推出视口（实报 bug 根治） */
 .ui-header { position: absolute; top: 15px; left: 0; right: 0; z-index: 10; pointer-events: none; }
-/* 舰队卡贴左。纵向上限 = 完整两行卡 + 行距（L2 实测卡高 94px ⇒ 2×94+10=198px，取 200），
-   超出滚动而非裁剪——旧上限 132px 在 [v57] 卡片加高后（三细条+编制行）只剩 28px 给第二行，
-   实报"左上角只有一半"（第二行恰好切在标题条）。留足整行余量：裁半行永远比滚动条更像 bug。
-   横向预留 580px 给右侧控制区：实测 GameControls 宽 434px（演习）/ 549px（战役），
-   旧的 380px 预留不足，卡片排满时最右侧卡片会钻到按钮底下（1920 下重叠 84px，战役 199px）。 */
-.faction-infos { position: absolute; top: 0; left: 15px; display: flex; gap: 10px; flex-wrap: wrap; pointer-events: auto; max-width: calc(100% - 580px); max-height: 240px; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,0.25) transparent; }
+/* 舰队卡贴左，与右侧控制区**互不挤压**（两者都是绝对定位，不在同一 flex 流里）。
+   横向预留右侧控制区宽度：实测 GameControls 在演习/战役两种布局下都不到 560px，
+   旧预留更小时卡片排满会钻到按钮底下（1920 下实测重叠 84~199px）。
+   ⚠ 这个数是**预留宽度**，不是"卡片区可用宽度"——后者由视口决定，见下一条。 */
+/* [v99] **不再出现滚动条**（用户实报：窗口缩小后左上状态板冒出纵向滚动条）。
+   旧实现是「固定 max-height + overflow-y:auto」—— 只要窗口变窄把卡片挤到第三行，
+   高度就溢出，于是长出滚动条；在战斗界面上滚动条既丑又挡信息。
+   现改为「不裁切、不滚动」：容器高度随内容自然增长，宽度到极限就换行，行多就往下铺。
+   同时把卡片本身做成**可收缩**的（`.info-content` 用 clamp 随视口变窄），
+   同样的宽度能多放一张卡 ⇒ 换行更晚、占的高度更少。 */
+.faction-infos { position: absolute; top: 0; left: 15px; display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; pointer-events: auto; max-width: calc(100% - 560px); overflow: visible; }
 /* 控制区贴右：绝对锚定，不受左侧内容宽度影响 */
 .ui-header > :deep(.game-controls),
 .game-controls { position: absolute; top: 0; right: 15px; flex: 0 0 auto; }
-.side-info { display: flex; gap: 10px; padding: 6px; align-items: center; background: var(--overlay-surface); backdrop-filter: blur(4px); transition: opacity 0.3s; }
+.side-info { display: flex; gap: 8px; padding: 5px 6px; align-items: center; background: var(--overlay-surface); backdrop-filter: blur(4px); transition: opacity 0.3s; }
 .side-info.inactive { opacity: 0.4; filter: grayscale(1); }
-.mini-portrait { width: 36px; height: 48px; object-fit: cover; border-radius: 4px; border: 1px solid rgba(255,255,255,0.2); flex-shrink: 0; }
-.info-content { display: flex; flex-direction: column; width: 168px; }
+.mini-portrait { width: 32px; height: 44px; object-fit: cover; border-radius: 4px; border: 1px solid rgba(255,255,255,0.2); flex-shrink: 0; }
+/* [v99] 卡片内容宽度随视口收缩（120~168px）：窗口变窄时**先压卡片**再换行，
+   避免"一缩窗就多出一行、把面板撑高"。下限 120px 是「舰况/士气/补给」+ 进度条 + 数值仍可读的最小宽度。 */
+.info-content { display: flex; flex-direction: column; width: clamp(120px, 9.5vw, 168px); }
 .faction-name { font-size: calc(14px * var(--font-scale)); font-weight: 900; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* [v57] 三细条行：标签 + 条 + 数值，扫读式提高面板信息密度 */
 .stat-row { display: flex; align-items: center; gap: 4px; margin-bottom: 2px; }
