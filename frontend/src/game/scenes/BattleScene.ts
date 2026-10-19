@@ -1939,11 +1939,16 @@ export class BattleScene extends Phaser.Scene {
                 // v8：编制首项若恰好是补给舰，它**不是旗舰**（运输舰不属战斗编制、不进指挥链），
                 //   旗舰身份顺延给第一艘战斗舰（见本循环后的补标记）。
                 const isSupplyDeck = cls === '补给';
-                const isFlagship = idx === 0 && !isSupplyDeck;
+                // [v99] **舰载机不属舰队编成**：它由航母携带、只在接战时释放（见 fighterWaves）。
+                //   原先舰载机作为独立 unit 建进编队 ⇒ 平时跟着舰队排阵、还占一个模型位，
+                //   观感上是"战机当成战舰排成阵"。这里让它不占阵位、不建可见实体；
+                //   战斗释放流程仍由 fighterWaves 负责（该子系统尚未接完，但口径先立住）。
+                const isFighterDeck = cls === '舰载' || cls === 'fighter';
+                const isFlagship = idx === 0 && !isSupplyDeck && !isFighterDeck;
                 // [阵型] 稳定槽位：fleet.units 在单位被击毁时会被 filter 重赋值（索引整体前移），
                 // 用循环 index 取阵位会让幸存舰瞬移。这里在建造期就把阵位固定下来。
                 // 口径与战役路径一致：运输舰不进 fleet.units，故不占用阵位号。
-                const formationSlot = isSupplyDeck ? -1 : formationSlotCounter;
+                const formationSlot = (isSupplyDeck || isFighterDeck) ? -1 : formationSlotCounter;
                 
                 const unitContainer = this.add.container(_facSpawn.x, _facSpawn.y).setDepth(isFlagship ? 6 : 5);
                 unitContainer.setSize(16, 16);
@@ -2013,11 +2018,16 @@ export class BattleScene extends Phaser.Scene {
                     formationSlot,
                     // [W2] 旗舰持久身份（旗舰损失判定 / 3D 特效消费）
                     isFlagship,
+                    // [v99] 舰载机标记：3D 不建实体（释放后才出现，见 fighterWaves）
+                    isFighter: isFighterDeck,
                 };
                 // v8：运输舰是**基地侧独立资产**（归属 factionId），不进任何舰队的 units。
                 if (isSupplyDeck) this.auxUnits.push(unitObj);
                 else fleet.units.push(unitObj);
-                if (!isSupplyDeck) formationSlotCounter += 1;
+                // [v99] 舰载机：留在 units 里参与兵力/伤害结算，但**不参与阵型、不建可见实体**
+                //   （否则会以"战机"的模型排在战舰队列里，用户实报）
+                if (isFighterDeck) unitContainer.setVisible(false);
+                if (!isSupplyDeck && !isFighterDeck) formationSlotCounter += 1;
             });
             // v8：编制首项是补给舰时上面不会产生旗舰 ⇒ 由第一艘战斗舰接任（保持指挥链/沉没叙事不断）
             if (fleet.units.length > 0 && !fleet.units.some((u: any) => u.isFlagship === true)) {
