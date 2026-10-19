@@ -1673,6 +1673,20 @@ export class BattleScene extends Phaser.Scene {
 
                     unitContainer.add([aura, flame, shipImg, typeText]);
 
+                    // [v99] **迷雾从建舰那一刻就生效**：非玩家阵营的舰只建舰即隐藏，
+                    //   等 `resolveIntelDisplay` 判为 `live` 时再由 intel 循环显形。
+                    //   为什么必须在建舰期处理：情报循环只在开战后推进，而部署期（本函数返回后
+                    //   到开战前）不会跑 ⇒ 先前建好的敌方舰会**整队可见**。
+                    //   用户实报："右下角三艘敌方侦察舰一开始就能看见 ⇒ 迷雾还是没用"。
+                    //   ⚠ 只控制 `visible`，不碰数据：AI 决策、命中判定、档案坐标一律不受影响，
+                    //     这条只影响"玩家看得到看不到"。
+                    //   ⚠ 只在**能确定阵营**时隐藏：`factionMap` 查不到就保持可见，
+                    //     宁可漏隐一支敌舰，也不能把玩家自己的舰队藏起来（那是致命回归）。
+                    const _deployFac = this.factionMap.get(fleetData.factionId) as any;
+                    if (_deployFac && _deployFac.type !== 'player') {
+                        unitContainer.setVisible(false);
+                    }
+
                     if (!isAttacker) shipImg.setFlipX(true);
 
                     // [阵型] 稳定槽位：fleet.units 在单位被击毁时会被 filter 重赋值（索引整体前移），
