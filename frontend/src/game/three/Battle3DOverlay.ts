@@ -849,6 +849,16 @@ const PERF_WARMUP_FRAMES = 180;
 /** 每次调整的幅度（1 帧内最多改 1 步）与调整间隔（秒） */
 const PERF_STEP = 0.85;
 const PERF_ADJUST_INTERVAL = 0.5;
+/**
+ * [v99] 回升需要**连续**多少次检查都低于舒适线（4 × 0.5s = 2s）。
+ *
+ * 为什么必须要求连续：单次低于舒适线可能只是某一帧的抖动；
+ * 若立即回升，就会形成「超预算→降档→流畅→升档→又超预算」的**极限环**。
+ * 每轮极限环都要调 `resize()`（重建离屏 RT），用户看到的就是"整屏反复闪一下"。
+ */
+const PERF_GROW_STREAK = 4;
+/** [v99] 一次降档后的**禁升窗口**（秒）：给降档一个稳定观察期，防"降一格立刻升回去"。 */
+const PERF_NO_GROW_SEC = 4;
 /** [v56 性能] 动态分辨率系数下限：帧时持续超预算时把渲染分辨率逐步收到 60%（≈像素量 36%），
  *  流畅后自动回升到 1（= 画质档 dprCap 满分辨率）。0.6 是"明显降载但 UI 级文字仍可读"的经验下限。 */
 const DPR_SCALE_MIN = 0.6;
@@ -1627,6 +1637,12 @@ export class Battle3DOverlay {
   private perfFrame = 0;
   private frameEmaMs = 0;
   private perfCooldown = 0;
+  /** [v99] 累计时钟（秒）：给"禁升窗口"用，避免依赖外部时钟源 */
+  private perfClockSec = 0;
+  /** [v99] 连续低于舒适线的次数（回升的前提） */
+  private perfComfortStreak = 0;
+  /** [v99] 在此刻之前禁止回升（降档后的稳定观察期） */
+  private perfNoGrowUntil = 0;
   /** [v12.1 C1] 自动 LOD 的帧时压力判据冷却（秒）：降档/回升档共用，防抖 */
   private lodCooldown = 0;
   /** [v12.1 C1] 帧时压力下界（0=high / 1=medium / 2=low）：**棘轮**式只受帧时驱动。
@@ -8256,6 +8272,7 @@ export class Battle3DOverlay {
     // [v12.1 C1] 帧时 EMA **无条件**计算：autoLodByLoad 的"帧时压力降档"不再依赖 perfOn
     //（原先 EMA 只在 perfOn 时更新 ⇒ 默认关闭 governor 时帧时驱动的降档完全失效）。
     this.perfFrame += 1;
+    this.perfClockSec += dt;   // [v99] 禁升窗口的时钟（与帧时同源，不依赖外部计时器）
     const ms = dt * 1000;
     this.frameEmaMs = this.frameEmaMs === 0 ? ms : this.frameEmaMs * 0.9 + ms * 0.1;
     if (!this.perfOn) {
@@ -8279,14 +8296,27 @@ export class Battle3DOverlay {
         this.resize();
         changed = true;
       }
+      // [v99] 降档后**锁一段时间不许回升**：否则会出现
+      //   超预算 → 降 → 变流畅 → 升 → 又超预算 的**极限环**，
+      //   每轮都调一次 `resize()`（重建离屏 RT + 重设 pixelRatio）
+      //   ⇒ 用户实报"整个屏幕反复闪一下"。
+      this.perfComfortStreak = 0;
+      this.perfNoGrowUntil = this.perfClockSec + PERF_NO_GROW_SEC;
     } else if (this.frameEmaMs < PERF_COMFORT_MS) {
-      // [v56 性能] 流畅 ⇒ 分辨率先逐级回升（步长 1.12 比收缩 0.85 更缓，防振荡）
-      if (this.dprScale < 1) {
-        this.dprScale = Math.min(1, this.dprScale * 1.12);
-        this.resize();
-        changed = true;
+      this.perfComfortStreak += 1;
+      // [v99] 回升必须**连续多次**都低于舒适线，且已过禁升窗 —— 单调抖动不得触发升档。
+      if (this.perfComfortStreak >= PERF_GROW_STREAK && this.perfClockSec >= this.perfNoGrowUntil) {
+        // [v56 性能] 流畅 ⇒ 分辨率先逐级回升（步长 1.12 比收缩 0.85 更缓，防振荡）
+        if (this.dprScale < 1) {
+          this.dprScale = Math.min(1, this.dprScale * 1.12);
+          this.resize();
+          changed = true;
+        }
+        if (cur < MAX_MESHES) next = Math.min(MAX_MESHES, Math.max(cur + 1, Math.round(cur / PERF_STEP)));
+        this.perfComfortStreak = 0;
       }
-      if (cur < MAX_MESHES) next = Math.min(MAX_MESHES, Math.max(cur + 1, Math.round(cur / PERF_STEP)));
+    } else {
+      this.perfComfortStreak = 0;
     }
     if (next !== cur) { this.lastStats.meshBudget = next; changed = true; }
     if (changed) this.perfCooldown = PERF_ADJUST_INTERVAL;
