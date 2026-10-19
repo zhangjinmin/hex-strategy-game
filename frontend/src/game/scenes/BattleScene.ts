@@ -1056,7 +1056,8 @@ export class BattleScene extends Phaser.Scene {
                                 fleet.stance = 'search';
                             } else if (forceRatio > 0.6 * advMult * deployAdj) {
                                 fleet.stance = 'search';
-                                fleet.formation = 'line';
+                                // [v99] 同上：交战中阵型归战斗层，战略层不得插手中线阵型。
+                                if (fleet.state !== 'engaging') fleet.formation = 'line';
                             } else {
                                 // v6.5 修复（用户实报"敌舰在索敌/撤退间快速切换"）：
                                 // 旧逻辑 forceRatio 劣势 + 敌在 400px 内 → stance='fallback'，
@@ -1079,8 +1080,15 @@ export class BattleScene extends Phaser.Scene {
                             //     其余情况**根本不写 formation** ⇒ 舰队保持出厂值不回炉
                             //     （用户实报："毕典菲尔特特性是直冲，出来的阵型竟然是个长条"
                             //      —— 因为人格**从未参与**阵型决策，见 `24` §1 证据 3）。
-                            if (fleet.stance === 'fallback') fleet.formation = 'circle'; // 撤退：全向防御
-                            else fleet.formation = resolveAdmiralDoctrine(aiFac.admiralStyleTag ? [aiFac.admiralStyleTag] : aiFac.admiralTags).formation; // [P2 · 最后补救] 教范默认（标签优先 / 无标签用基础 stats 推导；战役轨回落 admiralTags）
+                            // [v99] **交战期间不写阵型**：阵型归战斗层（`stabilizeCombatFormation`
+                            //   有"目标承诺 + 阶段跃迁"的滞回语义）。
+                            //   本层是 1Hz 战略层，原先无条件覆盖 ⇒ 与逐帧提交互相打架：
+                            //   托盘上「纺锤 ↔ 楔形」反复跳（用户实报）。教范阵型只应在
+                            //   **非交战态**（行军/整队/撤退）表达。
+                            if (fleet.state !== 'engaging' || fleet.stance === 'fallback') {
+                                if (fleet.stance === 'fallback') fleet.formation = 'circle'; // 撤退：全向防御
+                                else fleet.formation = resolveAdmiralDoctrine(aiFac.admiralStyleTag ? [aiFac.admiralStyleTag] : aiFac.admiralTags).formation; // [P2 · 最后补救] 教范默认（标签优先 / 无标签用基础 stats 推导；战役轨回落 admiralTags）
+                            }
                         }
                 }
                 });
