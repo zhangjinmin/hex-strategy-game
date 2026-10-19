@@ -870,6 +870,14 @@ const DPR_SCALE_MIN = 0.6;
 //  (3) 换档是 `dispose+clear` 全量重建 —— 一次换档把全部实体销毁再于下一帧重建，最重的一处尖峰。
 /** 帧时压力降档的冷却（秒）：降/回升档各受它限流，防抖（沿用 governor 的 0.5s 口径） */
 const LOD_COOLDOWN_S = 0.5;
+/**
+ * [v99] 回升档需要的**连续**舒适次数（4 × 0.5s = 2s）。
+ * 单次低于舒适线可能只是抖动；立即回档会造成「降→升→降」的极限环，
+ * 而每轮回档都要 `dispose+clear` 全量重建实体 —— 观感就是整屏闪。
+ */
+const LOD_RECOVER_STREAK = 4;
+/** [v99] 降档后的禁升窗口（秒）：给降档一个稳定的观察期。 */
+const LOD_NO_RECOVER_SEC = 4;
 /** 允许"帧时恢复→回升档"的实体负载上限（低于它才敢升档；取 medium 判据同值） */
 const LOD_RECOVER_COUNT = 170;
 /** 每帧新建实体上限（消"一帧内建大量模型"的帧内尖峰；未加的舰仍由光点层接住，不塌） */
@@ -1643,6 +1651,11 @@ export class Battle3DOverlay {
   private perfComfortStreak = 0;
   /** [v99] 在此刻之前禁止回升（降档后的稳定观察期） */
   private perfNoGrowUntil = 0;
+  /** [v99] 是否有待落地的 resize（只能由 tick 在渲染前消费） */
+  private pendingResize = false;
+  /** [v99] LOD 帧时棘轮：连续舒适次数与禁升截止（与 perfGovernor 的极限环同源问题） */
+  private lodComfortStreak = 0;
+  private lodNoGrowUntil = 0;
   /** [v12.1 C1] 自动 LOD 的帧时压力判据冷却（秒）：降档/回升档共用，防抖 */
   private lodCooldown = 0;
   /** [v12.1 C1] 帧时压力下界（0=high / 1=medium / 2=low）：**棘轮**式只受帧时驱动。
@@ -3099,7 +3112,11 @@ export class Battle3DOverlay {
    * 公式与 demo 的 shipPx 完全一致：L / (2·tan(fov/2)·d) · H。
    */
   private pxOf(worldPos: THREE.Vector3, shipLen: number): number {
-    const H = this.renderer.domElement.height;
+    // [v99] **不再用 drawingBuffer 高度**：它含性能守护的 `dprScale`，档位一动，
+    //   全场每艘舰的 px 值同步缩放 ⇒ 三级表示（实体网格 / 光点 / 隐藏）整体跳级
+    //   ⇒ 表现为"整屏闪一下"。改用 **CSS 高度 × 设备真实 DPR**：仍是"物理像素"语义
+    //   （高清屏阈值不打折），但**与性能档解耦**。
+    const H = Math.max(1, this.container.clientHeight) * (window.devicePixelRatio || 1);
     const d = this.camera.position.distanceTo(worldPos);
     const halfFov = (this.camera.fov * Math.PI / 180) / 2;
     return shipLen / (2 * Math.tan(halfFov) * Math.max(1e-3, d)) * H;
@@ -3841,13 +3858,25 @@ export class Battle3DOverlay {
     //       用编译期的 EMA 触发降档会把"暂时慢"误判成"持续超载"（冷启动即降到 low 且迟迟不回）。
     this.lodCooldown -= dt;
     const perfWarm = this.perfFrame >= PERF_WARMUP_FRAMES;
+    const nowSec = this.clock.elapsedTime;
     if (this.lodCooldown <= 0 && perfWarm) {
       if (this.frameEmaMs > PERF_BUDGET_MS && this.lodPressure < 2) {
         this.lodPressure += 1;
         this.lodCooldown = LOD_COOLDOWN_S;
+        // [v99] 与 perfGovernor 同源的**极限环**防护：降档后锁一段禁升窗，
+        //   否则「超预算→降→流畅→升→又超预算」会每 0.5s 抖一次。
+        //   LOD 抖动会让整屏舰只在中景光点与近景网格之间来回换表示 —— 同样像"闪一下"。
+        this.lodComfortStreak = 0;
+        this.lodNoGrowUntil = nowSec + LOD_NO_RECOVER_SEC;
       } else if (this.frameEmaMs < PERF_COMFORT_MS && this.lodPressure > 0 && meshCount < LOD_RECOVER_COUNT) {
-        this.lodPressure -= 1;
-        this.lodCooldown = LOD_COOLDOWN_S;
+        this.lodComfortStreak += 1;
+        if (this.lodComfortStreak >= LOD_RECOVER_STREAK && nowSec >= this.lodNoGrowUntil) {
+          this.lodPressure -= 1;
+          this.lodCooldown = LOD_COOLDOWN_S;
+          this.lodComfortStreak = 0;
+        }
+      } else {
+        this.lodComfortStreak = 0;
       }
     }
     let wantIdx = Math.max(countIdx, this.lodPressure);   // 帧时压力是**下界**，数量判据不得抵消
@@ -8246,6 +8275,15 @@ export class Battle3DOverlay {
     }
     // CRT 合成：离屏渲染主场景 → 全屏后处理
     this.crtU.uTime.value = this.clock.elapsedTime;
+    // [v99] **调档引起的 resize 必须发生在渲染之前**。
+    //   旧实现：渲染 → `updatePerfGovernor()` → 内部 `resize()` 重建 RT/drawingBuffer。
+    //   重建发生在**本帧画完之后**，被 present 的那块缓冲可能正是刚被 setSize 清空的新缓冲
+    //   ⇒ 整屏黑一帧。这就是"反复闪一下"的直接机制。
+    //   现在 governor 只置 `pendingResize`，由这里在渲染前统一落地，且每帧最多一次。
+    if (this.pendingResize) {
+      this.pendingResize = false;
+      this.resize();
+    }
     this.renderer.setRenderTarget(this.rt);
     this.renderer.render(this.scene, this.camera);
     // [WS7] 主场景统计快照：必须夹在两次 render 之间 —— info 每次 render 前 autoReset，
@@ -8293,7 +8331,8 @@ export class Battle3DOverlay {
       // [v56 性能] 超预算 ⇒ 分辨率系数同步收缩（像素量按平方降），补 meshBudget 收完仍不够的缺口
       if (this.dprScale > DPR_SCALE_MIN) {
         this.dprScale = Math.max(DPR_SCALE_MIN, this.dprScale * 0.85);
-        this.resize();
+        // [v99] 只**登记**，由下一帧渲染前统一 resize（见 tick 里的 pendingResize）。
+        this.pendingResize = true;
         changed = true;
       }
       // [v99] 降档后**锁一段时间不许回升**：否则会出现
@@ -8309,7 +8348,7 @@ export class Battle3DOverlay {
         // [v56 性能] 流畅 ⇒ 分辨率先逐级回升（步长 1.12 比收缩 0.85 更缓，防振荡）
         if (this.dprScale < 1) {
           this.dprScale = Math.min(1, this.dprScale * 1.12);
-          this.resize();
+          this.pendingResize = true;
           changed = true;
         }
         if (cur < MAX_MESHES) next = Math.min(MAX_MESHES, Math.max(cur + 1, Math.round(cur / PERF_STEP)));
@@ -8426,15 +8465,19 @@ export class Battle3DOverlay {
   resize() {
     const w = this.container.clientWidth, h = this.container.clientHeight;
     if (w === 0 || h === 0) return;
+    // [v99] **顺序与次数都是刻意的**：`setPixelRatio()` 内部自己会调一次 `setSize()`
+    //   （用当前 CSS 尺寸 × 新像素比）。旧写法先 `setSize` 再 `setPixelRatio` ⇒ 连续两次
+    //   重建 drawingBuffer，等于每调一次档就多付一次显存分配，也更可能出现一帧空白。
+    //   现在先定像素比，再一次性设尺寸。
+    const dpr = this.effDpr();
+    this.renderer.setPixelRatio(dpr);
+    this.renderer.setSize(w, h);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(w, h);
     // 离屏 RT 与 CRT 扫描线频率都要跟新尺寸走
     // [v12 P3] dpr 上限与创建时同源（this.dprCap），保证 resize 后分辨率档位不发散
     // [v56 性能] 动态分辨率生效点：dprScale 变化后由 updatePerfGovernor 调本方法重建 RT 尺寸，
     //   renderer 像素比必须同帧同步，否则合成阶段出现拉伸/采样发散。
-    const dpr = this.effDpr();
-    this.renderer.setPixelRatio(dpr);
     this.rt.setSize(Math.max(1, Math.floor(w * dpr)), Math.max(1, Math.floor(h * dpr)));
     this.crtU.uRes.value.set(w, h);
   }
