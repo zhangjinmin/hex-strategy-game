@@ -1622,8 +1622,16 @@ export class BattleScene extends Phaser.Scene {
         const defenderSpawn = defenderFac?.castlePos || { x: fallbackSpawnDist, y: 0 };
 
         const deploySide = (fleetsData: any[], isAttacker: boolean) => {
-            const spawnX = isAttacker ? attackerSpawn.x : defenderSpawn.x;
-            const spawnY = isAttacker ? attackerSpawn.y : defenderSpawn.y;
+            // [v99] 出生点来自战略层 `castlePos`，与战场格网是两套尺度 ⇒ 必须夹回场内并对齐格心。
+            //   用户实报截图：左下角一支舰队整队落在网格之外（既无地形可读，也走不进战场）。
+            //   内缩 2.5 个格半径：留出阵型足迹，避免整队贴边生成。
+            const _spawnRaw = this.clampToBattlefield(
+                isAttacker ? attackerSpawn.x : defenderSpawn.x,
+                isAttacker ? attackerSpawn.y : defenderSpawn.y,
+                this.hexRadius * 2.5,
+            );
+            const spawnX = _spawnRaw.x;
+            const spawnY = _spawnRaw.y;
             // [v14 ⑤] 同方多舰队沿**垂直于推进轴**（y）错开：2 队居中对称、3+ 队均匀分布，
             // 间距 = 各队阵型足迹最大值（deployGapFor，下限 160px）；单队 dy=0（= 旧行为）。
             const nSide = fleetsData.length;
@@ -1631,6 +1639,8 @@ export class BattleScene extends Phaser.Scene {
                 const combatCount = (fleetData.slots || []).filter((s: any) => s.type !== 'supply' && s.type !== '补给').length;
                 const gap = this.deployGapFor(fleetData.formation || 'wedge', combatCount);
                 const dy = nSide > 1 ? (fi - (nSide - 1) / 2) * gap : 0;
+                // [v99] 同方多队沿推进轴错开时，最外侧那支可能又被推出边界 ⇒ 逐队再夹一次。
+                const _fleetPos = this.clampToBattlefield(spawnX, spawnY + dy, this.hexRadius * 2);
                 const fleetObj: any = {
                     id: fleetData.fleetId, displayId: this.globalFleets.length + 1,
                     factionId: fleetData.factionId, target: null, state: 'idle',
@@ -1640,8 +1650,8 @@ export class BattleScene extends Phaser.Scene {
                     facingAngle: isAttacker ? 0 : Math.PI,
                     stance: 'search', lastState: 'idle', halfHpTriggered: false,
                     morale: (fleetData as any).morale ?? 100,
-                    x: spawnX,
-                    y: spawnY + dy
+                    x: _fleetPos.x,
+                    y: _fleetPos.y
                 };
 
                 if (!fleetData.slots) return;
@@ -4267,6 +4277,42 @@ export class BattleScene extends Phaser.Scene {
         return false;
     }
 
+    /**
+     * [v99] 把任意世界坐标**夹回战场有效范围**，并对齐到最近的地块中心。
+     *
+     * 为什么需要：出生点来自战役层的 `faction.castlePos`（战略地图坐标），而战场是
+     * 由 `mapDataMatrix` 另建的格网。两者尺度不同 ⇒ 部署期会出现"舰队站在地图外面"
+     * （用户实报截图：左下角一支舰队整队落在网格之外，既看不见地形也走不进战场）。
+     *
+     * 做法：先用**已建成地块的包围盒**求有效范围（内缩 `margin`），再取最近地块中心；
+     * 找不到地块（空地图/退化）就原样返回，绝不把坐标改成 NaN。
+     */
+    private clampToBattlefield(x: number, y: number, margin: number): { x: number; y: number } {
+        const tiles = this.tilesList;
+        if (!tiles || tiles.length === 0) return { x, y };
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const t of tiles) {
+            if (typeof t.x !== 'number' || typeof t.y !== 'number') continue;
+            if (t.x < minX) minX = t.x;
+            if (t.x > maxX) maxX = t.x;
+            if (t.y < minY) minY = t.y;
+            if (t.y > maxY) maxY = t.y;
+        }
+        if (!Number.isFinite(minX)) return { x, y };
+        const cx = Math.min(Math.max(x, minX + margin), maxX - margin);
+        const cy = Math.min(Math.max(y, minY + margin), maxY - margin);
+        // 对齐最近地块中心：夹到包围盒只保证"在矩形内"，不保证"在某个格子上"。
+        let best = tiles[0];
+        let bestD = Infinity;
+        for (const t of tiles) {
+            if (typeof t.x !== 'number' || typeof t.y !== 'number') continue;
+            const d = (t.x - cx) * (t.x - cx) + (t.y - cy) * (t.y - cy);
+            if (d < bestD) { bestD = d; best = t; }
+        }
+        if (typeof best?.x !== 'number' || typeof best?.y !== 'number') return { x: cx, y: cy };
+        return { x: best.x, y: best.y };
+    }
+
     private getIdealEngageDist(fleet: any): number {
         const ships = (fleet.units || [])
             .filter((u: any) => (u.classType || '') !== '补给')
@@ -6093,6 +6139,39 @@ export class BattleScene extends Phaser.Scene {
             for (const t of mapDataMatrix) {
               if (!canPlace(t)) continue;
               if (Math.random() < TERRAIN_RULES.SCATTER) t.terrain = rollType();
+            }
+          }
+
+          // [v99] **剔除孤立小片**：按「同类型连通域」分组，格数 < `MIN_REGION_CELLS` 的整块清空。
+          //   用户实报：「地图上有随机地形，但有很多圆点，独立的小圆点显得很乱；成片是可以的」。
+          //   成因有二：① 区域生长到"剩余配额"时会留下 1~7 格的碎片；② 旧颗粒感散射。
+          //   两者在这里一次性清掉 —— 只按**连通性**判，不按类型/位置特判，规则简单可预测。
+          //   ⚠ 必须按「同类型」分组：相邻但不同类的两片不算同一块，
+          //     否则两片小碎片会因为彼此相邻而互相"救活"。
+          if (TERRAIN_RULES.MIN_REGION_CELLS > 1) {
+            const _seen = new Set<string>();
+            for (const _seed of mapDataMatrix) {
+              if (!_seed.terrain) continue;
+              const _seedKey = `${_seed.q},${_seed.r}`;
+              if (_seen.has(_seedKey)) continue;
+              const _comp: any[] = [];
+              const _stack: any[] = [_seed];
+              _seen.add(_seedKey);
+              while (_stack.length > 0) {
+                const _cur = _stack.pop();
+                _comp.push(_cur);
+                for (const [dq, dr] of NB6) {
+                  const _n = byKey.get(`${_cur.q + dq},${_cur.r + dr}`);
+                  if (!_n || !_n.terrain || _n.terrain !== _seed.terrain) continue;
+                  const _nk = `${_n.q},${_n.r}`;
+                  if (_seen.has(_nk)) continue;
+                  _seen.add(_nk);
+                  _stack.push(_n);
+                }
+              }
+              if (_comp.length < TERRAIN_RULES.MIN_REGION_CELLS) {
+                for (const _c of _comp) _c.terrain = undefined;
+              }
             }
           }
         } else {
