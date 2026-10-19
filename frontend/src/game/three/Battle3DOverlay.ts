@@ -4377,20 +4377,52 @@ export class Battle3DOverlay {
     // 被预算挤出的舰**不销毁光点**：writeDotLayers 对全部 unitVis 写点，故它们自然退回中景光点层。
     const budget = this.perfOn ? this.lastStats.meshBudget : MAX_MESHES;
     const keep = Math.min(cand.length, budget);
+    // ── [v99] **预算不足时按空间均匀取舍，不按数组序砍尾巴** ──────────────────────
+    //   症状（用户实报）：远景光点是完整三角，拉近后模型却"更像一根长条"。
+    //   机制：`cand` 是"逐队逐舰"建出来的（排序只按 px，同队成员 px 几乎相同 ⇒ 实际
+    //   等于保留数组前段）。一旦超过预算，被砍掉的是**同一支舰队的后半段**，
+    //   也就是阵型最宽的那几排 ⇒ 剩下的自然是"窄而长"的一条。
+    //   取舍必须**在一支舰队内均匀分布**（与 `projectFleetRepresentationBySlot` 同一条原则）。
+    //   入场中的舰仍优先保住（否则切片波次只演一半）。
+    const chosen: UnitVis[] = [];
+    const chosenSet0 = new Set<UnitVis>();
+    for (const v of cand) {
+      if (chosen.length >= keep) break;
+      if (this.entryActiveOf(v.key)) { chosen.push(v); chosenSet0.add(v); }
+    }
+    // ⚠ 用 Set 判重，不用 `includes`：cand 可达上千条，逐条 includes 是 O(n²)/帧。
+    const rest = cand.filter((v) => !chosenSet0.has(v));
+    const remain = keep - chosen.length;
+    if (remain > 0 && rest.length > 0) {
+      if (rest.length <= remain) {
+        for (const v of rest) chosen.push(v);
+      } else {
+        // 等间隔取样：保留集合在**时间序（≈ 阵位序）**上均匀分布
+        const taken = new Set<UnitVis>();
+        for (let k = 0; k < remain; k++) {
+          const pos = Math.min(rest.length - 1, Math.floor(((k + 0.5) * rest.length) / remain));
+          const v = rest[pos];
+          if (taken.has(v)) continue;
+          taken.add(v);
+          chosen.push(v);
+        }
+      }
+    }
+    const chosenSet = new Set(chosen);
     // [v12.1 C2] 每帧建/销限流。未获实体者**仍由光点层接住**（writeDotLayers 覆盖全部 unitVis），
     // 故限流只是把"实体长出的时机"摊到后续帧，不会造成"隐形洞"；下一帧继续补直到达到 budget。
     let added = 0;
-    for (let i = 0; i < keep; i++) {
-      if (!this.ships.has(cand[i].key)) {
+    for (const v of chosen) {
+      if (!this.ships.has(v.key)) {
         if (added >= MESH_ADD_PER_FRAME) continue;
-        this.addMesh(cand[i]);
+        this.addMesh(v);
         added++;
       }
     }
-    for (let i = keep; i < cand.length; i++) {
-      if (this.ships.has(cand[i].key)) {
+    for (const v of cand) {
+      if (!chosenSet.has(v) && this.ships.has(v.key)) {
         if (dropped >= MESH_DROP_PER_FRAME) continue;
-        this.dropMesh(cand[i].key);
+        this.dropMesh(v.key);
         dropped++;
       }
     }
