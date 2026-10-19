@@ -1085,9 +1085,15 @@ export class BattleScene extends Phaser.Scene {
                             //   本层是 1Hz 战略层，原先无条件覆盖 ⇒ 与逐帧提交互相打架：
                             //   托盘上「纺锤 ↔ 楔形」反复跳（用户实报）。教范阵型只应在
                             //   **非交战态**（行军/整队/撤退）表达。
-                            if (fleet.state !== 'engaging' || fleet.stance === 'fallback') {
-                                if (fleet.stance === 'fallback') fleet.formation = 'circle'; // 撤退：全向防御
-                                else fleet.formation = resolveAdmiralDoctrine(aiFac.admiralStyleTag ? [aiFac.admiralStyleTag] : aiFac.admiralTags).formation; // [P2 · 最后补救] 教范默认（标签优先 / 无标签用基础 stats 推导；战役轨回落 admiralTags）
+                            // [v99·残余收口] **连 fallback 也不例外**：撤退休的圆阵改由战斗层
+                            //   `stabilizeCombatFormation(emergency=true, candidate='circle')` 提交。
+                            //   只要这里还留一个"交战期写 circle"的旁路，残血/挨塔的敌舰就会在
+                            //   circle ↔ spindle/wedge 之间以 1Hz 跳（用户实报的残余形态）。
+                            //   ⇒ 交战中 `fleet.formation` **只有一个写者**（战斗层）。
+                            if (fleet.state !== 'engaging') {
+                                fleet.formation = fleet.stance === 'fallback'
+                                    ? 'circle'
+                                    : resolveAdmiralDoctrine(aiFac.admiralStyleTag ? [aiFac.admiralStyleTag] : aiFac.admiralTags).formation;
                             }
                         }
                 }
@@ -7459,6 +7465,12 @@ export class BattleScene extends Phaser.Scene {
                         hpPct > 0.7
                     );
 
+                    // [v99] **撤退阵型归战斗层**：`stance==='fallback'` 也必须走同一次提交，
+                    //   否则战略层（1Hz）还留着一个"交战期写 circle"的旁路 ⇒ 残血/挨塔的敌舰
+                    //   会在 circle 与 spindle/wedge 之间以 1Hz 跳（用户实报的残余形态）。
+                    //   把 fallback 语义并进 `emergency`：它本就是"安全性命令可中断承诺"的档位。
+                    const _fbCircle = fleet.stance === 'fallback';
+
                     if (canEngage) {
                         fleet.state = 'engaging';
                         fleet._lastTargetFleetId = closestEnemyFleet.id;
@@ -7468,7 +7480,7 @@ export class BattleScene extends Phaser.Scene {
                             active: true,
                             targetId: closestEnemyFleet.id,
                             existingFormation: (fleet.formation || 'wedge') as any,
-                            candidate: chooseFormation({
+                            candidate: _fbCircle ? 'circle' : chooseFormation({
                             alliesOnTarget,
                             powerRatio,
                             // 高统帅只改变执行质量；绕侧必须由战法明确授权，不能擅自偏离正面战线。
@@ -7480,7 +7492,7 @@ export class BattleScene extends Phaser.Scene {
                             // [v67 阶段A] 阶段跃迁解锁阵型承诺（否则 S3 突进仍被锁在 S1 线阵）
                             phaseChanged: !!w1PhaseJump,
                             previous: (fleet as any)._combatFormation,
-                            emergency: avoiding,
+                            emergency: avoiding || _fbCircle,
                         });
                         (fleet as any)._combatFormation = formationCommit.state;
                         fleet.formation = formationCommit.formation;
@@ -7495,8 +7507,9 @@ export class BattleScene extends Phaser.Scene {
                             existingFormation: (fleet.formation || 'wedge') as any,
                             // [v67 阶段A] 阶段跃迁解锁阵型承诺（否则 S3 突进仍被锁在 S1 线阵）
                             phaseChanged: !!w1PhaseJump,
-                            candidate: 'spindle', previous: (fleet as any)._combatFormation,
-                            emergency: avoiding,
+                            candidate: _fbCircle ? 'circle' : 'spindle',
+                            previous: (fleet as any)._combatFormation,
+                            emergency: avoiding || _fbCircle,
                         });
                         (fleet as any)._combatFormation = formationCommit.state;
                         fleet.formation = formationCommit.formation;
@@ -7512,7 +7525,19 @@ export class BattleScene extends Phaser.Scene {
                     fleet._lastTargetFleetId = null;
                     fleetTargetX = closestEnemyTower.x;
                     fleetTargetY = closestEnemyTower.y;
-                    fleet.formation = 'wedge'; // 突击阵型
+                    // [v99] 塔攻击也走**同一次提交**：原先直写 'wedge' 绕过了承诺机制，
+                    //   当塔/舰目标在距离阈值附近交替时，阵型会在 wedge 与战斗层承诺值之间闪。
+                    const _towerCommit = stabilizeCombatFormation({
+                        active: true,
+                        // 塔用独立 targetId 空间，避免与舰队 id 撞号污染承诺
+                        targetId: `tower:${closestEnemyTower.q ?? 0},${closestEnemyTower.r ?? 0}`,
+                        existingFormation: (fleet.formation || 'wedge') as any,
+                        candidate: 'wedge',
+                        previous: (fleet as any)._combatFormation,
+                        emergency: false,
+                    });
+                    (fleet as any)._combatFormation = _towerCommit.state;
+                    fleet.formation = _towerCommit.formation;
                 } else {
                     fleet.state = 'exploring';
                 }
