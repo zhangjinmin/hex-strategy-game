@@ -859,6 +859,21 @@ const PERF_ADJUST_INTERVAL = 0.5;
 const PERF_GROW_STREAK = 4;
 /** [v99] 一次降档后的**禁升窗口**（秒）：给降档一个稳定观察期，防"降一格立刻升回去"。 */
 const PERF_NO_GROW_SEC = 4;
+/**
+ * [v99] 「近景全建模」距离阈值（× `hexR`）。
+ *
+ * 取 20：`focusOnFleet` 的默认机位是 `hexR × 12`，玩家手动拉近通常也在 8~20 之间；
+ * 超过 20 倍基本是"看全战场"，那时阵型本来就该用点表示（也看不出缺哪一艘）。
+ * ⚠ 这不是 LOD 阈值，只影响"抽样后建几个模型"，远景的 px 分级与 MAX_MESHES 预算不变。
+ */
+const NEAR_FULL_MODEL_MUL = 20;
+/**
+ * [v99] 「小舰队不抽样」上限：舰队存活舰数 ≤ 该值时**放弃兵力折算抽样**，全部建实体。
+ * 64 的依据：折算抽样的初衷是应付上万艘的编成；而本项目单队实体数通常在 20~80，
+ * 抽掉其中一部分只会让阵型出现"缺一块"的观感，不换任何性能收益。
+ * 超过 64 的编队仍走 `projectFleetRepresentationBySlot`（配合 MAX_MESHES 预算兜底）。
+ */
+const FULL_MODEL_MAX_UNITS = 64;
 /** [v56 性能] 动态分辨率系数下限：帧时持续超预算时把渲染分辨率逐步收到 60%（≈像素量 36%），
  *  流畅后自动回升到 1（= 画质档 dprCap 满分辨率）。0.6 是"明显降载但 UI 级文字仍可读"的经验下限。 */
 const DPR_SCALE_MIN = 0.6;
@@ -4161,8 +4176,22 @@ export class Battle3DOverlay {
       // A model is a representative of aggregate combat strength, not an
       // independent truth source.  Build this projection once per fleet so
       // 30% fleet HP visibly means roughly 30% of the deployed formation.
-      const visualCapacity = (fleet as any)._visualCapacity ?? units.length;
-      (fleet as any)._visualCapacity = visualCapacity;
+      // ── [v99] **近景全建模**：贴近看的时候，阵型里每一艘都必须是实体。
+      //   根因（用户实报"远景三角完整、近景中间缺一段模型"）：`_visualCapacity` 是
+      //   **战役兵力折算**出来的"允许显示多少实体"（12000 艘的编成只建 33 个模型）。
+      //   它按阵位等间隔抽样 ⇒ 远景看是均匀稀疏的点，近景就变成"这一排有模型、那一排只有点"。
+      //   抽样本身没错（不折算就得建上万模型），错的是**贴到脸上还在抽**。
+      //   ⇒ 舰队进入近景距离（`hexR × NEAR_FULL_MODEL_MUL`）后，容量直接放开到存活舰数。
+      //   ⚠ 这不增加上限风险：真正防爆的是 `MAX_MESHES` 预算与 px 分级（远景依旧退回光点）。
+      const nearFull = this.isFleetNearForFullModels(fleet);
+      const projectedCapacity = (fleet as any)._visualCapacity ?? units.length;
+      (fleet as any)._visualCapacity = projectedCapacity;
+      // 小舰队（≤ FULL_MODEL_MAX_UNITS）**永远全建模**：兵力折算抽样的存在意义是
+      //   "12000 艘怎么画"，33 艘这种规模没有任何抽样必要 —— 抽掉的那几艘只会变成
+      //   "阵型里少一块"。这条不依赖 `_visualCapacity` 的取值语义，最坏代价是每队 64 个模型。
+      const visualCapacity = (nearFull || units.length <= FULL_MODEL_MAX_UNITS)
+        ? units.length
+        : projectedCapacity;
       // ── [v78] 折算必须按**阵位空间序**，不能按数组序 ──────────────────────
       //   用户实报：「整个阵型的后半部分是模型，前半部分是圆点」「拉更近后前半的
       //   圆点不见了，模型也没有」—— 用户的判断正确：**这是折算的问题，不是 LOD 阈值**。
@@ -8420,6 +8449,21 @@ export class Battle3DOverlay {
     this.camera.lookAt(t);
     this.controls.update();
     return true;
+  }
+
+  /** [v99] `isFleetNearForFullModels` 的复用临时量（每帧每队调用一次，禁 new） */
+  private nearProbe = new THREE.Vector3();
+
+  /**
+   * [v99] 该舰队是否已进入「近景全建模」距离。
+   * 只做**距离判断**，不看 LOD 档位 —— 它要回答的是"玩家是不是在贴脸看这一队"。
+   */
+  private isFleetNearForFullModels(fleet: any): boolean {
+    if (!fleet) return false;
+    const cx = Number(fleet.x) || 0;
+    const cy = Number(fleet.y) || 0;
+    this.nearProbe.set(cx, this.heightAtPx(cx, cy), -cy);
+    return this.camera.position.distanceTo(this.nearProbe) <= this.hexR * NEAR_FULL_MODEL_MUL;
   }
 
   /**
