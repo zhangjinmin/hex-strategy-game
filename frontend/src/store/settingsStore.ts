@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
 import type { FactionSchemeKey } from '../config/factionThemes';
-import { DEFAULT_UI_FONT_ID, SYSTEM_FONT_ID, findFont } from '../services/fontManager';
+import { DEFAULT_UI_FONT_ID, findFont } from '../services/fontManager';
 
 export const useSettingsStore = defineStore('settings', () => {
   // ===== 音频 =====
@@ -115,11 +115,12 @@ export const useSettingsStore = defineStore('settings', () => {
         briefingDisabled.value = data.briefingDisabled ?? false;
         uiScale.value = data.uiScale ?? 100;
         // [v66] 字体：值非法（用户删了字体文件 / 手改存档）一律回落默认，不静默用错字体。
-        // [v99] 空串 = **老存档的"未设置"**（旧默认值），映射到新的默认字体；
-        //   "系统字体"改由显式哨兵 `SYSTEM_FONT_ID` 表示，因此不会被这次迁移吃掉。
+        // [v99] 不再有"系统字体"选项（用户口径：列表里只列具体字体）。
+        //   因此：空串（老存档的"未设置"）、历史遗留的 `'system'`、以及查不到的 id
+        //   全部收敛到默认字体 —— 没有第四种状态需要保留。
         {
           const raw = typeof data.uiFont === 'string' ? data.uiFont : DEFAULT_UI_FONT_ID;
-          uiFont.value = raw === SYSTEM_FONT_ID || findFont(raw) ? raw : DEFAULT_UI_FONT_ID;
+          uiFont.value = findFont(raw) ? raw : DEFAULT_UI_FONT_ID;
         }
         // 字号缩放：钳制到 100~140（100 以下没有意义，且会让本来就小的字更难看清）
         {

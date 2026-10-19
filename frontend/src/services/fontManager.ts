@@ -43,9 +43,9 @@ const DISPLAY_NAME_OVERRIDE: Record<string, string> = {
   //   而 `Smiley-Sans.ttf` 自动美化成 "Smiley Sans" 后，中文用户反而找不到"得意黑"。
   //   下面是按 OpenType `name` 表实测结果登记的（不是猜的）：
   //     jiangjunti.ttf  → family "平方将军体"
-  //     Smiley-Sans.ttf → family "Smiley Sans Oblique"（**斜体字重**，故标注出来）
+  //     Smiley-Sans.ttf → family "Smiley Sans Oblique"（该文件是斜体字重，用户已知并接受）
   'Smiley-Sans-Regular.ttf': '得意黑',
-  'Smiley-Sans.ttf': '得意黑（斜体）',
+  'Smiley-Sans.ttf': '得意黑',
   'jiangjunti.ttf': '平方将军体',
 };
 
@@ -100,30 +100,22 @@ export const FONT_CATALOG: FontEntry[] = Object.keys(FONT_URLS)
     return a.displayName.localeCompare(b.displayName, 'zh-Hans-CN');
   });
 
-/** 「系统字体」选项的 id。
- *
- *  [v99] 从空串改为显式哨兵 `'system'`：
- *   默认值变成得意黑之后，**空串必须让位给"未设置过"**（老存档里存的就是空串），
- *   否则老用户会永远停在系统栈上，看不到新的默认字体；
- *   而"我就是要系统字体"这个选择也需要一个能被持久化、且不会被迁移覆盖的值。
- */
-export const SYSTEM_FONT_ID = 'system';
-
 /**
  * [v99] 默认界面字体：**得意黑**（OFL 授权、随包分发）。
  *
  * 为什么换默认为自定义字体：原默认是"系统字体栈"，在 Windows 上会落到 **微软雅黑** ——
  * 雅黑是商业授权字体，不能随程序分发/嵌入，作为默认渲染链的一环在法务上不成立。
  *
- * ⚠ **优先 Regular 字重**：目录里现有 `Smiley-Sans.ttf` 实测是 **Oblique（斜体）** 字重
- *   （OpenType `name` 表 family = "Smiley Sans Oblique"，`head.macStyle` italic=1）。
- *   斜体不适合做界面正文，所以这里按候选表选第一个**实际存在**的文件：
- *   用户把 Regular 版丢进 `assets/fonts/`（文件名 `Smiley-Sans-Regular.ttf`）即自动生效，
- *   无需改代码；只有斜体版时退回斜体，并在列表里明确标出「斜体」。
+ * 用户口径（2026-10-19）：
+ *   · **直接默认得意黑**，目录里的 `Smiley-Sans.ttf` 就是斜体版，用户知情且接受；
+ *   · **不提供"系统默认"选项** —— 列表里只有具体字体，避免"默认到底是谁"这种模糊状态；
+ *   · 想要正体的用户改选「鸿蒙 HarmonyOS Sans SC」即可，不需要保留系统栈兜底。
+ *
+ * ⚠ 因此这里不再做 Regular/Oblique 的候选选择：默认就是这一个 id，行为可预测。
+ *   若将来补进 Regular 版（`Smiley-Sans-Regular.ttf`），它会作为**另一个可选字体**出现，
+ *   默认仍然不变 —— 要改默认必须显式改这一行。
  */
-const DEFAULT_FONT_CANDIDATES = ['Smiley-Sans-Regular.ttf', 'Smiley-Sans.ttf'];
-export const DEFAULT_UI_FONT_ID: string =
-  DEFAULT_FONT_CANDIDATES.find((id) => FONT_CATALOG.some((f) => f.id === id)) ?? SYSTEM_FONT_ID;
+export const DEFAULT_UI_FONT_ID = 'Smiley-Sans.ttf';
 
 /** 系统字体栈（与 tokens.css 的默认值保持一致，去掉自定义字体段）。
  *

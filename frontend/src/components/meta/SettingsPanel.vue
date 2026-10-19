@@ -177,7 +177,6 @@
       <div class="setting-row">
         <span class="setting-label">界面字体</span>
         <select class="neo-select" :value="settings.uiFont ?? ''" @change="onFontChange">
-          <option :value="SYSTEM_FONT_ID">系统默认（{{ SYSTEM_FONT_HINT }}）</option>
           <option v-for="f in FONT_CATALOG" :key="f.id" :value="f.id">{{ f.displayName }}{{ coverageTag(f.id) }}</option>
         </select>
       </div>
@@ -233,7 +232,6 @@ import { FACTION_SCHEMES } from '../../config/factionThemes';
 import { getState, addListener, removeListener, skipToNext, playTrack, getTrackEntries, type MusicManagerState } from '../../services/MusicManager';
 import {
   FONT_CATALOG,
-  SYSTEM_FONT_ID,
   ensureFontFacesInjected,
   detectFontCoverage,
   type FontCoverage,
@@ -246,9 +244,8 @@ const settings = useSettingsStore() as any;
 // 打开设置页时确保动态 @font-face 已注入，否则预览/切换拿不到族名。
 ensureFontFacesInjected();
 
-// [v99] 不再写"雅黑"：雅黑是商业授权字体，项目既不默认使用、也不应该出现在选项文案里，
-//   否则等于向用户暗示"这就是本项目的字体"。
-const SYSTEM_FONT_HINT = '系统字体栈';
+// [v99] 字体下拉里**不再有"系统默认"这一项**（用户口径：只列具体字体，
+//   默认即得意黑）。想换正体直接选「鸿蒙 HarmonyOS Sans SC」。
 
 /** 各字体的字形覆盖检测结果（异步填充；未检测时下拉里只显示字体名）。 */
 const coverageMap = ref<Record<string, FontCoverage>>({});
