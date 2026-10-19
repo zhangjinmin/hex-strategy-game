@@ -799,6 +799,8 @@ export class BattleScene extends Phaser.Scene {
             // → AI 找不到任何地块目标 → 舰队原地不动（用户实报）。
             // 因此指挥制仍要建地块数据（只是不显示），保证 AI 逻辑完整。
             this.buildTileGrid(mapDataMatrix);
+            // [v99] 地块建好之后才能真正夹取出生点 —— 见 `clampAllFleetsIntoField` 的说明。
+            this.clampAllFleetsIntoField();
             // 地块 sprite / text 在本函数内**创建即隐藏**（见 `buildTileGrid` 顶部注释）：
             //   它们是占位对象，只为占领/补给逻辑提供 setFillStyle / setText 的落点。
             // 地形标记（淡色斑）—— 仅 2D 降级路径可见，真正的地形视觉在
@@ -3522,6 +3524,8 @@ export class BattleScene extends Phaser.Scene {
             }
         }
         this.buildTileGrid(campaignMatrix);
+        // [v99] 同战略轨：地块建好之后再夹一次（若此前已有舰队，则此刻才有边界可判）。
+        this.clampAllFleetsIntoField();
     }
 
     // 构建战役模式专属的无污染对峙空域
@@ -3596,6 +3600,8 @@ export class BattleScene extends Phaser.Scene {
                 if (tile) tile.type = 'fortress';
             });
             this.buildTileGrid(campaignMatrix);
+        // [v99] 同战略轨：地块建好之后再夹一次（若此前已有舰队，则此刻才有边界可判）。
+        this.clampAllFleetsIntoField();
 
             // 初始化要塞武器
             const fX = this.hexRadius * (Math.sqrt(3) * 15 + Math.sqrt(3) / 2 * 0);
@@ -3646,6 +3652,8 @@ export class BattleScene extends Phaser.Scene {
                 }
             }
             this.buildTileGrid(campaignMatrix);
+        // [v99] 同战略轨：地块建好之后再夹一次（若此前已有舰队，则此刻才有边界可判）。
+        this.clampAllFleetsIntoField();
         }
     }
 
@@ -4358,6 +4366,44 @@ export class BattleScene extends Phaser.Scene {
         }
         if (typeof best?.x !== 'number' || typeof best?.y !== 'number') return { x: cx, y: cy };
         return { x: best.x, y: best.y };
+    }
+
+    /**
+     * [v99] 地块建好之后，**把所有舰队整体夹回战场内**。
+     *
+     * 为什么不能在"建舰那一刻"夹：战略轨的顺序是 `spawnInitialFleets()` → `buildTileGrid()`，
+     * 建舰时 `tilesList` 还是空的 ⇒ `clampToBattlefield` 无处判断边界、只能原样返回
+     * （用户实报"出场舰队还是会有几率在地图外面"就出在这条路径上）。
+     * ⇒ 真正的夹取点必须放在地块建好之后。
+     *
+     * 做法：**整队平移**，不是逐舰独立夹 —— 逐舰夹会把阵型压扁/揉成一团；
+     * 平移量取"舰队中心需要的位移"，队内所有舰与同阵营运输舰同步位移，形状保持不变。
+     */
+    private clampAllFleetsIntoField(): void {
+        if (!this.tilesList || this.tilesList.length === 0) return;
+        const margin = this.hexRadius * 2.5;
+        const shiftedAux = new Set<any>();
+        const shift = (u: any, dx: number, dy: number) => {
+            if (!u?.sprite) return;
+            u.sprite.x += dx;
+            u.sprite.y += dy;
+        };
+        for (const fleet of this.globalFleets) {
+            if (!fleet) continue;
+            const p = this.clampToBattlefield(fleet.x, fleet.y, margin);
+            const dx = p.x - fleet.x;
+            const dy = p.y - fleet.y;
+            if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
+            fleet.x = p.x;
+            fleet.y = p.y;
+            for (const u of fleet.units ?? []) shift(u, dx, dy);
+            // 运输舰不属任何舰队编制，但同阵营：跟着走一次即可（用 Set 防多队重复平移）
+            for (const u of this.auxUnits) {
+                if (u?.factionId !== fleet.factionId || shiftedAux.has(u)) continue;
+                shiftedAux.add(u);
+                shift(u, dx, dy);
+            }
+        }
     }
 
     /**
