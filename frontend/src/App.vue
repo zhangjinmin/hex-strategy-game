@@ -20,9 +20,9 @@
                 <div class="fleet-name" :class="fleet.team === 1 ? 'text-cyan' : 'text-red'">{{ fleet.name }}</div>
                 <!-- [迷雾·末次位置] ghost 卡片只是档案坐标的"图钉"，不得显示兵力/血条：
                      它是"曾经见过"，不是"现在还是这样"。 -->
-                <div v-if="fleet.ghost" style="font-size: calc(9px * var(--font-scale)); color: var(--color-text-secondary); font-weight: 800;">已丢失</div>
-                <div v-else-if="!fleet.contactState || fleet.contactState === 'identified'" style="font-size: calc(9px * var(--font-scale)); color: var(--color-text-secondary); font-weight: 800;">{{ fleet.unitCount }} 艘</div>
-                <div v-else style="font-size: calc(9px * var(--font-scale)); color: var(--color-warning); font-weight: 800;">{{ fleet.contactState === 'anomaly' ? '◌' : '◇' }}</div>
+                <div v-if="fleet.ghost" style="font-size: calc(11px * var(--font-scale)); color: var(--color-text-secondary); font-weight: 800;">已丢失</div>
+                <div v-else-if="!fleet.contactState || fleet.contactState === 'identified'" style="font-size: calc(11px * var(--font-scale)); color: var(--color-text-secondary); font-weight: 800;">{{ fleet.unitCount }} 艘</div>
+                <div v-else style="font-size: calc(11px * var(--font-scale)); color: var(--color-warning); font-weight: 800;">{{ fleet.contactState === 'anomaly' ? '◌' : '◇' }}</div>
             </div>
             <template v-if="!fleet.ghost && (!fleet.contactState || fleet.contactState === 'identified')">
             <div class="fleet-hp-bar">
@@ -33,7 +33,7 @@
               <div class="hp-fill" :style="{ width: fleet.supply + '%', background: fleet.supply > 30 ? 'var(--color-green)' : 'var(--color-warning)' }"></div>
             </div>
             <!-- 士气：补给告急会先动摇士气，归零后才可能在交火中快速崩溃。 -->
-            <div title="士气" style="font-size: calc(8px * var(--font-scale)); color: var(--color-text-secondary); margin-top: 2px; line-height: 1.25;">士气 {{ Math.round(fleet.morale ?? 100) }}%</div>
+            <div title="士气" style="font-size: calc(11px * var(--font-scale)); color: var(--color-text-secondary); margin-top: 2px; line-height: 1.25;">士气 {{ Math.round(fleet.morale ?? 100) }}%</div>
             <div class="fleet-hp-bar" style="height: 2px; margin-top: 1px; background: var(--neo-surface-raised);">
               <div class="hp-fill" :style="{ width: Math.max(0, fleet.morale ?? 100) + '%', background: (fleet.morale ?? 100) > 40 ? '#a78bfa' : 'var(--color-warning)' }"></div>
             </div>
@@ -885,7 +885,7 @@ body.battle3d-mode .fleet-ui-layer { display: none; }
   pointer-events: auto;
 }
 
-.fleet-portrait { width: 28px; height: 36px; object-fit: cover; border-radius: 3px; border: 1px solid var(--color-border); background: var(--neo-surface-raised); }
+.fleet-portrait { width: 32px; height: 42px; object-fit: cover; border-radius: 3px; border: 1px solid var(--color-border); background: var(--neo-surface-raised); }
 /* [迷雾·末次位置] 幽灵卡片：虚线框 + 半透明 + 缩排 —— 读作"档案图钉"，不是一支活着的舰队 */
 .fleet-float-ui.fleet-ghost {
   background: rgba(11, 12, 16, 0.55);
@@ -895,14 +895,14 @@ body.battle3d-mode .fleet-ui-layer { display: none; }
 }
 .fleet-float-ui.fleet-ghost .fleet-info { width: auto; }
 .fleet-float-ui.fleet-ghost .fleet-name { color: var(--color-text-secondary); font-weight: 700; }
-.fleet-info { display: flex; flex-direction: column; gap: 4px; width: 90px; }
-.fleet-name { font-size: calc(11px * var(--font-scale)); font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1; }
-.fleet-hp-bar { width: 100%; height: 4px; background: var(--color-border); border-radius: 2px; overflow: hidden; }
+.fleet-info { display: flex; flex-direction: column; gap: 5px; width: 132px; }
+.fleet-name { font-size: calc(14px * var(--font-scale)); font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.1; }
+.fleet-hp-bar { width: 100%; height: 5px; background: var(--color-border); border-radius: 2px; overflow: hidden; }
 .hp-fill { height: 100%; transition: width 0.1s linear; }
 .bg-cyan { background: var(--color-cyan); }
 .bg-red { background: var(--color-empire); }
 
 .stance-controls { display: flex; gap: 2px; margin-top: 4px; pointer-events: auto; }
-.stance-btn { flex: 1; background: var(--neo-surface); border: 1px solid var(--color-border); color: var(--color-text-disabled); font-size: calc(9px * var(--font-scale)); font-weight: 800; padding: 2px 0; border-radius: 3px; cursor: pointer; transition: all 0.2s; }
+.stance-btn { flex: 1; background: var(--neo-surface); border: 1px solid var(--color-border); color: var(--color-text-disabled); font-size: calc(11px * var(--font-scale)); font-weight: 800; padding: 3px 0; border-radius: 3px; cursor: pointer; transition: all 0.2s; }
 .stance-btn.active { background: var(--color-cyan); color: var(--neo-surface); border-color: var(--color-cyan); }
 </style>
