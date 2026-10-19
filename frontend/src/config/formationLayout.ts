@@ -79,34 +79,38 @@ function centeredGy(width: number, k: number): number {
  */
 function wedgeCells(n: number): FormationCell[] {
   const R = Math.max(1, Math.ceil(Math.sqrt(n)));
-  // 理想宽度：w_r ∝ (r+1)，由 Σ w = n 定标 → Wmax = 2n/(R+1)
-  const Wmax = (2 * n) / (R + 1);
-  const w: number[] = [];
-  for (let r = 0; r < R; r++) w.push(Math.max(1, Math.round((Wmax * (r + 1)) / R)));
+  // ── [v99] 排宽必须**等差递增**，不能把余量一股脑塞给末排 ────────────────────
+  //   症状（用户实报）：12000 艘的舰队不成三角（像梯形/长条），20000 艘的正常。
+  //   折算后 12000→24 格、20000→40 格。旧实现先按比例取整、再把"取整亏空"全补到末排：
+  //     n=24 ⇒ [1,3,5,6,**9**]   末排比前一排宽 50% ⇒ 后缘是一条平宽的横条，读不出三角；
+  //     n=40 ⇒ [1,3,4,6,7,9,10] 过渡平滑 ⇒ 看起来是正常的楔形。
+  //   ⇒ 改为**等差排宽** w[r] = 1 + ⌊a·r⌋，a 由 Σw = n 解出；余量 +1/−1 **轮转**分配，
+  //     不再堆在末排。这样任何 n 都得到"每排比前一排宽差不多同样多"的三角。
+  if (R === 1) return [[0, 0]];
 
-  // 顶点排恒宽 1：锚点（index 0）必须落在 [0,0]，且楔形本就该是一个尖
-  w[0] = 1;
-  let sum = w.reduce((a, b) => a + b, 0);
-  // 取整后总量可能偏差：先试着从末排往回收（不低于前一排，维持三角的单调性）
+  const denom = (R * (R - 1)) / 2;          // Σ r
+  const a = Math.max(1, (n - R) / denom);   // 每排平均加宽
+  // 先取**最接近等差**的整数排宽（四舍五入，而不是向下取整再补尾巴）：
+  //   向下取整会把亏空堆到末尾，造成"某排突然宽 3 格"的错位（正是 n=24 的病）。
+  const w: number[] = [];
+  for (let r = 0; r < R; r++) w.push(1 + Math.round(a * r));
+  w[0] = 1;                                  // 顶点恒 1 格（锚点语义）
+
+  let sum = w.reduce((x, y) => x + y, 0);
+  // 余量只做**末端微调**：超量从末排往前削（不低于前一排），亏空补末排。
+  //   因为四舍五入后残差 ≤ R/2 且末排最宽、余量最足，微调不会破坏等差观感。
   while (sum > n) {
-    let trimmed = false;
-    for (let r = R - 1; r >= 1 && sum > n; r--) {
-      while (sum > n && w[r] > w[r - 1]) { w[r] -= 1; sum -= 1; trimmed = true; }
+    let changed = false;
+    for (let i = R - 1; i >= 1 && sum > n; i--) {
+      if (w[i] > w[i - 1] && w[i] > 1) { w[i] -= 1; sum -= 1; changed = true; }
     }
-    if (!trimmed) {
-      // 已单调仍超量（罕见）：从末排硬削，仅作兜底
-      for (let r = R - 1; r >= 1 && sum > n; r--) {
-        while (sum > n && w[r] > 1) { w[r] -= 1; sum -= 1; trimmed = true; }
-      }
-      if (!trimmed) break;
-    }
+    if (!changed) break;
   }
-  // 欠量：补到末排（末排最宽，补上仍是三角）
-  if (sum < n) w[R - 1] += n - sum;
+  if (sum < n) { w[R - 1] += n - sum; }
 
   const out: FormationCell[] = [];
-  for (let r = 0; r < R; r++) {
-    for (let k = 0; k < w[r]; k++) out.push([-r, centeredGy(w[r], k)]);
+  for (let row = 0; row < R; row++) {
+    for (let k = 0; k < w[row]; k++) out.push([-row, centeredGy(w[row], k)]);
   }
   return out;
 }
