@@ -4009,7 +4009,7 @@ export class Battle3DOverlay {
     } catch { /* 非浏览器环境 */ }
   }
 
-  private updateDebugPanel(rows: { id: string; n: number; px: number; mesh: number; intel: string; mem: string; flips: number }[]): void {
+  private updateDebugPanel(rows: { id: string; n: number; px: number; mesh: number; intel: string; mem: string; flips: number; form: string; offs: number; slotMax: number }[]): void {
     this.bindDebugHotkey();
     if (!this._dbgFlags.checked) {
       this._dbgFlags.checked = true;
@@ -4031,7 +4031,7 @@ export class Battle3DOverlay {
     }
     const head = `tier=${this.lodNear ? 'NEAR' : 'FAR'} lo=${this.lodLo} hi=${this.lodHi} keep=${this.lodKeep}`;
     const body = rows
-      .map((r) => `${r.id}  n=${String(r.n).padStart(3)}  px=${r.px.toFixed(1).padStart(6)}  mesh=${String(r.mesh).padStart(3)}  ${r.px >= this.lodKeep ? 'MODEL' : r.px >= this.lodLo ? 'FADE' : 'DOT'}  intel=${r.intel.padEnd(10)} mem=${r.mem.padEnd(10)} flips=${String(r.flips).padStart(3)}/s`)
+      .map((r) => `${r.id}  n=${String(r.n).padStart(3)}  mesh=${String(r.mesh).padStart(3)}  ${r.px >= this.lodKeep ? 'MODEL' : r.px >= this.lodLo ? 'FADE' : 'DOT'}  form=${r.form}  offs=${String(r.offs).padStart(3)} slot<=${String(r.slotMax).padStart(3)}  intel=${r.intel.padEnd(10)} mem=${r.mem.padEnd(10)} flips=${String(r.flips).padStart(3)}/s`)
       .join('\n');
     this.debugPanel.textContent = head + '\n' + body;
     // [v80] 同步输出到控制台（节流 1s）—— 便于用户直接复制文本反馈，
@@ -4448,7 +4448,7 @@ export class Battle3DOverlay {
       //   ⚠ 只读 `BattleScene` 每帧已写好的字段，不新增任何写入、不改判定。
       const dbgOn = this._dbgFlags.on;
       const nowMs = performance.now();
-      const rows: { id: string; n: number; px: number; mesh: number; intel: string; mem: string; flips: number }[] = [];
+      const rows: { id: string; n: number; px: number; mesh: number; intel: string; mem: string; flips: number; form: string; offs: number; slotMax: number }[] = [];
       for (const [f, r] of byFleet) {
         const ff: any = f;
         const intel = String(ff?._intelDisplayMode ?? '-');
@@ -4466,7 +4466,19 @@ export class Battle3DOverlay {
           }
           flips = ff.__dbgFlipRate ?? 0;
         }
-        rows.push({ id: String(ff?.id ?? ff?.factionId ?? '?'), n: r.n, px: r.px, mesh: r.mesh, intel, mem, flips });
+        // [v99] 阵型诊断三件套：当前阵型 / 格位表长度 / 单位里最大的阵位号。
+        //   `slot<= > offs-1` ⇒ 阵位号越界（会被兜底到螺旋环）；`mesh < n` ⇒ 实体预算在削减。
+        let slotMax = -1;
+        for (const uu of (ff?.units ?? [])) {
+          const sl = (uu as any)?.formationSlot;
+          if (typeof sl === 'number' && sl > slotMax) slotMax = sl;
+        }
+        rows.push({
+          id: String(ff?.id ?? ff?.factionId ?? '?'), n: r.n, px: r.px, mesh: r.mesh, intel, mem, flips,
+          form: String(ff?.formation ?? '-'),
+          offs: ((ff as any)?._formOffsets?.length ?? 0),
+          slotMax,
+        });
       }
       rows.sort((a, b) => b.n - a.n);
       this.updateDebugPanel(rows);
