@@ -63,7 +63,7 @@ import {
     columnProfileCached, columnMatrixMul, nextRangeBand, shipBandMul, type RangeBand,
 } from '../../config/formationColumns';
 import {
-    dirArmorMul, hitSideFromAngle, fleetInterceptRate, interceptDamageMul, DIRECTION_CRIT_MIN,
+    dirArmorMul, hitSideFromAngle, attackerOrientationMul, fleetInterceptRate, interceptDamageMul, DIRECTION_CRIT_MIN,
 } from '../../config/shipTacticalProfile';
 import { TACTICAL_COMBO_CLAMP, TERRAIN_RULES, FACING_TURN } from '../../config/balance';
 import { terrainEffect, effectiveVisionMul, TERRAIN_VISUAL } from '../../config/terrainEffects';
@@ -9133,6 +9133,22 @@ export class BattleScene extends Phaser.Scene {
 
                         const hitSide = hitSideFromAngle(angleDiff);
                         let backstabMulti = dirArmorMul(hitSide, targetShip.classType || '无');
+                        // [v99] 攻方朝向乘区（与上面的受击方装甲是**两个独立乘区**）：
+                        //   前向主炮齐射 1.00 / 侧舷全炮门 1.25 / 尾向不奖励。
+                        //   用户要求「侧舷能打，而且伤害增加」—— 若只放宽射界不加这项，
+                        //   "横着打"会变成零代价：不用转舰首、还能开火，等于奖励坏姿态。
+                        //   与受击方后部装甲（1.00~2.00）叠加 ⇒ "绕到敌后用侧舷打尾部"收益最高。
+                        const _bowRef = typeof (u as any).visHeading === 'number'
+                            ? (u as any).visHeading
+                            : (fleet.facingSmooth ?? fleet.facingAngle ?? 0);
+                        const _bearingToTargetShip = Math.atan2(
+                            targetShip.sprite.y - u.sprite.y, targetShip.sprite.x - u.sprite.x,
+                        );
+                        const _atkOffAxis = Math.atan2(
+                            Math.sin(_bearingToTargetShip - _bowRef),
+                            Math.cos(_bearingToTargetShip - _bowRef),
+                        );
+                        const attackerOrientMul = attackerOrientationMul(_atkOffAxis);
                         // ⚠ 这里**不要**加"背面至少 ×1.5"的保底：那会让 空母 1.34 / 补给 1.32 / 电子 1.44
                         //   全部被抬到 1.5，把刚在台架上验证过的"装甲偏序"重新抹平
                         //   —— 与 EXP 从 0.5 改到 0.30 修的是**同一个错误**（clamp/保底吃掉区分度）。
@@ -9187,7 +9203,7 @@ export class BattleScene extends Phaser.Scene {
                         // [FIX-⑩] 阵型互克乘区同样按**实际命中目标**现算（见本帧上方 [FIX-⑩] 说明）。
                         const _dmgMul = formationCounterMul(fleet.formation, fireTargetFleet.formation);
 
-                        let finalDmg = Math.max(1, baseDmg * _dmgMul * backstabMulti * cpDmgMult * cpMoraleMult * adversityMult * finalMult * moraleDmgMult * retreatFireMul * v33Combo);
+                        let finalDmg = Math.max(1, baseDmg * _dmgMul * backstabMulti * attackerOrientMul * cpDmgMult * cpMoraleMult * adversityMult * finalMult * moraleDmgMult * retreatFireMul * v33Combo);
                         // 战损保底：最低造成目标 1% 最大舰数的破甲伤害
                         const minDmg = Math.max(1, Math.floor(targetShip.maxHp * 0.01));
                         finalDmg = Math.max(finalDmg, minDmg);

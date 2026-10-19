@@ -170,7 +170,13 @@ export function isTargetWithinFireArc(
   heading: number,
   from: { x: number; y: number },
   target: { x: number; y: number },
-  halfArcRad = Math.PI * 0.42,
+  // [v99] 半锥 75.6°(0.42π) → **108°(0.60π)**：允许**侧舷齐射**。
+  //   旧值下舷侧（偏角 90°）落在锥外 ⇒ 整队"打不出一发"，而方向装甲的侧/后档
+  //   又因为舰种键失配长期恒 1.0 ⇒ 舷侧既无输出也无惩罚，纯送死。
+  //   用户要求：侧舷要能打、而且要更痛（见 `attackerOrientationMul`），
+  //   并支持"绕到敌后攻击"的战术。后方（偏角 >108°）仍然禁止开火 ——
+  //   尾炮不参与齐射，这条保留。
+  halfArcRad = Math.PI * 0.60,
 ): boolean {
   const bearing = Math.atan2(target.y - from.y, target.x - from.x);
   const delta = Math.abs(Math.atan2(Math.sin(bearing - heading), Math.cos(bearing - heading)));
