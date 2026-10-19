@@ -525,6 +525,10 @@ export class BattleScene extends Phaser.Scene {
     // P3 战损账单（本场战斗累计）
     private battleLosses: { ships: number; pension: number } = { ships: 0, pension: 0 };
     private battleLossText: Phaser.GameObjects.Text | null = null;
+    /** [v99] 小地图：上次发布时刻（节流）与缓存的战场包围盒（tilesList 变长才重算） */
+    private _mmLastAt = 0;
+    private _mmBounds: { minX: number; maxX: number; minY: number; maxY: number } | null = null;
+    private _mmBoundsForCount = -1;
     // P4 名场面
     private duelCooldown: number = 0;            // 一骑讨冷却（避免频繁触发）
     private lastDuelPair: string = '';           // 上次对决的舰队对
@@ -4464,6 +4468,65 @@ export class BattleScene extends Phaser.Scene {
             }
         }
         return false;
+    }
+
+    /**
+     * [v99] 发布小地图快照（~7Hz 节流）。
+     *
+     * 三条口径（都刻意与小地图的"别当第二套真源"定位对齐）：
+     *   · **我方恒画**；敌方沿用 `_intelDisplayMode`：`hidden` 不画，
+     *     `fuzzy/last_known` 画成"问号级"的小点，只有 `live` 才是实心红点
+     *     —— 小地图必须和战场迷雾一致，否则它就是作弊器；
+     *   · 位置取**存活单位质心**（与 3D 广告牌同一口径），不读 `fleet.x/y`
+     *     （那是牵引用锚点，阵型展开后会落后于实际队形）；
+     *   · 包围盒按 `tilesList` 长度缓存：它一场只变一次，不必每帧全表扫。
+     */
+    private publishMinimapSnapshot(): void {
+        const now = this.time.now;
+        if (now - this._mmLastAt < 140) return;      // ~7Hz：小地图不需要 60Hz
+        this._mmLastAt = now;
+        const tiles = this.tilesList;
+        if (!tiles || tiles.length === 0) return;
+
+        if (!this._mmBounds || this._mmBoundsForCount !== tiles.length) {
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            for (const t of tiles) {
+                if (typeof t.x !== 'number' || typeof t.y !== 'number') continue;
+                if (t.x < minX) minX = t.x;
+                if (t.x > maxX) maxX = t.x;
+                if (t.y < minY) minY = t.y;
+                if (t.y > maxY) maxY = t.y;
+            }
+            if (!Number.isFinite(minX)) return;
+            this._mmBounds = { minX, maxX, minY, maxY };
+            this._mmBoundsForCount = tiles.length;
+        }
+
+        const playerTeam = this.store.factions.find((f: any) => f.type === 'player')?.team ?? 1;
+        const units: Array<{ x: number; y: number; team: number; own: boolean; mode: string; scale: number }> = [];
+        for (const fl of this.globalFleets) {
+            const fac = this.factionMap.get(fl.factionId);
+            if (!fac) continue;
+            const isOurs = fac.team === playerTeam;
+            const mode = (fl as any)._intelDisplayMode ?? 'hidden';
+            if (!isOurs && mode === 'hidden') continue;
+            let cx = 0, cy = 0, n = 0;
+            for (const u of fl.units ?? []) {
+                const sp = u?.sprite;
+                if (!sp) continue;
+                cx += sp.x; cy += sp.y; n += 1;
+            }
+            if (n === 0) continue;
+            units.push({
+                x: cx / n, y: cy / n, team: fac.team, own: isOurs, mode: isOurs ? 'live' : mode,
+                // 规模→点径：开方压缩，否则大舰队会糊成一坨
+                scale: Math.max(1, Math.min(6, Math.sqrt(n) * 0.7)),
+            });
+        }
+
+        const ov = (window as any).__b3dOverlay;
+        const view = typeof ov?.getGroundViewRect === 'function' ? ov.getGroundViewRect() : null;
+        this.store.minimap = { bounds: this._mmBounds!, units, view: view ?? null };
     }
 
     /**
@@ -9929,6 +9992,7 @@ export class BattleScene extends Phaser.Scene {
         });
         
         this.store.fleetsUI = uiData;
+        this.publishMinimapSnapshot();
 
         // [W1.3 · 已存在，勿重复实现] 3D 舰队信息条 + 姿态按钮**已由 `Battle3DOverlay` 的 DOM
         //   billboard 层提供**（`initBillboardLayer` / `updateBillboards`，见该文件 :4254-4585：

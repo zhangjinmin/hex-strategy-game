@@ -6,6 +6,8 @@
 
     <div v-if="gameState === 'game'" class="game-screen" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; width: 100%; height: 100%; z-index: 999;">
       <GameHeader />
+      <!-- [v99] 小地图：纯点阵顶视态势板（数据由 BattleScene 节流发布，见 store.minimap） -->
+      <BattleMinimap v-if="gameState === 'game'" />
       <div id="phaser-canvas-container" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%;"></div>
 
 
@@ -151,6 +153,7 @@ import { useGameStore, getPortrait } from './store/gameStore';
 import { mountGame, unmountGame, getGameInstance } from './game/GameInstance';
 
 import GameHeader from './components/battle/GameHeader.vue';
+import BattleMinimap from './components/battle/BattleMinimap.vue';
 import GameFooter from './components/battle/GameFooter.vue';
 import SettlementModal from './components/battle/SettlementModal.vue';
 import MainMenu from './components/meta/MainMenu.vue';
@@ -504,6 +507,13 @@ onUnmounted(() => {
 });
 
 // 监听设置变化 → 同步到音乐播放器
+// [v99] 小地图点击 → 镜头跳到该世界点。
+//   组件只写 `store.minimapFocus`，由这里调 3D 层 —— 小地图不需要知道 Three 的存在。
+watch(() => (store as any).minimapFocus, (v: any) => {
+  if (!v || typeof v.x !== 'number') return;
+  (window as any).__b3dOverlay?.focusOnPoint?.(v.x, v.y);
+});
+
 watch(() => (settings as any).musicEnabled, (v: boolean) => setEnabled(v));
 watch(() => (settings as any).musicVolume,  (v: number) => setVolume(v));
 

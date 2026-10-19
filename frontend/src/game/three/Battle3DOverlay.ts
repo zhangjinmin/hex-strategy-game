@@ -8423,6 +8423,59 @@ export class Battle3DOverlay {
   }
 
   /**
+   * [v99] 小地图点击 → 镜头移到**世界点**（与 `focusOnFleet` 同一套机位/俯角，
+   *   只把目标点从"舰队质心"换成调用方给的坐标）。
+   *   坐标口径与 BattleScene 一致：`px = worldX`、`py = -worldZ`。
+   */
+  focusOnPoint(px: number, py: number, opts?: { dist?: number }): boolean {
+    if (this.disposed) return false;
+    if (!Number.isFinite(px) || !Number.isFinite(py)) return false;
+    const wy = this.heightAtPx(px, py) + this.cruiseClearance;
+    const t = new THREE.Vector3(px, wy, -py);
+    const dist = opts?.dist ?? this.hexR * 12;
+    const elev = 0.55;
+    const azim = 0.6;
+    this.controls.target.copy(t);
+    this.camera.position.set(
+      t.x + Math.sin(elev) * Math.sin(azim) * dist,
+      t.y + Math.cos(elev) * dist,
+      t.z + Math.sin(elev) * Math.cos(azim) * dist,
+    );
+    this.camera.lookAt(t);
+    this.controls.update();
+    return true;
+  }
+
+  /**
+   * [v99] 当前镜头在**地面（y=0）上的覆盖矩形**，供小地图画视野框。
+   *
+   * 做法：把屏幕四角打到 y=0 平面上取包围盒。比用"相机位置 + fov"推算可靠得多
+   * （后者要处理俯角、宽高比、地形抬高，误差会累积成肉眼可见的偏移）。
+   * 任一角打不到平面（例如镜头几乎水平）⇒ 返回 null，小地图就不画框。
+   *
+   * 坐标口径与 BattleScene 一致：`px = worldX`、`py = -worldZ`。
+   */
+  getGroundViewRect(): { x0: number; y0: number; x1: number; y1: number } | null {
+    if (this.disposed) return null;
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const hit = new THREE.Vector3();
+    const ray = new THREE.Raycaster();
+    const corners: Array<[number, number]> = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const [nx, ny] of corners) {
+      this.ndc.set(nx, ny);
+      ray.setFromCamera(this.ndc, this.camera);
+      if (!ray.ray.intersectPlane(plane, hit)) return null;
+      const px = hit.x, py = -hit.z;
+      if (!Number.isFinite(px) || !Number.isFinite(py)) return null;
+      x0 = Math.min(x0, px); x1 = Math.max(x1, px);
+      y0 = Math.min(y0, py); y1 = Math.max(y1, py);
+    }
+    if (!Number.isFinite(x0) || x1 - x0 <= 0) return null;
+    return { x0, y0, x1, y1 };
+  }
+
+  /**
    * [W5.5] 回到**玩家主舰队**（「回到主舰队」按钮的默认目标）：
    *   取玩家阵营（`type==='player'`）名下第一支有单位的舰队 —— 与 `BattleScene` 的
    *   「玩家本队」口径一致（`globalFleets.find(f => f.factionId === pFac.id)`）。

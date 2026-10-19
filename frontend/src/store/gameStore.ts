@@ -552,6 +552,19 @@ export const useGameStore = defineStore('game', () => {
   //   由 BattleBanner.vue 的常驻角标渲染。空串 = 隐藏（与 Phaser 版"仅在有战损时创建"同语义）。
   const battleLossText = ref<string>('');
 
+  /**
+   * [v99] 小地图快照（由 `BattleScene` 以 ~7Hz 节流写入）。
+   * 只含**投影用**的位置/阵营/情报档位，不含任何可被误用为决策输入的字段 ——
+   * 小地图是"玩家看得见的态势"的另一种画法，不是第二套真源。
+   */
+  const minimap = shallowRef<{
+    bounds: { minX: number; maxX: number; minY: number; maxY: number };
+    units: Array<{ x: number; y: number; team: number; own: boolean; mode: string; scale: number }>;
+    view: { x0: number; y0: number; x1: number; y1: number } | null;
+  } | null>(null);
+  /** [v99] 小地图点击请求（App.vue 监听 → 调 `Battle3DOverlay.focusOnPoint`） */
+  const minimapFocus = ref<{ x: number; y: number; ts: number } | null>(null);
+
   const isCastingBomb = ref(false);
   const isSidebarCollapsed = ref(false);
   const gameState = ref<'title' | 'menu' | 'editor' | 'game' | 'strategy' | 'sim'>('title');
@@ -4385,7 +4398,7 @@ export const useGameStore = defineStore('game', () => {
     setPhaserMatchLauncher, setPhaserEditorInitializer,
     battleDialog, showDialog,
     floatBubble, showFloatBubble, updateFloatBubblePos, hideFloatBubble,
-    battleBanner, showBattleBanner, battleLossText,
+    battleBanner, showBattleBanner, battleLossText, minimap, minimapFocus,
     setPhaserCommandDispatcher, dispatchFleetCommand,
     setPhaserDeployDispatcher, dispatchDeployAction, deployFormation, deployTactic, deployAutoStart,
     // 战略层
