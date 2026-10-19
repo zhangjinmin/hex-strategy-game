@@ -324,6 +324,16 @@ const SLOT_FLIP_MIN_RAD = Math.PI / 2;
 const FORM_FACING_MIN_SPD2 = 0.02 * 0.02;
 
 /**
+ * [v99] **贴脸必见**距离（px）：玩家阵营任一舰只进入该半径，敌舰强制判为已识别。
+ *
+ * 取值 150：基础视野 250 的 60%，也在"主炮已经能稳定命中"的量级之内。
+ * 不取更大值：那会让迷雾在视觉上形同虚设（远处也强制可见）；
+ * 不取更小值：舰船本身就占几十 px，再小就只剩"碰撞"才触发，兜不住阵型展开。
+ * ⚠ 这是**不变量兜底**，不是分级模型的一部分 —— 分级仍走 `assessContact`。
+ */
+const PHYSICAL_CONTACT_PX = 150;
+
+/**
  * [FIX-⑬] 包抄支的**射界失败放弃阈值**（秒）：连续这么久"整队一发都打不出"就放弃包抄。
  *   取值理由：一次齐射间隔 + 一次航向修正的量级。太短（<1 次齐射）会被单帧遮挡误判；
  *   太长则舰队已经绕了半个圆、损失不可逆。**用时间不用帧数**（帧率会变）。
@@ -4404,6 +4414,36 @@ export class BattleScene extends Phaser.Scene {
                 shift(u, dx, dy);
             }
         }
+    }
+
+    /**
+     * [v99] 是否有**玩家阵营**的舰只（逐舰，不看 `units[0]`）位于 `fleet` 的 `px` 半径内。
+     *
+     * 用途：战争迷雾的"贴脸必见"兜底（见情报循环里的调用点）。
+     * 为什么不用 `allyFleets` + `units[0]`：那笔账依赖"每支舰队的第一艘舰代表整队位置"，
+     * 而旗舰阵亡/编队重排后 `units[0]` 可能换成队尾那艘 —— 于是贴着打却判成从未观测到。
+     * 这里逐个单位算，代价可控（先按舰队锚点粗筛，再查舰位）。
+     */
+    private hasPlayerUnitWithin(fleet: any, px: number): boolean {
+        if (!fleet) return false;
+        const fx = fleet.units?.[0]?.sprite?.x ?? fleet.x ?? 0;
+        const fy = fleet.units?.[0]?.sprite?.y ?? fleet.y ?? 0;
+        const r2 = px * px;
+        for (const other of this.globalFleets) {
+            if (other === fleet) continue;
+            const of = this.factionMap.get(other.factionId);
+            if (!this.isPlayerTeamFaction(of)) continue;
+            // 粗筛：舰队锚点都不在半径外扩 `px` 的范围里就跳过（避免逐舰全扫）
+            if (Math.abs((other.x ?? 0) - fx) > px * 3 || Math.abs((other.y ?? 0) - fy) > px * 3) continue;
+            for (const u of other.units ?? []) {
+                const s = u?.sprite;
+                if (!s) continue;
+                const dx = s.x - fx;
+                const dy = s.y - fy;
+                if (dx * dx + dy * dy <= r2) return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -9620,7 +9660,11 @@ export class BattleScene extends Phaser.Scene {
                 let memState: any = 'identified';
                 let engaged = false;
                 let record: any = null;
-                if (fac && fac.team !== playerFac?.team) {
+                // [v99] `playerFac` 缺失时**不启用迷雾**（fail open）。
+                //   原先写作 `fac.team !== playerFac?.team`：playerFac 为 undefined 时该条件恒真
+                //   ⇒ 连自己的舰队都会被当成敌方走情报流程、进而被隐藏。
+                //   宁可整场不隐藏，也不能把玩家自己的舰队藏起来。
+                if (fac && playerFac && fac.team !== playerFac.team) {
                     // 修复坐标：必须使用战舰 sprite 的绝对坐标计算视距
                     const fx = flagship.sprite.x;
                     const fy = flagship.sprite.y;
@@ -9667,6 +9711,19 @@ export class BattleScene extends Phaser.Scene {
                         scoutReport,
                         jammingStrength: this.electronicJammingOf(fl),
                     });
+                    // [v99] **贴脸必见**：任何玩家阵营舰只进入 `PHYSICAL_CONTACT_PX` ⇒ 强制 identified。
+                    //
+                    //   为什么必须有不变量：`assessContact` 是"探测能力"模型，判据是
+                    //   `distance > sensorRange ⇒ unknown`。它的输入（bestDist / bestSensor）
+                    //   是**记账**出来的 —— 只采信 `allyFleets` 的 `units[0]` 与 `allyVisionNodes`。
+                    //   一旦这笔账漏掉某个观测者（分舰队/战损重建/编队重排让 units[0] 换成了
+                    //   远处的那艘），就会出现「贴着我方舰队打、却被判成从未观测到」的荒谬结果：
+                    //   档案还在 ⇒ 落到 `last_known` ⇒ 模型隐藏 + 画一个"末次位置"幽灵图钉。
+                    //   （用户实报现象：消灭我方一支分舰队后，敌舰就在友军脸上却消失了。）
+                    //   ⇒ 这里用**实际舰位**兜底：不看视野记账，只看谁真的在贴脸距离内。
+                    if (contact.state !== 'identified' && this.hasPlayerUnitWithin(fl, PHYSICAL_CONTACT_PX)) {
+                        contact = { ...contact, state: 'identified' };
+                    }
                     rawObserved = contact.state;
                     // 开火/交战窗口台账（E17 写入）：交战中不可消失
                     const recentlyFired = (fl as any)._revealedByFireAt != null
