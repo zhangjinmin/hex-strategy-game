@@ -5,7 +5,11 @@
       <p class="status-text">{{ store.winStatus }}</p>
       
       <div class="reward-box neo-inset">
-        <p>本次战役结算经费: <span class="text-gold">+{{ store.rewardGold }} 亿</span></p>
+        <!-- [v99] 用户要求：把"赚了多少钱"换成**战役损失**。
+             损失账本由 BattleScene 逐帧维护、写入 store.battleLossText；
+             现在它是唯一的呈现点（战斗中的常驻角标已移除）。 -->
+        <p>战役损失: <span class="text-red">{{ store.battleLossText || '无舰船损失' }}</span></p>
+        <p class="loss-sub">结算经费: <span class="text-gold">+{{ store.rewardGold }} 亿</span></p>
       </div>
       
       <button @click="store.returnToMetaMenu()" class="neo-btn w-full mt-6 py-3 text-lg">返回统合作战本部</button>
@@ -23,6 +27,8 @@ const store = useGameStore();
 .modal-content { width: 400px; padding: 30px; text-align: center; border: 1px solid var(--overlay-border); }
 h2 { margin: 0 0 10px 0; font-size: calc(28px * var(--font-scale)); font-weight: 900; }
 .status-text { color: var(--color-text-secondary); font-size: calc(14px * var(--font-scale)); margin-bottom: 20px; font-weight: 600; }
+/* [v99] 损失为主、经费为次：损失用主字号，经费降到次级行，避免两条数字抢注意力 */
+.loss-sub { color: var(--color-text-secondary); font-size: calc(12px * var(--font-scale)); margin-top: 6px; font-weight: 700; }
 .reward-box { padding: 15px; border-radius: 8px; margin: 15px 0; }
 .reward-box p { margin: 5px 0; font-size: calc(14px * var(--font-scale)); font-weight: 800; color: var(--color-text-primary); }
 </style>

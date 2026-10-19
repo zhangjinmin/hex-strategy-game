@@ -13,9 +13,10 @@
     <div class="bb-sub">{{ banner.subtitle }}</div>
   </div>
 
-  <!-- [W1.2] 战损账单（左上角常驻，常显于 3D）：原为 Phaser 画布文字（不可见）⇒ 改 DOM 角标。
-       top 下移到顶栏舰队卡（纵向上限 200px）之下，避免与 GameHeader 重叠。 -->
-  <div v-if="lossText" class="battle-loss">{{ lossText }}</div>
+  <!-- [v99] 常驻"本场战损"角标已移除：它有两个问题——
+       ① 窗口变窄时会盖住画面（用户实报）；
+       ② 账本跨局不清零 ⇒ 新开一轮还挂着上一场的数字（用户实报）。
+       现在战损只在**战后结算**里呈现（见 SettlementModal），战斗中不再常驻。 -->
 </template>
 
 <script setup lang="ts">
@@ -31,10 +32,6 @@ const banner = computed<{ title: string; subtitle: string; color: string; ts: nu
   return (v && v.title) ? v : null;
 });
 
-const lossText = computed<string>(() => {
-  const v = unwrap((store as any).battleLossText);
-  return typeof v === 'string' ? v : '';
-});
 </script>
 
 <style scoped>

@@ -1185,18 +1185,11 @@ export class BattleScene extends Phaser.Scene {
         // ===== P4 战术增援：90秒一波拉锯 =====
         this.updateReinforcement();
 
-        // ===== P3 战损账单 HUD（左上角常驻） =====
+        // ===== P3 战损账单 =====
+        // [v99] **战斗中不再常驻显示**（用户实报："小窗口时它会盖住画面"）。
+        //   账本仍然逐帧维护，但只写进 store 供**战后结算**读取；渲染点在 SettlementModal。
         if (this.battleLosses.ships > 0 || this.battleLosses.pension > 0) {
-            if (!this.battleLossText) {
-                this.battleLossText = this.add.text(10, 10, '', {
-                    fontSize: '12px', color: '#ef4444', fontStyle: 'bold',
-                    backgroundColor: 'rgba(0,0,0,0.55)', padding: { x: 8, y: 4 }
-                }).setDepth(60).setScrollFactor(0);
-            }
-            const lossLine = `本场战损：${this.battleLosses.ships} 舰 · 抚恤 ₮${Math.round(this.battleLosses.pension / 10000)}万`;
-            this.battleLossText.setText(lossLine);
-            // [W1.2] 3D 可见层：同步镜像到 store（BattleBanner.vue 常驻角标），3D 模式下方能看见。
-            this.store.battleLossText = lossLine;
+            this.store.battleLossText = `损失 ${this.battleLosses.ships} 舰 · 抚恤 ₮${Math.round(this.battleLosses.pension / 10000)}万`;
         }
 
             }
@@ -1222,6 +1215,13 @@ export class BattleScene extends Phaser.Scene {
 
     /** P3 开启部署阶段：暂停战斗，显示部署选单 */
     private activateDeployPhase() {
+        // [v99] **战损账本每局清零**。旧实现只在字段声明处初始化，
+        //   而 BattleScene 会被连续复用（打完一场直接进下一场）⇒ 上一场的数字带进新一场，
+        //   用户实报"新开一轮刚开场，上一轮的战役损失还在"。
+        this.battleLosses = { ships: 0, pension: 0 };
+        this.store.battleLossText = '';
+        if (this.battleLossText) { this.battleLossText.destroy(); this.battleLossText = null; }
+
         // 战前部署暂停：战役/自定义战斗启用；演习模式不暂停战斗流程（保持原设计）。
         // v2 修复（用户反馈①"任务指令入口在哪看不见"）：演习不部署暂停导致 warRoomOpen
         //   从不自动置 true，军议面板只剩右上角小按钮，玩家找不到任务指令入口。
