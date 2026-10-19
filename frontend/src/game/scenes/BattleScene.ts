@@ -1867,13 +1867,24 @@ export class BattleScene extends Phaser.Scene {
         if (combat.length === 0 || n0 <= 0) return;
         const offs = formationOffsets((fleet.formation || 'wedge') as FormationType, n0);
         const spacing = formationSpacing(offs, this.hexRadius);
+        // [v99] 同 update 里的口径：阵位号越界时按"阵位序名次"取格位，
+        //   否则 `offs[slot] || ringCell(slot)` 会把这几艘摆到阵型外的螺旋环上，
+        //   阵型里就空出对应格位（用户实报"楔形中间缺一段"）。
+        const rankOf = (() => {
+            const slots = combat.map((u: any) => u.formationSlot).filter((v: any) => typeof v === 'number' && v >= 0).sort((a: number, b: number) => a - b);
+            if (slots.length === 0 || slots[slots.length - 1] < offs.length) return null;
+            const m = new Map<number, number>();
+            slots.forEach((v: number, i: number) => m.set(v, Math.min(i, offs.length - 1)));
+            return m;
+        })();
         // 阵面朝向真源与 update() 一致：formFacing ?? facingSmooth ?? facingAngle ?? 0（建舰期通常为 facingAngle）
         const facing = (fleet as any).formFacing ?? fleet.facingSmooth ?? fleet.facingAngle ?? 0;
         const spread = entrySpreadEffective(SLICE_SPREAD, SLICE_DUR_PER_SHIP, SLICE_TOTAL_MAX);
         for (const u of units) {
             const slot = (typeof u.formationSlot === 'number' && u.formationSlot >= 0) ? u.formationSlot : -1;
             if (slot < 0 || !u.sprite) continue;   // 运输舰（slot = -1）不参与阵型定位
-            const cell: FormationCell = offs[slot] || ringCell(slot);
+            const cellIdx = rankOf ? (rankOf.get(slot) ?? slot) : slot;
+            const cell: FormationCell = offs[cellIdx] || ringCell(slot);
             const [dx, dy] = rotateOffsetPx(cell[0] * spacing, cell[1] * spacing, facing, 1);
             u.sprite.x = fleet.x + dx;
             u.sprite.y = fleet.y + dy;
@@ -9099,13 +9110,49 @@ export class BattleScene extends Phaser.Scene {
                     // 否则槽位越界单位会在过渡期塌回距中心 1~3px（"吸中心"回潮，审查 P2①）。
                     const ringPx = ringCell(slotIdx);
                     const rp: [number, number] = [ringPx[0] * formSpacing, ringPx[1] * formSpacing];
-                    const a = morphA[slotIdx] || morphB[slotIdx] || rp;
-                    const b = morphB[slotIdx] || rp;
+                    const cellIdx = (() => {
+                        if (slotIdx >= 0 && slotIdx < formOffsets.length) return slotIdx;
+                        // [v99] 阵位号越界（分兵/增援/合并留下的空洞号段）⇒ 按"本队内的名次"取格位。
+                        //   否则会掉进 ringCell（黄金角螺旋）被摆到阵型外的环上，
+                        //   阵型里对应格位就空出来（用户实报"楔形中间缺一段模型"）。
+                        //   自包含实现：只读 `fleet.units` 与 `formOffsets`，不依赖循环外的临时变量。
+                        const fc0Now = (fleet as any).formationCount0;
+                        const flip = !!(fleet as any)._slotFlip;
+                        const ids = new Set<number>();
+                        for (const uu of (fleet.units as any[]) || []) {
+                            const raw = (typeof uu.formationSlot === 'number' && uu.formationSlot >= 0) ? uu.formationSlot : -1;
+                            if (raw < 0) continue;
+                            ids.add((flip && typeof fc0Now === 'number' && fc0Now > 0 && raw < fc0Now) ? fc0Now - 1 - raw : raw);
+                        }
+                        const sorted = [...ids].sort((a, b) => a - b);
+                        const rank = sorted.indexOf(slotIdx);
+                        return rank >= 0 ? Math.min(rank, formOffsets.length - 1) : Math.min(slotIdx, formOffsets.length - 1);
+                    })();
+                    const a = morphA[cellIdx] || morphB[cellIdx] || rp;
+                    const b = morphB[cellIdx] || rp;
                     ox = a[0] + (b[0] - a[0]) * morphE;
                     oy = a[1] + (b[1] - a[1]) * morphE;
                 } else {
                     // 非过渡分支的 cell 为**格位**单位，下方统一乘 formSpacing ⇒ ringCell 直接可用
-                    const cell: FormationCell = formOffsets[slotIdx] || ringCell(slotIdx);
+                    const cellIdx = (() => {
+                        if (slotIdx >= 0 && slotIdx < formOffsets.length) return slotIdx;
+                        // [v99] 阵位号越界（分兵/增援/合并留下的空洞号段）⇒ 按"本队内的名次"取格位。
+                        //   否则会掉进 ringCell（黄金角螺旋）被摆到阵型外的环上，
+                        //   阵型里对应格位就空出来（用户实报"楔形中间缺一段模型"）。
+                        //   自包含实现：只读 `fleet.units` 与 `formOffsets`，不依赖循环外的临时变量。
+                        const fc0Now = (fleet as any).formationCount0;
+                        const flip = !!(fleet as any)._slotFlip;
+                        const ids = new Set<number>();
+                        for (const uu of (fleet.units as any[]) || []) {
+                            const raw = (typeof uu.formationSlot === 'number' && uu.formationSlot >= 0) ? uu.formationSlot : -1;
+                            if (raw < 0) continue;
+                            ids.add((flip && typeof fc0Now === 'number' && fc0Now > 0 && raw < fc0Now) ? fc0Now - 1 - raw : raw);
+                        }
+                        const sorted = [...ids].sort((a, b) => a - b);
+                        const rank = sorted.indexOf(slotIdx);
+                        return rank >= 0 ? Math.min(rank, formOffsets.length - 1) : Math.min(slotIdx, formOffsets.length - 1);
+                    })();
+                    const cell: FormationCell = formOffsets[cellIdx] || ringCell(slotIdx);
                     ox = cell[0] * formSpacing; oy = cell[1] * formSpacing;
                 }
                 // [R10-B1] 阵位旋转改用限速平滑后的舰首朝向（原为瞬时 fAngle ⇒ 大角度转向时
