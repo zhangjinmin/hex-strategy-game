@@ -1945,7 +1945,8 @@ export class Battle3DOverlay {
     // 点击拾取（非拖拽才触发）
     this.onPointerDown = (e) => { this.downPos = { x: e.clientX, y: e.clientY }; this.dragMoved = false; };
     this.onPointerMove = (e) => {
-      if (e.buttons && (Math.abs(e.clientX - this.downPos.x) > 4 || Math.abs(e.clientY - this.downPos.y) > 4)) this.dragMoved = true;
+      // [v99] 阈值 4 → 8：4px 在真实鼠标操作里属于手抖，不该被当成"拖拽"。
+      if (e.buttons && (Math.abs(e.clientX - this.downPos.x) > 8 || Math.abs(e.clientY - this.downPos.y) > 8)) this.dragMoved = true;
     };
     this.onPointerUp = (e) => this.handlePick(e);
     this.renderer.domElement.addEventListener('pointerdown', this.onPointerDown);
@@ -4009,7 +4010,7 @@ export class Battle3DOverlay {
     } catch { /* 非浏览器环境 */ }
   }
 
-  private updateDebugPanel(rows: { id: string; n: number; px: number; mesh: number; intel: string; mem: string; flips: number; form: string; offs: number; slotMax: number }[]): void {
+  private updateDebugPanel(rows: { id: string; n: number; px: number; mesh: number; intel: string; mem: string; flips: number; form: string; offs: number; slotMax: number; state: string; stance: string }[]): void {
     this.bindDebugHotkey();
     if (!this._dbgFlags.checked) {
       this._dbgFlags.checked = true;
@@ -4022,7 +4023,7 @@ export class Battle3DOverlay {
       const el = document.createElement('div');
       Object.assign(el.style, {
         position: 'fixed', left: '8px', bottom: '8px', zIndex: '9999',
-        font: '11px/1.4 ui-monospace,Consolas,monospace', color: '#9fe8ff',
+        font: '13px/1.55 ui-monospace,Consolas,monospace', color: '#9fe8ff',
         background: 'rgba(2,10,20,.85)', padding: '6px 9px', borderRadius: '4px',
         whiteSpace: 'pre', pointerEvents: 'none', border: '1px solid rgba(120,200,255,.25)',
       } as CSSStyleDeclaration);
@@ -4031,7 +4032,7 @@ export class Battle3DOverlay {
     }
     const head = `tier=${this.lodNear ? 'NEAR' : 'FAR'} lo=${this.lodLo} hi=${this.lodHi} keep=${this.lodKeep}`;
     const body = rows
-      .map((r) => `${r.id}  n=${String(r.n).padStart(3)}  mesh=${String(r.mesh).padStart(3)}  ${r.px >= this.lodKeep ? 'MODEL' : r.px >= this.lodLo ? 'FADE' : 'DOT'}  form=${r.form}  offs=${String(r.offs).padStart(3)} slot<=${String(r.slotMax).padStart(3)}  intel=${r.intel.padEnd(10)} mem=${r.mem.padEnd(10)} flips=${String(r.flips).padStart(3)}/s`)
+      .map((r) => `${r.id} n=${String(r.n).padStart(3)} mesh=${String(r.mesh).padStart(3)} ${r.px >= this.lodKeep ? 'MODEL' : r.px >= this.lodLo ? 'FADE ' : 'DOT  '} form=${r.form.padEnd(7)} offs=${String(r.offs).padStart(3)} slot<=${String(r.slotMax).padStart(3)} st=${r.state.padEnd(10)} pos=${r.stance.padEnd(8)} flips=${String(r.flips).padStart(2)}/s`)
       .join('\n');
     this.debugPanel.textContent = head + '\n' + body;
     // [v80] 同步输出到控制台（节流 1s）—— 便于用户直接复制文本反馈，
@@ -4448,7 +4449,7 @@ export class Battle3DOverlay {
       //   ⚠ 只读 `BattleScene` 每帧已写好的字段，不新增任何写入、不改判定。
       const dbgOn = this._dbgFlags.on;
       const nowMs = performance.now();
-      const rows: { id: string; n: number; px: number; mesh: number; intel: string; mem: string; flips: number; form: string; offs: number; slotMax: number }[] = [];
+      const rows: { id: string; n: number; px: number; mesh: number; intel: string; mem: string; flips: number; form: string; offs: number; slotMax: number; state: string; stance: string }[] = [];
       for (const [f, r] of byFleet) {
         const ff: any = f;
         const intel = String(ff?._intelDisplayMode ?? '-');
@@ -4478,6 +4479,8 @@ export class Battle3DOverlay {
           form: String(ff?.formation ?? '-'),
           offs: ((ff as any)?._formOffsets?.length ?? 0),
           slotMax,
+          state: String(ff?.state ?? '-'),
+          stance: String(ff?.stance ?? '-'),
         });
       }
       rows.sort((a, b) => b.n - a.n);
@@ -8160,7 +8163,17 @@ export class Battle3DOverlay {
 
   // ---------- 点击拾取 ----------
   private handlePick(e: PointerEvent) {
-    if (this.dragMoved) return;
+    // ── [v99] **点击 / 拖动 判别**（用户实报：右键有时立刻生效、有时完全没反应）──
+    //   旧判定：指针移动超过 **4px** 就置 `dragMoved`，然后这里直接 return ⇒
+    //   右键下令时鼠标只要抖 5 个像素，指令就被**静默吞掉**（连提示都没有）；
+    //   而手稳的一下就"立刻掉头"。两种结果完全取决于手腕，跟逻辑无关。
+    //   现在：**位移 ≤ 8px 一律仍算点击**（这个尺度不可能是"想平移视角"），
+    //   只有真正的拖动（>8px，OrbitControls 的平移/旋转）才拦截。
+    //   ⚠ 不要为了"更稳"把这个阈值放大到 20px+：那会导致"想平移却顺手下了令"。
+    const dx = Math.abs(e.clientX - this.downPos.x);
+    const dy = Math.abs(e.clientY - this.downPos.y);
+    const tinyDrag = dx <= 8 && dy <= 8;
+    if (this.dragMoved && !tinyDrag) return;
     // [R10-A2] 按键分流：地块/舰队拾取只认左键(0) / 右键(2)，其余（中键 1、侧键 3/4/5）一律忽略。
     //   · 中键在 OrbitControls 默认映射为 DOLLY（缩放，three r160 OrbitControls.js:99 mouseButtons）。
     //     若把它归为左键透传，中键缩放过程中的松手会误触发"购买地块 / 建立野战修补站"。
