@@ -9015,7 +9015,32 @@ export class BattleScene extends Phaser.Scene {
             // [0,0]（一堆单位叠在旗舰上），square/line 分支还会把单位送出地图。
             // 现在按开局实体数 n 枚举，长度恰为 n。n 与阵型在战斗中都可能变（AI 换阵），
             // 故按 (formation, n) 缓存——每帧重算是 O(n) 且会持续分配数组。
-            const n0 = (fleet as any).formationCount0 ?? fleet.units.length;
+            // ── [v99] **格位数必须 ≥ 参战舰数**，否则多出来的舰只能叠在别人的格子上 ──────
+            //   实测（用户截图里调试面板）：`n=118  mesh=118  offs=89  slot<=88`
+            //   ⇒ 118 艘挤在 89 个格位里 ⇒ 29 艘与友舰**完全重合**。
+            //   重合的模型会 z-fighting：镜头一动就"某一格忽然冒出模型又消失"
+            //   （用户实报："拉近镜头的一个瞬间，那些空位置有模型出现，然后就没了"）。
+            //   这里把编制数**夹到不低于参战舰数**，让格位表给每艘舰都留位置。
+            //   ⚠ 只增不减：`formationCount0` 大于舰数时保持原值（战损后阵型仍按原编成留位）。
+            const _combatCnt = (fleet.units as any[]).reduce(
+                (acc: number, u: any) => acc + ((typeof u.formationSlot === 'number' && u.formationSlot >= 0) ? 1 : 0), 0);
+            // 槽位**去重**（自愈）：若多艘舰共用同一 `formationSlot`（增援/合并/分兵重编的遗留），
+            //   它们会被摆到**完全相同**的格位上 ⇒ 模型互相叠合、z-fighting ⇒ 镜头一动就
+            //   "某格忽有忽无"。按现有槽位序重编成 0..k-1（相对次序不变 ⇒ 阵型形状不变）。
+            {
+                const withSlot = (fleet.units as any[]).filter((u: any) => typeof u.formationSlot === 'number' && u.formationSlot >= 0);
+                const distinct = new Set(withSlot.map((u: any) => u.formationSlot)).size;
+                if (withSlot.length > distinct) {
+                    withSlot.sort((a: any, b: any) => (a.formationSlot - b.formationSlot));
+                    withSlot.forEach((u: any, i: number) => { u.formationSlot = i; });
+                    (fleet as any).formationCount0 = withSlot.length;
+                }
+            }
+            const n0 = Math.max(
+                Number((fleet as any).formationCount0) || 0,
+                _combatCnt,
+                1,
+            );
             // 格距的**全部自变量**都进键（= formationSpacing(offs, hexRadius) 的输入）：
             // formation / n0 / hexRadius 已含在上式里，这里把 hexRadius 抽成命名项，
             // 作为 P1 前置 —— 一旦格距开始依赖舰长，只把舰长维度追加到 spacingSrc，
