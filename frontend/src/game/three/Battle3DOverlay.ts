@@ -4223,6 +4223,11 @@ export class Battle3DOverlay {
         const u = units[ui];
         // Phaser 层的 visible 是战争迷雾的权威输出；3D 层只能消费它，
         // 不得因独立遍历 globalFleets 而泄漏未知/未识别敌舰模型。
+        // [v99] **舰载机不参与舰队实体**：它不排阵、不该有舰体模型，
+        //   接战时由 `fighterWaves` 单独生成（该子系统尚未接完）。
+        //   ⚠ 判据用 `isFighter` 标记而不是 `sprite.visible`：后者会被"全队显形/隐藏"
+        //     这两条路径反复改写，不能作为身份判据。
+        if ((u as any).isFighter) continue;
         if (!u.sprite || u.sprite.visible === false || u.hp <= 0 || !visibleIndexes.has(ui)) continue;
         // unit 无稳定 id：用 fleetId + sprite 容器引用做 key（sprite 生命周期=unit 生命周期）
         const key = `${fleet.factionId}:${u.sprite._b3dKey || (u.sprite._b3dKey = Math.random().toString(36).slice(2))}`;
@@ -7164,7 +7169,11 @@ export class Battle3DOverlay {
         const phaseCn: Record<string, string> = { cruise: '巡航', brake: '制动', turn: '转向', reform: '重组', disengage: '脱离' };
         const phaseKey = String(fleet._combatControl?.phase || '');
         const phaseTxt = phaseCn[phaseKey] || (fleet.state === 'moving' ? '机动' : '待机');
-        const mtxt = `机动 ${phaseTxt} · 速度 ${pct}%`;
+        // [v99] 受令行里**带上当前阵型**：此前阵型名只存在于调试面板，
+        //   玩家（和排查时的我）只能靠"形状像不像三角"去猜 ⇒ 反复误判。
+        const formCn: Record<string, string> = { wedge: '楔形', spindle: '纺锤', line: '横阵', circle: '圆阵', square: '方阵' };
+        const formKey = String(fleet.formation || 'wedge');
+        const mtxt = `机动 ${phaseTxt} · ${formCn[formKey] ?? formKey} · 速度 ${pct}%`;
         if (bb.lastManeuver !== mtxt) { bb.lastManeuver = mtxt; bb.maneuverEl.textContent = mtxt; }
       }
 

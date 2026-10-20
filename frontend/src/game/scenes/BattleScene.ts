@@ -10069,7 +10069,10 @@ export class BattleScene extends Phaser.Scene {
                         (fl as any)._intelLastKnown = { x: display.x, y: display.y, t: display.t };
                     }
                     if (display.mode === 'live') {
-                        fl.units.forEach((u: any) => { u.sprite.setVisible(true); });
+                        // [v99] **舰载机不显形**：它由航母携带、只在接战释放（fighterWaves）。
+                        //   之前只在建舰期 `setVisible(false)`，但这里一句"全队显形"会把它又打开
+                        //   ⇒ 用户看到"舰队里混着舰载机"。凡显形/隐藏的统一入口都要过这道判断。
+                        fl.units.forEach((u: any) => { if (!(u as any).isFighter) u.sprite.setVisible(true); });
                         if (fac.type !== 'player') fac.inVision = true;
                         // [v99] **发现敌舰提醒**（每支舰队每局只提示一次）。
                         //   用 `_detectedAlerted` 而不是"每帧比档位"：档位会在 live/fuzzy 之间
