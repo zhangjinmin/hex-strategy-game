@@ -1872,7 +1872,11 @@ export class BattleScene extends Phaser.Scene {
         //   阵型里就空出对应格位（用户实报"楔形中间缺一段"）。
         const rankOf = (() => {
             const slots = combat.map((u: any) => u.formationSlot).filter((v: any) => typeof v === 'number' && v >= 0).sort((a: number, b: number) => a - b);
-            if (slots.length === 0 || slots[slots.length - 1] < offs.length) return null;
+            if (slots.length === 0) return null;
+            // [v99] 不止"越界"要压缩：**号段稀疏**（有空洞）同样要按名次压，
+            //   否则空号对应的格位空着，阵型被缝隙撑开（排头一艘 + 中间空一块）。
+            const dense = slots[slots.length - 1] + 1 === slots.length;
+            if (dense && slots[slots.length - 1] < offs.length) return null;
             const m = new Map<number, number>();
             slots.forEach((v: number, i: number) => m.set(v, Math.min(i, offs.length - 1)));
             return m;
@@ -9009,7 +9013,24 @@ export class BattleScene extends Phaser.Scene {
                 const dur = (fleet as any)._formMorphDur ?? 0;
                 const t = (fleet as any)._formMorphT ?? dur;
                 const morphingPrev = t < dur;
-                if ((fleet as any)._formLayoutKey !== formKey && !morphingPrev) {
+                // ── [v99] **换阵卡死的自愈** ────────────────────────────────────
+                //   症状（用户实报）：托盘显示楔形，舰船却还是旧的纵阵排列。
+                //   机制：换阵按 `_formLayoutKey` 触发重建，重建被"morph 未完成"挡着；
+                //   而 morph 进度按**真实时间 × 速度倍率**推进 —— 入场暂停、变速、掉帧都可能
+                //   让它长期停在半路 ⇒ 阵型表永远是旧的，托盘却读 `fleet.formation`（新值）。
+                //   ⇒ 连续 3 秒都没走完（正常一次换阵 1~2 秒）就**强制收尾**，下一帧重建。
+                //   这只是兜底：正常换阵走不到这里。
+                if ((fleet as any)._formLayoutKey !== formKey && morphingPrev) {
+                    (fleet as any)._formMorphStall = ((fleet as any)._formMorphStall ?? 0) + dt;
+                    if ((fleet as any)._formMorphStall > 3) {
+                        (fleet as any)._formMorphT = dur;
+                        (fleet as any)._formMorphStall = 0;
+                    }
+                } else {
+                    (fleet as any)._formMorphStall = 0;
+                }
+                const morphingNow2 = ((fleet as any)._formMorphT ?? dur) < dur;
+                if ((fleet as any)._formLayoutKey !== formKey && !morphingNow2) {
                     const offs = formationOffsets((fleet.formation || 'wedge') as FormationType, n0);
                     const newSpacing = formationSpacing(offs, this.hexRadius);
                     const prevOffsets: FormationCell[] | undefined = (fleet as any)._formOffsets;
@@ -9120,23 +9141,37 @@ export class BattleScene extends Phaser.Scene {
                     // 否则槽位越界单位会在过渡期塌回距中心 1~3px（"吸中心"回潮，审查 P2①）。
                     const ringPx = ringCell(slotIdx);
                     const rp: [number, number] = [ringPx[0] * formSpacing, ringPx[1] * formSpacing];
-                    const cellIdx = (() => {
-                        if (slotIdx >= 0 && slotIdx < formOffsets.length) return slotIdx;
-                        // [v99] 阵位号越界（分兵/增援/合并留下的空洞号段）⇒ 按"本队内的名次"取格位。
-                        //   否则会掉进 ringCell（黄金角螺旋）被摆到阵型外的环上，
-                        //   阵型里对应格位就空出来（用户实报"楔形中间缺一段模型"）。
-                        //   自包含实现：只读 `fleet.units` 与 `formOffsets`，不依赖循环外的临时变量。
-                        const fc0Now = (fleet as any).formationCount0;
-                        const flip = !!(fleet as any)._slotFlip;
-                        const ids = new Set<number>();
-                        for (const uu of (fleet.units as any[]) || []) {
+                    const _slotRank = (() => {
+                        const f: any = fleet;
+                        const fc0 = f.formationCount0;
+                        const flip = !!f._slotFlip;
+                        const sig = `${f.units?.length ?? 0}:${fc0 ?? 0}`;
+                        if (f.__slotRank && f.__slotRank.sig === sig) return f.__slotRank;
+                        const ids: number[] = [];
+                        for (const uu of (f.units as any[]) || []) {
                             const raw = (typeof uu.formationSlot === 'number' && uu.formationSlot >= 0) ? uu.formationSlot : -1;
                             if (raw < 0) continue;
-                            ids.add((flip && typeof fc0Now === 'number' && fc0Now > 0 && raw < fc0Now) ? fc0Now - 1 - raw : raw);
+                            ids.push((flip && typeof fc0 === 'number' && fc0 > 0 && raw < fc0) ? fc0 - 1 - raw : raw);
                         }
-                        const sorted = [...ids].sort((a, b) => a - b);
-                        const rank = sorted.indexOf(slotIdx);
-                        return rank >= 0 ? Math.min(rank, formOffsets.length - 1) : Math.min(slotIdx, formOffsets.length - 1);
+                        ids.sort((a, b) => a - b);
+                        const m = new Map<number, number>();
+                        ids.forEach((sl, i) => { if (!m.has(sl)) m.set(sl, i); });
+                        // dense = 号段恰好 0..k-1（既无空洞、也无越界）
+                        const dense = ids.length > 0 && ids[ids.length - 1] + 1 === ids.length;
+                        const out = { sig, m, dense };
+                        f.__slotRank = out;
+                        return out;
+                    })();
+                    // ── [v99] 阵位号 → **格位下标**（号段稀疏时必须压缩）────────────────────
+                    //   症状（用户实报）：楔形"排头一艘、中间空一块、后面一整片"。
+                    //   机制：格位表长度 = 编制数，而单位的 `formationSlot` 可能**有洞**
+                    //   （分兵/增援/合并都会留下空号）。旧实现直接取 `formOffsets[slot]`：
+                    //   空号对应的格位没人站 ⇒ 阵型被"缝隙"撑开 ⇒ 前面孤零零一艘、后面一整片。
+                    //   ⇒ 稀疏时按**名次**压缩（第几个号站第几格）；稠密时用原号，行为逐位不变。
+                    const cellIdx = (() => {
+                        if (_slotRank.dense && slotIdx >= 0 && slotIdx < formOffsets.length) return slotIdx;
+                        const r = _slotRank.m.get(slotIdx);
+                        return r !== undefined ? Math.min(r, formOffsets.length - 1) : Math.min(slotIdx, formOffsets.length - 1);
                     })();
                     const a = morphA[cellIdx] || morphB[cellIdx] || rp;
                     const b = morphB[cellIdx] || rp;
@@ -9144,23 +9179,37 @@ export class BattleScene extends Phaser.Scene {
                     oy = a[1] + (b[1] - a[1]) * morphE;
                 } else {
                     // 非过渡分支的 cell 为**格位**单位，下方统一乘 formSpacing ⇒ ringCell 直接可用
-                    const cellIdx = (() => {
-                        if (slotIdx >= 0 && slotIdx < formOffsets.length) return slotIdx;
-                        // [v99] 阵位号越界（分兵/增援/合并留下的空洞号段）⇒ 按"本队内的名次"取格位。
-                        //   否则会掉进 ringCell（黄金角螺旋）被摆到阵型外的环上，
-                        //   阵型里对应格位就空出来（用户实报"楔形中间缺一段模型"）。
-                        //   自包含实现：只读 `fleet.units` 与 `formOffsets`，不依赖循环外的临时变量。
-                        const fc0Now = (fleet as any).formationCount0;
-                        const flip = !!(fleet as any)._slotFlip;
-                        const ids = new Set<number>();
-                        for (const uu of (fleet.units as any[]) || []) {
+                    const _slotRank = (() => {
+                        const f: any = fleet;
+                        const fc0 = f.formationCount0;
+                        const flip = !!f._slotFlip;
+                        const sig = `${f.units?.length ?? 0}:${fc0 ?? 0}`;
+                        if (f.__slotRank && f.__slotRank.sig === sig) return f.__slotRank;
+                        const ids: number[] = [];
+                        for (const uu of (f.units as any[]) || []) {
                             const raw = (typeof uu.formationSlot === 'number' && uu.formationSlot >= 0) ? uu.formationSlot : -1;
                             if (raw < 0) continue;
-                            ids.add((flip && typeof fc0Now === 'number' && fc0Now > 0 && raw < fc0Now) ? fc0Now - 1 - raw : raw);
+                            ids.push((flip && typeof fc0 === 'number' && fc0 > 0 && raw < fc0) ? fc0 - 1 - raw : raw);
                         }
-                        const sorted = [...ids].sort((a, b) => a - b);
-                        const rank = sorted.indexOf(slotIdx);
-                        return rank >= 0 ? Math.min(rank, formOffsets.length - 1) : Math.min(slotIdx, formOffsets.length - 1);
+                        ids.sort((a, b) => a - b);
+                        const m = new Map<number, number>();
+                        ids.forEach((sl, i) => { if (!m.has(sl)) m.set(sl, i); });
+                        // dense = 号段恰好 0..k-1（既无空洞、也无越界）
+                        const dense = ids.length > 0 && ids[ids.length - 1] + 1 === ids.length;
+                        const out = { sig, m, dense };
+                        f.__slotRank = out;
+                        return out;
+                    })();
+                    // ── [v99] 阵位号 → **格位下标**（号段稀疏时必须压缩）────────────────────
+                    //   症状（用户实报）：楔形"排头一艘、中间空一块、后面一整片"。
+                    //   机制：格位表长度 = 编制数，而单位的 `formationSlot` 可能**有洞**
+                    //   （分兵/增援/合并都会留下空号）。旧实现直接取 `formOffsets[slot]`：
+                    //   空号对应的格位没人站 ⇒ 阵型被"缝隙"撑开 ⇒ 前面孤零零一艘、后面一整片。
+                    //   ⇒ 稀疏时按**名次**压缩（第几个号站第几格）；稠密时用原号，行为逐位不变。
+                    const cellIdx = (() => {
+                        if (_slotRank.dense && slotIdx >= 0 && slotIdx < formOffsets.length) return slotIdx;
+                        const r = _slotRank.m.get(slotIdx);
+                        return r !== undefined ? Math.min(r, formOffsets.length - 1) : Math.min(slotIdx, formOffsets.length - 1);
                     })();
                     const cell: FormationCell = formOffsets[cellIdx] || ringCell(slotIdx);
                     ox = cell[0] * formSpacing; oy = cell[1] * formSpacing;
