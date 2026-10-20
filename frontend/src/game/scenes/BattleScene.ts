@@ -2725,6 +2725,16 @@ export class BattleScene extends Phaser.Scene {
      *  → state='moving' → 写 directOrder + _directJustIssued（成为权威后才 ack，见权威主链）。
      *  ⚠ 不动 fleet.stance：姿态是玩家的长期设定，不被单条指令改写。 */
     private commitDirectOrder(fleet: any, order: DirectOrder) {
+        // ── [v99] 新指令必须**打断在途机动** ──────────────────────────────
+        //   用户实报："右键让它前进/后退，它不理，继续原方向；有时又立刻掉头"。
+        //   根因：`_uturn`（在途掉头）与 `_compactTurn`（转向收拢）**不受新指令影响** ——
+        //   大机动一轮要几十秒，期间新指令只是改了 `directOrder`，机体仍被旧的
+        //   转向状态机拖着走 ⇒ 表现为"完全不听指令"；小角度时没有触发大机动，
+        //   所以又"反应很快"。两种反馈并存，正是同一条状态机在两种尺度下的表现。
+        //   ⇒ 提交新指令时清掉在途机动状态，让新指令当帧就生效。
+        (fleet as any)._uturn = false;
+        (fleet as any)._compactTurn = 0;
+        (fleet as any)._compactKeep = 0;
         cancelDirectAttack(((fleet as any).attackState ?? null) as DirectAttackState | null);
         (fleet as any).attackState = null;
         (fleet as any)._combatControl = { phase: 'cruise', phaseSeconds: 0 };
