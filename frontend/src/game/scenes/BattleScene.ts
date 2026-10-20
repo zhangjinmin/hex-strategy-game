@@ -306,6 +306,15 @@ const FORM_FACING_RATE = Math.PI / 120;
  */
 const COMPACT_TURN_LATERAL_KEEP = 0.45;
 /**
+ * [v99] **普通转向**的横向压缩量（0.12 = 只收 12%）。
+ *
+ * 旧实现只用一个 0.45：任何 `phase==='turn'`（包括普通改向、整队重组）都把阵型
+ * 横向压到 55% 宽 —— 楔形被压成"斜梯"，用户实报"转个方向阵型就不对了，转完又好"。
+ * 45% 只该服务**180° 掉头**这种极端机动（那时不压缩根本转不过来）。
+ * ⇒ 普通转向只做轻微收拢（观感上仍"紧凑"，但三角读得出来）。
+ */
+const COMPACT_TURN_LATERAL_KEEP_TURN = 0.12;
+/**
  * [v71] reform 结束的阵位收敛阈值（px）。
  * · 含义：全体舰船到各自槽位的最大偏差 ≤ 此值 ⇒ 认为「已就位」，可恢复巡航。
  * · 取值依据：排距 FORMATION_SPACING=26 的 ~23%（6px）—— 略严于"看起来齐了"，
@@ -8886,8 +8895,14 @@ export class BattleScene extends Phaser.Scene {
             //     不需要超出推力的横向速度 ⇒ 不会散架。
             {
                 const _ct = (fleet as any)._compactTurn as number | undefined;
-                const wantCompact = ((fleet as any)._uturn === true) || control.phase === 'turn';
+                const isUturn = (fleet as any)._uturn === true;
+                const wantCompact = isUturn || control.phase === 'turn';
                 const target = wantCompact ? 1 : 0;
+                // [v99] 压缩量按机动类型分档：180° 掉头 45%，普通转向 12%。
+                //   两者共用 `_compactTurn` 这条"收拢强度"曲线，只是系数不同。
+                (fleet as any)._compactKeep = wantCompact
+                    ? (isUturn ? COMPACT_TURN_LATERAL_KEEP : COMPACT_TURN_LATERAL_KEEP_TURN)
+                    : 0;
                 // 收拢/展开速率：1.2s 完成（够快不至于拖慢转向，够慢不至突兀）
                 const step = 0.85 * dt;
                 const next = Math.max(0, Math.min(1, (_ct ?? 0) + (target > (_ct ?? 0) ? step : -step)));
@@ -9226,7 +9241,7 @@ export class BattleScene extends Phaser.Scene {
                 //   但首尾次序不变 ⇒ 视觉是"收拢再展开"，不是"重排"。
                 //   ⚠ 只作用于**槽位目标**，不影响 u.sprite 实际位置 ⇒ 船自己会
                 //     沿直线走近的新槽位（stepShipSlotFollow 的既有行为）。
-                const _ctK = 1 - COMPACT_TURN_LATERAL_KEEP * ((fleet as any)._compactTurn ?? 0);
+                const _ctK = 1 - ((fleet as any)._compactKeep ?? 0) * ((fleet as any)._compactTurn ?? 0);
                 // ⚠ 旋转公式收敛到 formationLayout.rotateOffsetPx（与建舰期 placeUnitsAtFormationSlots
                 //   同一实现）—— 两处各自内联会让"第一帧阵型"与"逐帧目标位"漂移。
                 const [rx, ry] = rotateOffsetPx(ox, oy, _ff, _ctK);
