@@ -1872,7 +1872,16 @@ export class BattleScene extends Phaser.Scene {
     private placeUnitsAtFormationSlots(fleet: any): void {
         const units = ((fleet?.units || []) as any[]);
         const combat = units.filter((u: any) => (u.formationSlot ?? -1) >= 0);
-        const n0 = Math.max(0, Math.floor(Number((fleet as any).formationCount0)) || combat.length);
+        // [v99] **格位数必须 ≥ 实际参战舰数**（与 update 里同一口径）。
+        //   建舰期若 `formationCount0` 小于实际舰数（增援/合并/分编遗留），
+        //   `offs[slot]` 对后半段直接 undefined ⇒ 掉进 `ringCell()` 螺旋环
+        //   ⇒ 表现就是"排头一小撮 + 远处散一片"（用户实报：一艘打头、空一段、后面一堆）。
+        const _combatCnt0 = combat.length;
+        const n0 = Math.max(
+            0,
+            Math.floor(Number((fleet as any).formationCount0)) || 0,
+            _combatCnt0,
+        );
         if (combat.length === 0 || n0 <= 0) return;
         const offs = formationOffsets((fleet.formation || 'wedge') as FormationType, n0);
         const spacing = formationSpacing(offs, this.hexRadius);
