@@ -4010,7 +4010,7 @@ export class Battle3DOverlay {
     } catch { /* 非浏览器环境 */ }
   }
 
-  private updateDebugPanel(rows: { id: string; n: number; px: number; mesh: number; intel: string; mem: string; flips: number; form: string; offs: number; slotMax: number; state: string; stance: string }[]): void {
+  private updateDebugPanel(rows: { id: string; n: number; px: number; mesh: number; intel: string; mem: string; flips: number; form: string; offs: number; slotMax: number; state: string; stance: string; dbgSlots?: string }[]): void {
     this.bindDebugHotkey();
     if (!this._dbgFlags.checked) {
       this._dbgFlags.checked = true;
@@ -4032,7 +4032,7 @@ export class Battle3DOverlay {
     }
     const head = `tier=${this.lodNear ? 'NEAR' : 'FAR'} lo=${this.lodLo} hi=${this.lodHi} keep=${this.lodKeep}`;
     const body = rows
-      .map((r) => `${r.id} n=${String(r.n).padStart(3)} mesh=${String(r.mesh).padStart(3)} ${r.px >= this.lodKeep ? 'MODEL' : r.px >= this.lodLo ? 'FADE ' : 'DOT  '} form=${r.form.padEnd(7)} offs=${String(r.offs).padStart(3)} slot<=${String(r.slotMax).padStart(3)} st=${r.state.padEnd(10)} pos=${r.stance.padEnd(8)} flips=${String(r.flips).padStart(2)}/s`)
+      .map((r) => `${r.id} n=${String(r.n).padStart(3)} mesh=${String(r.mesh).padStart(3)} ${r.px >= this.lodKeep ? 'MODEL' : r.px >= this.lodLo ? 'FADE ' : 'DOT  '} form=${r.form.padEnd(7)} offs=${String(r.offs).padStart(3)} slot<=${String(r.slotMax).padStart(3)} st=${r.state.padEnd(10)} pos=${r.stance.padEnd(8)} flips=${String(r.flips).padStart(2)}/s${r.dbgSlots ?? ''}`)
       .join('\n');
     this.debugPanel.textContent = head + '\n' + body;
     // [v80] 同步输出到控制台（节流 1s）—— 便于用户直接复制文本反馈，
@@ -4454,7 +4454,7 @@ export class Battle3DOverlay {
       //   ⚠ 只读 `BattleScene` 每帧已写好的字段，不新增任何写入、不改判定。
       const dbgOn = this._dbgFlags.on;
       const nowMs = performance.now();
-      const rows: { id: string; n: number; px: number; mesh: number; intel: string; mem: string; flips: number; form: string; offs: number; slotMax: number; state: string; stance: string }[] = [];
+      const rows: { id: string; n: number; px: number; mesh: number; intel: string; mem: string; flips: number; form: string; offs: number; slotMax: number; state: string; stance: string; dbgSlots?: string }[] = [];
       for (const [f, r] of byFleet) {
         const ff: any = f;
         const intel = String(ff?._intelDisplayMode ?? '-');
@@ -4479,6 +4479,23 @@ export class Battle3DOverlay {
           const sl = (uu as any)?.formationSlot;
           if (typeof sl === 'number' && sl > slotMax) slotMax = sl;
         }
+        // [v99] **阵位对账**：把前 4 艘舰的「阵位号 → 格位坐标」直接打出来。
+        //   目的是把"排头一艘 + 中间空一段"这类形态问题落到数字上：
+        //   · slot 对、cell 也对 ⇒ 几何没问题，问题在追踪（船没走到位）
+        //   · cell 是 ∅ ⇒ 格位表里没这一格（offs 不足/槽位越界）
+        //   · cell 间距 >1 格 ⇒ 格位表本身有洞
+        let dbgSlots = '';
+        if (dbgOn) {
+          const offsArr: any[] | null = (ff as any)?._formOffsets ?? null;
+          const us = ((ff?.units ?? []) as any[]).filter((u: any) => (u.formationSlot ?? -1) >= 0).slice(0, 4);
+          const slotTxt = us.map((u: any) => u.formationSlot).join(',');
+          const cellTxt = us.map((u: any) => {
+            if (!offsArr) return 'NOFF';
+            const c = offsArr[u.formationSlot];
+            return c ? `${c[0]},${c[1]}` : '∅';
+          }).join(' ');
+          dbgSlots = ` || slots=[${slotTxt}] cells=[${cellTxt}]`;
+        }
         rows.push({
           id: String(ff?.id ?? ff?.factionId ?? '?'), n: r.n, px: r.px, mesh: r.mesh, intel, mem, flips,
           form: String(ff?.formation ?? '-'),
@@ -4486,6 +4503,7 @@ export class Battle3DOverlay {
           slotMax,
           state: String(ff?.state ?? '-'),
           stance: String(ff?.stance ?? '-'),
+          dbgSlots,
         });
       }
       rows.sort((a, b) => b.n - a.n);
