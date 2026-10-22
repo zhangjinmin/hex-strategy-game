@@ -1918,6 +1918,15 @@ export class BattleScene extends Phaser.Scene {
         })();
         // 阵面朝向真源与 update() 一致：formFacing ?? facingSmooth ?? facingAngle ?? 0（建舰期通常为 facingAngle）
         const facing = (fleet as any).formFacing ?? fleet.facingSmooth ?? fleet.facingAngle ?? 0;
+        // ── [v99] **把建舰期实际用的朝向写回 `formFacing`** ─────────────────────
+        //   逐帧循环取的是 `formFacing ?? facingSmooth`（不含 facingAngle）。
+        //   建舰期若 `formFacing` 还是 undefined，本处回落到 `facingAngle`，
+        //   而随后 `advanceFormationFacing` 会从**另一个初值**（facingSmooth）限速转向它
+        //   ⇒ 从入场到稳态之间整支舰队会**整体旋转一段角度**。
+        //   表现出来正是：格位十字是对的，舰船却整体偏在网格一侧（用户截图实测
+        //   锚点 (-2165,450) / 首舰 (-2295,450)，整队同向偏移）。
+        //   ⇒ 初值在此一次性对齐，两条路径从第一帧起就用同一个朝向。
+        (fleet as any).formFacing = facing;
         const spread = entrySpreadEffective(SLICE_SPREAD, SLICE_DUR_PER_SHIP, SLICE_TOTAL_MAX);
         for (const u of units) {
             const slot = (typeof u.formationSlot === 'number' && u.formationSlot >= 0) ? u.formationSlot : -1;

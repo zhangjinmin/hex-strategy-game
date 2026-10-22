@@ -8586,7 +8586,8 @@ export class Battle3DOverlay {
       const n0 = Math.max(Number(fleet.formationCount0) || 0, units.length, 1);
       const offs = (fleet as any)._formOffsets ?? this.formOffsets(String(fleet.formation || 'wedge'), n0);
       const spacing = (fleet as any)._formSpacing ?? formationSpacing(offs as any, this.hexR);
-      const facing = Number(fleet.formFacing ?? fleet.facingAngle ?? 0);
+      // 与逐帧循环同一个表达式（`formFacing ?? facingSmooth`），否则诊断网格会与实装错开一个角度
+      const facing = Number(fleet.formFacing ?? fleet.facingSmooth ?? 0);
       for (const cell of offs as any[]) {
         if (n >= CAP) break;
         const [rx, ry] = rotateOffsetPx(cell[0] * spacing, cell[1] * spacing, facing, 1);
