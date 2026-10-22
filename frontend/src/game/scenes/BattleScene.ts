@@ -1235,17 +1235,6 @@ export class BattleScene extends Phaser.Scene {
         this.store.battleLossText = '';
         if (this.battleLossText) { this.battleLossText.destroy(); this.battleLossText = null; }
 
-        // ── [v99] **开战前用"最终阵型"重摆一次位** ──────────────────────────
-        //   病灶（多轮未定位到的那条）：建舰期 `spawnInitialFleets` 先按**当时的**阵型摆位，
-        //   而阵型在随后几步才被改写（提督教范 / 玩家初始阵型 / 战役计划），
-        //   改写**只动了 `fleet.formation` 字段，没有重摆**。
-        //   于是入场动画（此时"演算已暂停"，`update()` 不跑）里看到的是**旧阵型的站位**，
-        //   而卡片显示的是新阵型名 —— 用户看到的就是"卡片写楔形、舰船却是别的形状"，
-        //   且"跑几帧后自己变正常"（`update()` 首次构建 `_formOffsets` 后才纠正）。
-        //   ⇒ 在这里（开战前、唯一的收口点）按最终阵型统一重摆一次。
-        for (const _fl of this.globalFleets) {
-            if ((_fl.units || []).length > 0) this.placeUnitsAtFormationSlots(_fl);
-        }
 
         // 战前部署暂停：战役/自定义战斗启用；演习模式不暂停战斗流程（保持原设计）。
         // v2 修复（用户反馈①"任务指令入口在哪看不见"）：演习不部署暂停导致 warRoomOpen
@@ -1327,6 +1316,19 @@ export class BattleScene extends Phaser.Scene {
         this.planAiFactionsForDeploy();
         // [V18-A · P1] 部署阶段军议面板：镜像「总指挥确认卡」候选/依据到 store
         this.publishSupremeCommanderPanel();
+
+        // ── [v99] **按"最终阵型"重摆位** —— 必须放在本函数**最后** ─────────────
+        //   时序才是病根：
+        //     ① spawnInitialFleets：按**当时的** formation 摆位
+        //     ② planAiFactionsForDeploy（上面这几行）：把 `fl.formation` 改成提督教范阵型
+        //        —— **只改字段，不重摆**
+        //     ③ 入场动画期间"演算已暂停"，`update()` 不跑 ⇒ 画面停留在①的旧站位
+        //     ④ 开战首帧 `update()` 才构建 `_formOffsets` 并纠正 ⇒ "跑几帧自己变好了"
+        //   ⇒ ② 之后**立刻**重摆，入场动画看到的就是最终阵型。
+        //   ⚠ 位置极重要：早一版我把它放在函数开头，正好在 ② 之前，等于没修。
+        for (const _fl of this.globalFleets) {
+            if ((_fl.units || []).length > 0) this.placeUnitsAtFormationSlots(_fl);
+        }
     }
 
     /** P3 刷新部署选单文字 */
@@ -1582,6 +1584,9 @@ export class BattleScene extends Phaser.Scene {
             //   [P2 · 最后补救] 与 :985 同口径：`admiralStyleTag`（标签优先 / 无标签用基础 stats 推导）
             //   ⇒ 无标签提督出场阵型也随 stats 分化；战役轨无该字段 ⇒ 回落 admiralTags，逐位不变。
             fl.formation = resolveAdmiralDoctrine(aiFac.admiralStyleTag ? [aiFac.admiralStyleTag] : aiFac.admiralTags).formation;
+            // [v99] 改完阵型**就地重摆**：这一层是全场景唯一"开局改阵型"的地方，
+            //   窗口期停在这里最安全（比在函数末尾统一补更不容易被后续插入的写点绕过）。
+            this.placeUnitsAtFormationSlots(fl);
         });
 
         // [v31-C] **分舰队编成**：按战法把本方舰队编成多路（够则直接分工、不足则拆最强的一支）。
