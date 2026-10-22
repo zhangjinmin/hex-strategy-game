@@ -8579,8 +8579,15 @@ export class Battle3DOverlay {
       this.scene.add(this.cellDbg);
     }
     const fleets: any[] = ((this.battleScene as any).globalFleets) || [];
+    // ⚠ 只画**舰数最多的一支**：之前把所有舰队的格位都画上，多支舰队叠在一起，
+    //   看起来像"舰船和网格错开"，实际是**两支舰队各自的网格**。诊断本身不能制造歧义。
+    const target = fleets.reduce((best: any, f: any) => {
+      const c = (f.units || []).filter((u: any) => (u.formationSlot ?? -1) >= 0).length;
+      const b = best ? ((best.units || []).filter((u: any) => (u.formationSlot ?? -1) >= 0).length) : -1;
+      return c > b ? f : best;
+    }, null);
     let n = 0;
-    for (const fleet of fleets) {
+    for (const fleet of (target ? [target] : [])) {
       const units: any[] = (fleet.units || []).filter((u: any) => (u.formationSlot ?? -1) >= 0);
       if (units.length === 0) continue;
       const n0 = Math.max(Number(fleet.formationCount0) || 0, units.length, 1);

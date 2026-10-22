@@ -1902,6 +1902,15 @@ export class BattleScene extends Phaser.Scene {
         if (combat.length === 0 || n0 <= 0) return;
         const offs = formationOffsets((fleet.formation || 'wedge') as FormationType, n0);
         const spacing = formationSpacing(offs, this.hexRadius);
+        // ── [v99] **把建舰期算出的阵位表直接写进缓存** ─────────────────────────
+        //   病灶：逐帧循环只在 `_formLayoutKey !== formKey` 时才构建 `_formOffsets`。
+        //   开局/暂停期间 `update()` 不跑（或被前置分支跳过）⇒ `_formOffsets` 一直是空，
+        //   调试面板显示 `offs=0 cells=NOFF`，而舰船用的是**建舰期的局部 offs** ——
+        //   两套数据的缓存不同步，任何"逐帧才纠正"的路径在这段窗口里都失效。
+        //   ⇒ 建舰期就把结果落到同一组缓存字段，两端从第一帧起同源。
+        (fleet as any)._formOffsets = offs;
+        (fleet as any)._formSpacing = spacing;
+        (fleet as any)._formLayoutKey = `${fleet.formation || 'wedge'}:${n0}:${String(this.hexRadius)}`;
         // [v99] 同 update 里的口径：阵位号越界时按"阵位序名次"取格位，
         //   否则 `offs[slot] || ringCell(slot)` 会把这几艘摆到阵型外的螺旋环上，
         //   阵型里就空出对应格位（用户实报"楔形中间缺一段"）。
