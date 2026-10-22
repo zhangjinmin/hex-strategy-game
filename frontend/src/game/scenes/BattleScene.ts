@@ -8949,7 +8949,16 @@ export class BattleScene extends Phaser.Scene {
             //     不需要超出推力的横向速度 ⇒ 不会散架。
             {
                 const _ct = (fleet as any)._compactTurn as number | undefined;
-                const isUturn = (fleet as any)._uturn === true;
+                // ── [v99] **`_uturn` 必须与真实相位同时成立** ──────────────────────
+                //   用户实报的关键线索："右键让它移动，阵型就对了；不干预就一直错，
+                //   而且正确的阵型还会被重新盖回去"。
+                //   右键（`commitDirectOrder`）做的其中一件事就是**清掉 `_uturn` /
+                //   `_compactTurn`** ⇒ 阵型立刻展开 ⇒ 说明错的就是"收拢态没退出"。
+                //   `_uturn` 由 `combatControl` 的 turn 相位写入，但相位结束后若残留 true，
+                //   压缩就会一直挂着（横向只剩 55%），楔形被压成一条窄带；
+                //   再次进入转向相位时又被重新压上 ⇒ "对了又被盖回去"。
+                //   ⇒ 收拢必须要求 `control.phase === 'turn'` 成立，不再单独信任 `_uturn`。
+                const isUturn = (fleet as any)._uturn === true && control.phase === 'turn';
                 const wantCompact = isUturn || control.phase === 'turn';
                 const target = wantCompact ? 1 : 0;
                 // [v99] 压缩量按机动类型分档：180° 掉头 45%，普通转向 12%。
@@ -9320,7 +9329,11 @@ export class BattleScene extends Phaser.Scene {
                 //   但首尾次序不变 ⇒ 视觉是"收拢再展开"，不是"重排"。
                 //   ⚠ 只作用于**槽位目标**，不影响 u.sprite 实际位置 ⇒ 船自己会
                 //     沿直线走近的新槽位（stepShipSlotFollow 的既有行为）。
-                const _ctK = 1 - ((fleet as any)._compactKeep ?? 0) * ((fleet as any)._compactTurn ?? 0);
+                // 视觉兜底：任何情况下横向不得压到 72% 以下 —— 再窄就"读不出楔形"了，
+                // 而收拢带来的 ω 收益在 72% 时已经拿到大半（ω ∝ 1/半宽）。
+                const _ctK = Math.max(0.72, 1 - ((fleet as any)._compactKeep ?? 0) * ((fleet as any)._compactTurn ?? 0));
+                // 调试快照：横向压缩系数（1 = 未收拢）。面板直接读它，用来判断"窄带是不是压出来的"。
+                (fleet as any)._ctKNow = _ctK;
                 // ⚠ 旋转公式收敛到 formationLayout.rotateOffsetPx（与建舰期 placeUnitsAtFormationSlots
                 //   同一实现）—— 两处各自内联会让"第一帧阵型"与"逐帧目标位"漂移。
                 const [rx, ry] = rotateOffsetPx(ox, oy, _ff, _ctK);

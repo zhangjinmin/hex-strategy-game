@@ -4504,7 +4504,8 @@ export class Battle3DOverlay {
           const u0: any = us[0];
           const anc = `a=(${Math.round(Number(ff?.x) || 0)},${Math.round(Number(ff?.y) || 0)})`;
           const pos = u0?.sprite ? `u0=(${Math.round(u0.sprite.x)},${Math.round(u0.sprite.y)})` : 'u0=-';
-          dbgSlots = ` || slots=[${slotTxt}] cells=[${cellTxt}] ${anc} ${pos}`;
+          const ctk = `ctK=${(Number((ff as any)?._ctKNow) || 1).toFixed(2)}`;
+          dbgSlots = ` || slots=[${slotTxt}] cells=[${cellTxt}] ${anc} ${pos} ${ctk}`;
         }
         rows.push({
           id: String(ff?.id ?? ff?.factionId ?? '?'), n: r.n, px: r.px, mesh: r.mesh, intel, mem, flips,
