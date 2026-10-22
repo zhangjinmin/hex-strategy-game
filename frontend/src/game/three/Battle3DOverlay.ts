@@ -89,7 +89,7 @@ import { hexChordHalfWidth, mergeSpans, scanLineY, scanSegCount } from '../../co
 import { fbm2D, contourLevels, marchingSquares, chaikin } from '../../config/terrainField';
 // 分舰队阵型标记层：阵位数据必须与 BattleScene 同源（formationOffsets/formationSpacing 单一真源）
 import {
-  formationOffsets, halfExtentOf, formationSpacing, formationLayerOffsets, formationFootprint, FORMATION_SPACING,
+  formationOffsets, halfExtentOf, formationSpacing, formationLayerOffsets, formationFootprint, rotateOffsetPx, FORMATION_SPACING,
   type FormationCell, type FormationFootprint,
 } from '../../config/formationLayout';
 // 纵向两级叠层的单一真源（队内层距 + 队间档距）：与 formationLayout 正交，BattleScene 共用其真源语义
@@ -1418,6 +1418,11 @@ export class Battle3DOverlay {
    */
   private debugPanel: HTMLDivElement | null = null;
   private _dbgFlags: { checked: boolean; on: boolean } = { checked: false, on: false };
+  /** [v99] 格位图：调试模式下把"每支舰队应有的阵位"画成小十字，用于分辨
+   *  "格位缺 / 船没到位 / 格距异常"三类问题。默认关闭，零开销。 */
+  private cellDbg: THREE.Points | null = null;
+  private cellDbgGeo: THREE.BufferGeometry | null = null;
+  private cellDbgPos: Float32Array = new Float32Array(0);
   /** [v80] 调试热键是否已绑定（只绑一次） */
   private _dbgHotkeyBound = false;
   /** [v80] 控制台输出节流时间戳（面板与 console 双通道，便于用户复制数据） */
@@ -8349,6 +8354,7 @@ export class Battle3DOverlay {
       this.updateSceneProps(dt);
       this.updateCaptureRings(dt);
       this.syncShips(dt);
+      this.updateCellDebug();   // [v99] 调试格位图（默认关，零开销）
       // [切片传送入场] 紧随实体同步之后推进（需要本帧的实体世界坐标 / 建好的材质引用）
       this.updateEntryFx();
       this.updateBillboards();
@@ -8533,6 +8539,63 @@ export class Battle3DOverlay {
     this.camera.lookAt(t);
     this.controls.update();
     return true;
+  }
+
+  /**
+   * [v99] **格位图**（调试）：把每支舰队「应有的阵位」画成小十字。
+   *
+   * 为什么需要：阵型不对时，肉眼分不清三种情况 ——
+   *   ① 格位表里就没有那一格（几何/编制问题）
+   *   ② 有格位但船没走到（追踪问题）
+   *   ③ 格位间距本身异常（格距/朝向问题）
+   * 画出"应有格位"后，三者一眼可分：
+   *   · 十字处没船  ⇒ ② 追踪
+   *   · 该有十字处空白 ⇒ ① 格位表
+   *   · 十字间距离谱 ⇒ ③ 格距
+   *
+   * 只读 `_formOffsets` / `formationOffsets` 与 `fleet.facingAngle`，不写任何战斗状态。
+   */
+  private updateCellDebug(): void {
+    if (!this._dbgFlags.on) {
+      if (this.cellDbg) this.cellDbg.visible = false;
+      return;
+    }
+    const CAP = 4096;
+    if (!this.cellDbg) {
+      this.cellDbgGeo = new THREE.BufferGeometry();
+      this.cellDbgPos = new Float32Array(CAP * 3);
+      this.cellDbgGeo.setAttribute('position', new THREE.BufferAttribute(this.cellDbgPos, 3));
+      const mat = new THREE.PointsMaterial({
+        color: 0x22d3ee, size: 7, sizeAttenuation: false,
+        transparent: true, opacity: 0.75, depthWrite: false,
+      });
+      this.cellDbg = new THREE.Points(this.cellDbgGeo, mat);
+      this.cellDbg.frustumCulled = false;
+      this.scene.add(this.cellDbg);
+    }
+    const fleets: any[] = ((this.battleScene as any).globalFleets) || [];
+    let n = 0;
+    for (const fleet of fleets) {
+      const units: any[] = (fleet.units || []).filter((u: any) => (u.formationSlot ?? -1) >= 0);
+      if (units.length === 0) continue;
+      const n0 = Math.max(Number(fleet.formationCount0) || 0, units.length, 1);
+      const offs = (fleet as any)._formOffsets ?? this.formOffsets(String(fleet.formation || 'wedge'), n0);
+      const spacing = (fleet as any)._formSpacing ?? formationSpacing(offs as any, this.hexR);
+      const facing = Number(fleet.formFacing ?? fleet.facingAngle ?? 0);
+      for (const cell of offs as any[]) {
+        if (n >= CAP) break;
+        const [rx, ry] = rotateOffsetPx(cell[0] * spacing, cell[1] * spacing, facing, 1);
+        const wx = fleet.x + rx, wy = fleet.y + ry;
+        const i3 = n * 3;
+        this.cellDbgPos[i3] = wx;
+        this.cellDbgPos[i3 + 1] = this.heightAtPx(wx, wy) + 3;
+        this.cellDbgPos[i3 + 2] = -wy;
+        n += 1;
+      }
+    }
+    this.cellDbgGeo!.setDrawRange(0, n);
+    (this.cellDbgGeo!.attributes.position as THREE.BufferAttribute).needsUpdate = true;
+    this.cellDbg.visible = n > 0;
   }
 
   /** [v99] `isFleetNearForFullModels` 的复用临时量（每帧每队调用一次，禁 new） */

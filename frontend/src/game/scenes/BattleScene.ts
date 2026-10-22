@@ -1235,6 +1235,18 @@ export class BattleScene extends Phaser.Scene {
         this.store.battleLossText = '';
         if (this.battleLossText) { this.battleLossText.destroy(); this.battleLossText = null; }
 
+        // ── [v99] **开战前用"最终阵型"重摆一次位** ──────────────────────────
+        //   病灶（多轮未定位到的那条）：建舰期 `spawnInitialFleets` 先按**当时的**阵型摆位，
+        //   而阵型在随后几步才被改写（提督教范 / 玩家初始阵型 / 战役计划），
+        //   改写**只动了 `fleet.formation` 字段，没有重摆**。
+        //   于是入场动画（此时"演算已暂停"，`update()` 不跑）里看到的是**旧阵型的站位**，
+        //   而卡片显示的是新阵型名 —— 用户看到的就是"卡片写楔形、舰船却是别的形状"，
+        //   且"跑几帧后自己变正常"（`update()` 首次构建 `_formOffsets` 后才纠正）。
+        //   ⇒ 在这里（开战前、唯一的收口点）按最终阵型统一重摆一次。
+        for (const _fl of this.globalFleets) {
+            if ((_fl.units || []).length > 0) this.placeUnitsAtFormationSlots(_fl);
+        }
+
         // 战前部署暂停：战役/自定义战斗启用；演习模式不暂停战斗流程（保持原设计）。
         // v2 修复（用户反馈①"任务指令入口在哪看不见"）：演习不部署暂停导致 warRoomOpen
         //   从不自动置 true，军议面板只剩右上角小按钮，玩家找不到任务指令入口。

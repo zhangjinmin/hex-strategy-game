@@ -845,9 +845,12 @@ check('L1 与逐帧循环共用 formationLayout 的 rotateOffsetPx（唯一旋�
   return l1.includes('rotateOffsetPx(cell[0] * spacing, cell[1] * spacing, facing, 1)')
     && loopBlock.includes('const [rx, ry] = rotateOffsetPx(ox, oy, _ff, _ctK);');
 });
-check('两条建舰路径（演习 spawnInitialFleets / 战役 spawnStrategicFleets）都调用 L1', () => {
+check('建舰路径（演习/战役）都调用 L1，且开战前有一次「按最终阵型重摆」', () => {
   const hits = scene.match(/this\.placeUnitsAtFormationSlots\(/g) || [];
-  return hits.length === 2;   // 定义处不含 `this.` ⇒ 恰为两条建舰路径各 1 次
+  // [v99] 契约变更：除两条建舰路径各 1 次外，`activateDeployPhase` 末尾新增 1 次
+  //   "开战前按最终阵型重摆"（阵型在摆位之后才被教范/玩家选择改写）。
+  //   ⇒ 期望值 2 → 3；**少于 3 就意味着这条重摆被删掉了**（那是真正的回归）。
+  return hits.length === 3;
 });
 check('rotateOffsetPx 只有 formationLayout 一份实现（无第二套内联旋转）', () => {
   const inline = /const rx = ox \* Math\.cos\(/.test(scene);
