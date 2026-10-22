@@ -9335,13 +9335,26 @@ export class BattleScene extends Phaser.Scene {
                 //   （外部瞬移/重生不积累积分误差），速度真源 = _kin.vx/vy。
                 {
                     const _kp = (u as any)._kin ?? {};
+                    // ── [v99] **追踪速度上限必须含舰队自身速度** ─────────────────────
+                    //   病灶（多轮未定位到）：`UNIT_MOTION_LIMITS.maxSpeed = 0.9 px/帧` 是
+                    //   **绝对**上限，而舰队的巡航速度可以超过它（速度倍率 137%、300% 更甚）。
+                    //   ⇒ 格位比船跑得快，船永远追不上自己的格位，
+                    //     整支舰队**恒定居后一个固定量**（实测 u0 比锚点偏 (-155,-174)，
+                    //     方向与航向相反），阵型与格位网格错开；减速/停船时又"自愈"。
+                    //   物理上正确的关系是：编队内舰只**随舰队同速前进**，
+                    //   0.9 那个上限只该约束"阵位内的相对机动"。
+                    //   ⇒ 传入的 maxSpeed = 舰队当前速度 + 原相对上限。
+                    const _fleetSpd = Math.hypot(Number(fleet.vx) || 0, Number(fleet.vy) || 0);
+                    const _kinLimits = _fleetSpd > 1e-6
+                        ? { ...UNIT_MOTION_LIMITS, maxSpeed: UNIT_MOTION_LIMITS.maxSpeed + _fleetSpd }
+                        : UNIT_MOTION_LIMITS;
                     const _kn = stepShipSlotFollow(
                         {
                             x: u.sprite.x, y: u.sprite.y,
                             vx: _kp.vx ?? 0, vy: _kp.vy ?? 0,
                             slotX: _kp.slotX, slotY: _kp.slotY,
                         },
-                        targetUnitX, targetUnitY, UNIT_MOTION_LIMITS, dt,
+                        targetUnitX, targetUnitY, _kinLimits, dt,
                     );
                     (u as any)._kin = _kn;
                     u.sprite.x = _kn.x;
