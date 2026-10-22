@@ -4499,7 +4499,12 @@ export class Battle3DOverlay {
             const c = offsArr[u.formationSlot];
             return c ? `${c[0]},${c[1]}` : '∅';
           }).join(' ');
-          dbgSlots = ` || slots=[${slotTxt}] cells=[${cellTxt}]`;
+          // [v99] 再补"锚点 vs 首舰实际位置"：格位图显示"十字对、船偏在一边"时，
+          //   唯一需要区分的就是"舰队锚点被挪过、舰船没跟上"还是"舰船被摆到别处"。
+          const u0: any = us[0];
+          const anc = `a=(${Math.round(Number(ff?.x) || 0)},${Math.round(Number(ff?.y) || 0)})`;
+          const pos = u0?.sprite ? `u0=(${Math.round(u0.sprite.x)},${Math.round(u0.sprite.y)})` : 'u0=-';
+          dbgSlots = ` || slots=[${slotTxt}] cells=[${cellTxt}] ${anc} ${pos}`;
         }
         rows.push({
           id: String(ff?.id ?? ff?.factionId ?? '?'), n: r.n, px: r.px, mesh: r.mesh, intel, mem, flips,
