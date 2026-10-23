@@ -4536,6 +4536,22 @@ export class BattleScene extends Phaser.Scene {
      * 而旗舰阵亡/编队重排后 `units[0]` 可能换成队尾那艘 —— 于是贴着打却判成从未观测到。
      * 这里逐个单位算，代价可控（先按舰队锚点粗筛，再查舰位）。
      */
+    /**
+     * [v99] `formationOffsets` 的 (阵型, 舰数) memo。
+     *
+     * 阵位表现在**每帧**按当前 `fleet.formation` 直算（旧实现读懒缓存，缓存一旦与字段
+     * 不同步就长期错位）。纯函数 + memo ⇒ 直算的成本与读缓存相同。
+     */
+    private _formMemo = new Map<string, FormationCell[]>();
+    private formationOffsetsFor(formation: string, n: number): FormationCell[] {
+        const key = `${formation}:${n}`;
+        const hit = this._formMemo.get(key);
+        if (hit) return hit;
+        const made = formationOffsets(formation as any, n);
+        this._formMemo.set(key, made);
+        return made;
+    }
+
     private hasPlayerUnitWithin(fleet: any, px: number): boolean {
         if (!fleet) return false;
         const fx = fleet.units?.[0]?.sprite?.x ?? fleet.x ?? 0;
@@ -9151,8 +9167,20 @@ export class BattleScene extends Phaser.Scene {
                     (fleet as any)._formSpacing = newSpacing;
                 }
             }
-            const formOffsets: FormationCell[] = (fleet as any)._formOffsets || [[0, 0]];
-            const formSpacing: number = (fleet as any)._formSpacing ?? FORMATION_SPACING;
+            // ── [v99] **阵位表改为"按当前阵型直接算"，不再信任缓存** ────────────────
+            //   病灶（多轮未解决的真因）：`_formOffsets` 是**由 formKey 驱动的懒缓存**，
+            //   而 `fleet.formation` 会在多处被改写（教范/姿态/计划/玩家指令）。
+            //   只要缓存与字段不同步（暂停期 update 不跑、morph 未收尾、或某处只改字段不重摆），
+            //   舰船用的就是旧阵型的格子、卡片显示的是新阵型的名字 ——
+            //   用户看到"卡片写楔形，船却是横阵/纵队"。
+            //   所有"在别处补一次重摆"的做法都只是在追这个缓存，永远会漏一条路径。
+            //   ⇒ 删掉这层信任：每帧按**当前** `fleet.formation` 算格子（纯函数 + memo，O(n)）。
+            const formOffsets: FormationCell[] = this.formationOffsetsFor(
+                String(fleet.formation || 'wedge'), n0,
+            );
+            const formSpacing: number = formationSpacing(formOffsets, this.hexRadius);
+            (fleet as any)._formOffsets = formOffsets;
+            (fleet as any)._formSpacing = formSpacing;
             // [v33 P0-2] 列位侧写（列位数组 + 归一基准）。按 offsets 引用记忆化 ⇒ 每舰队每阵型只算一次。
             //   基准 = 该阵型在近/中/远三档的**等权平均** ⇒ 整场期望乘区恒 1.0，零净增益
             //   （旧案矩阵三行均值不等 112.5/102.5/100，直接用等于给全部单位隐性 +5%）。
