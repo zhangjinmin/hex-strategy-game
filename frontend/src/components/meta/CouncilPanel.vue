@@ -328,14 +328,14 @@ const closePanel = () => {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: calc(12px * var(--font-scale));
+  font-size: var(--fs-label);
   font-weight: 900;
   letter-spacing: 0.15em;
   color: var(--color-text-primary);
 }
 
 .header-date {
-  font-size: calc(11px * var(--font-scale));
+  font-size: var(--fs-label);
   font-family: var(--font-family);
   color: var(--color-text-disabled);
   flex: 1;
@@ -357,7 +357,7 @@ const closePanel = () => {
 
 .abort-btn {
   color: var(--color-empire);
-  font-size: calc(14px * var(--font-scale));
+  font-size: var(--fs-body);
   font-weight: 800;
   padding: 4px 8px;
   line-height: 1;
@@ -381,7 +381,7 @@ const closePanel = () => {
 }
 
 .section-label {
-  font-size: calc(10px * var(--font-scale));
+  font-size: var(--fs-caption);
   text-transform: uppercase;
   color: var(--color-text-disabled);
   letter-spacing: 0.15em;
@@ -395,7 +395,7 @@ const closePanel = () => {
 }
 
 .section-meta {
-  font-size: calc(11px * var(--font-scale));
+  font-size: var(--fs-label);
   font-family: var(--font-family);
   color: var(--color-text-secondary);
 }
@@ -404,7 +404,7 @@ const closePanel = () => {
 .card {
   background: var(--neo-surface);
   border: 1px solid var(--overlay-hover);
-  border-radius: 8px;
+  border-radius: var(--ui-radius-lg);
   padding: 10px;
 }
 
@@ -419,7 +419,7 @@ const closePanel = () => {
   width: 40px;
   height: 52px;
   object-fit: cover;
-  border-radius: 4px;
+  border-radius: var(--ui-radius);
   border: 1px solid var(--overlay-border);
   flex-shrink: 0;
 }
@@ -430,7 +430,7 @@ const closePanel = () => {
 }
 
 .player-name {
-  font-size: calc(13px * var(--font-scale));
+  font-size: var(--fs-label);
   font-weight: 900;
   color: var(--color-text-primary);
   white-space: nowrap;
@@ -439,7 +439,7 @@ const closePanel = () => {
 }
 
 .player-role {
-  font-size: calc(10px * var(--font-scale));
+  font-size: var(--fs-caption);
   font-weight: 700;
   color: var(--color-cyan);
   margin-top: 2px;
@@ -448,7 +448,7 @@ const closePanel = () => {
 .player-vote {
   display: flex;
   justify-content: space-between;
-  font-size: calc(10px * var(--font-scale));
+  font-size: var(--fs-caption);
   margin-top: 6px;
 }
 
@@ -459,7 +459,7 @@ const closePanel = () => {
   width: 100%;
   height: 4px;
   background: var(--neo-surface);
-  border-radius: 2px;
+  border-radius: var(--ui-radius);
   overflow: hidden;
   margin-top: 4px;
 }
@@ -475,7 +475,7 @@ const closePanel = () => {
   width: 100%;
   height: 6px;
   display: flex;
-  border-radius: 3px;
+  border-radius: var(--ui-radius);
   overflow: hidden;
   margin-bottom: 8px;
 }
@@ -490,7 +490,7 @@ const closePanel = () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: calc(11px * var(--font-scale));
+  font-size: var(--fs-label);
 }
 
 .member-left {
@@ -526,13 +526,13 @@ const closePanel = () => {
 .member-rank {
   color: var(--color-text-disabled);
   font-family: var(--font-family);
-  font-size: calc(10px * var(--font-scale));
+  font-size: var(--fs-caption);
 }
 
 .member-stance {
-  font-size: calc(9px * var(--font-scale));
+  font-size: var(--fs-caption);
   padding: 1px 5px;
-  border-radius: 3px;
+  border-radius: var(--ui-radius);
   font-weight: 700;
   border: 1px solid;
 }
@@ -551,7 +551,7 @@ const closePanel = () => {
 .proposal-card {
   background: var(--overlay-surface);
   border: 1px solid var(--overlay-hover);
-  border-radius: 8px;
+  border-radius: var(--ui-radius-lg);
   padding: 12px 14px;
   cursor: pointer;
   transition: all 0.2s;
@@ -567,12 +567,12 @@ const closePanel = () => {
 }
 
 .proposal-tag {
-  font-size: calc(9px * var(--font-scale));
+  font-size: var(--fs-caption);
   font-family: var(--font-family);
   color: var(--color-text-disabled);
   padding: 2px 8px;
   background: var(--color-background-muted);
-  border-radius: 4px;
+  border-radius: var(--ui-radius);
   width: fit-content;
   letter-spacing: 0.05em;
   font-weight: 700;
@@ -588,21 +588,21 @@ const closePanel = () => {
 .prop-tag-fortify { color: #a78bfa; background: rgba(167, 139, 250, 0.15); }
 
 .proposal-title {
-  font-size: calc(14px * var(--font-scale));
+  font-size: var(--fs-body);
   font-weight: 700;
   color: var(--color-text-primary);
   margin: 0;
 }
 
 .proposal-desc {
-  font-size: calc(11px * var(--font-scale));
+  font-size: var(--fs-label);
   color: var(--color-text-secondary);
   line-height: 1.4;
   margin: 0;
 }
 
 .proposal-risk {
-  font-size: calc(10px * var(--font-scale));
+  font-size: var(--fs-caption);
   color: var(--color-empire);
   font-weight: 600;
   margin-top: 2px;
@@ -610,7 +610,7 @@ const closePanel = () => {
 
 /* 提案人角色化台词 */
 .proposal-dialogue {
-  font-size: calc(11px * var(--font-scale));
+  font-size: var(--fs-label);
   color: var(--color-cyan);
   font-style: italic;
   line-height: 1.4;
@@ -630,10 +630,10 @@ const closePanel = () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: calc(11px * var(--font-scale));
+  font-size: var(--fs-label);
   padding: 3px 8px;
   background: var(--color-overlay-pressed);
-  border-radius: 3px;
+  border-radius: var(--ui-radius);
 }
 
 .vote-name {
@@ -650,7 +650,7 @@ const closePanel = () => {
 
 .vote-stance {
   font-weight: 800;
-  font-size: calc(10px * var(--font-scale));
+  font-size: var(--fs-caption);
   flex-shrink: 0;
   width: 34px;
   text-align: center;
@@ -662,7 +662,7 @@ const closePanel = () => {
 .vote-weight {
   color: var(--color-text-disabled);
   font-family: var(--font-family);
-  font-size: calc(10px * var(--font-scale));
+  font-size: var(--fs-caption);
   flex-shrink: 0;
   width: 34px;
   text-align: right;
@@ -679,11 +679,11 @@ const closePanel = () => {
   padding: 6px 10px;
   background: var(--color-overlay-pressed);
   border: 1px solid var(--color-border);
-  border-radius: 4px;
+  border-radius: var(--ui-radius);
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: calc(11px * var(--font-scale));
+  font-size: var(--fs-label);
   gap: 8px;
 }
 
@@ -700,7 +700,7 @@ const closePanel = () => {
 
 .history-status {
   font-weight: 900;
-  font-size: calc(10px * var(--font-scale));
+  font-size: var(--fs-caption);
   flex-shrink: 0;
 }
 
@@ -710,14 +710,14 @@ const closePanel = () => {
 .history-date {
   color: var(--color-text-disabled);
   font-family: var(--font-family);
-  font-size: calc(10px * var(--font-scale));
+  font-size: var(--fs-caption);
   flex-shrink: 0;
 }
 
 /* ===== 空状态 ===== */
 .empty-state {
   color: var(--color-text-disabled);
-  font-size: calc(11px * var(--font-scale));
+  font-size: var(--fs-label);
   font-family: var(--font-family);
   text-align: center;
   padding: 12px 0;
@@ -739,7 +739,7 @@ const closePanel = () => {
 .proposal-detail-card {
   background: var(--neo-body);
   border: 1px solid var(--overlay-hover);
-  border-radius: 12px;
+  border-radius: var(--ui-radius-lg);
   padding: 20px;
   width: 100%;
   max-width: 400px;
@@ -756,14 +756,14 @@ const closePanel = () => {
 }
 
 .detail-title {
-  font-size: calc(16px * var(--font-scale));
+  font-size: var(--fs-body);
   font-weight: 900;
   color: var(--color-text-primary);
   margin: 0;
 }
 
 .detail-desc {
-  font-size: calc(12px * var(--font-scale));
+  font-size: var(--fs-label);
   color: var(--color-text-secondary);
   line-height: 1.5;
   margin: 0;
@@ -774,7 +774,7 @@ const closePanel = () => {
 .detail-row {
   display: flex;
   gap: 8px;
-  font-size: calc(11px * var(--font-scale));
+  font-size: var(--fs-label);
   line-height: 1.4;
 }
 

@@ -216,40 +216,40 @@ const formationName = (fid: string): string => FORMATIONS[fid as keyof typeof FO
 .roster-overlay { position: fixed; inset: 0; z-index: 1250; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; }
 .roster-modal { width: 96vw; height: 92vh; display: flex; flex-direction: column; padding: 14px; }
 .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-.modal-title { font-size: calc(15px * var(--font-scale)); font-weight: 800; color: var(--color-cyan); margin: 0; }
+.modal-title { font-size: var(--fs-body); font-weight: 800; color: var(--color-cyan); margin: 0; }
 .roster-layout { flex: 1; display: flex; flex-direction: row; gap: 12px; min-height: 0; }
 .faction-tabs { display: flex; flex-direction: column; gap: 6px; width: 90px; flex-shrink: 0; }
-.tab-btn { padding: 8px 6px; border: 1px solid var(--color-border); background: transparent; color: var(--color-text-secondary); font-size: calc(12px * var(--font-scale)); cursor: pointer; border-radius: 3px; }
-.tab-btn.active { border-color: var(--color-cyan); color: var(--color-cyan); background: rgba(6,182,212,0.08); }
+.tab-btn { padding: 8px 6px; border: 1px solid var(--color-border); background: transparent; color: var(--color-text-secondary); font-size: var(--fs-label); cursor: pointer; border-radius: var(--ui-radius); }
+.tab-btn.active { border-color: var(--color-cyan); color: var(--color-cyan); background: rgba(var(--ui-accent-rgb), 0.08); }
 .roster-panel { flex: 3; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
-.roster-header, .roster-row { display: grid; grid-template-columns: 34px 90px 64px 32px repeat(7, 34px); align-items: center; gap: 2px; font-size: calc(10px * var(--font-scale)); }
+.roster-header, .roster-row { display: grid; grid-template-columns: 34px 90px 64px 32px repeat(7, 34px); align-items: center; gap: 2px; font-size: var(--fs-caption); }
 .roster-header { padding: 4px 6px; border-bottom: 1px solid var(--color-border); color: var(--color-text-disabled); }
 .sortable { cursor: pointer; user-select: none; }
 .roster-header .sortable:hover { color: var(--color-cyan); }
 .roster-body { flex: 1; overflow-y: auto; }
 .roster-row { padding: 3px 6px; cursor: pointer; color: var(--color-text-secondary); }
-.roster-row:hover, .roster-row.active { background: rgba(6,182,212,0.08); color: var(--color-text-primary); }
-.mini-portrait { width: 26px; height: 34px; object-fit: cover; border-radius: 2px; display: block; }
+.roster-row:hover, .roster-row.active { background: rgba(var(--ui-accent-rgb), 0.08); color: var(--color-text-primary); }
+.mini-portrait { width: 26px; height: 34px; object-fit: cover; border-radius: var(--ui-radius); display: block; }
 .text-red { color: #ef4444; } .text-ally { color: #38bdf8; }
 
-.admiral-detail { flex: 2; border: 1px solid var(--color-border); border-radius: 4px; padding: 14px; overflow: hidden; min-width: 260px; display: flex; flex-direction: column; }
-.empty-detail { display: flex; align-items: center; justify-content: center; color: var(--color-text-disabled); font-size: calc(12px * var(--font-scale)); }
+.admiral-detail { flex: 2; border: 1px solid var(--color-border); border-radius: var(--ui-radius); padding: 14px; overflow: hidden; min-width: 260px; display: flex; flex-direction: column; }
+.empty-detail { display: flex; align-items: center; justify-content: center; color: var(--color-text-disabled); font-size: var(--fs-label); }
 .detail-scroll { display: flex; flex-direction: column; height: 100%; overflow-y: auto; }
-.large-portrait { width: 110px; height: 145px; object-fit: cover; border-radius: 4px; border: 1px solid var(--color-border); }
-.detail-scroll h2 { margin: 8px 0 2px; font-size: calc(19px * var(--font-scale)); }
-.rank-badge { display: inline-block; font-size: calc(11px * var(--font-scale)); color: var(--color-gold); border: 1px solid var(--color-gold); padding: 1px 8px; border-radius: 10px; margin-bottom: 4px; }
-.detail-line { font-size: calc(12px * var(--font-scale)); color: var(--color-text-primary); margin-top: 4px; }
+.large-portrait { width: 110px; height: 145px; object-fit: cover; border-radius: var(--ui-radius); border: 1px solid var(--color-border); }
+.detail-scroll h2 { margin: 8px 0 2px; font-size: var(--fs-h3); }
+.rank-badge { display: inline-block; font-size: var(--fs-label); color: var(--color-gold); border: 1px solid var(--color-gold); padding: 1px 8px; border-radius: var(--ui-radius-lg); margin-bottom: 4px; }
+.detail-line { font-size: var(--fs-label); color: var(--color-text-primary); margin-top: 4px; }
 .detail-line.muted { color: var(--color-text-disabled); }
 .effective-stats { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
-.stat-row { display: flex; align-items: center; gap: 6px; font-size: calc(11px * var(--font-scale)); }
+.stat-row { display: flex; align-items: center; gap: 6px; font-size: var(--fs-label); }
 .stat-label { width: 34px; color: var(--color-text-disabled); }
-.stat-track { flex: 1; height: 7px; background: rgba(148,163,184,0.12); border-radius: 3px; overflow: hidden; }
-.stat-fill { height: 100%; background: linear-gradient(90deg, #06b6d4, #22d3ee); border-radius: 3px; }
+.stat-track { flex: 1; height: 7px; background: rgba(148,163,184,0.12); border-radius: var(--ui-radius); overflow: hidden; }
+.stat-fill { height: 100%; background: linear-gradient(90deg, var(--ui-accent), var(--ui-accent)); border-radius: var(--ui-radius); }
 .stat-val { width: 30px; text-align: right; font-weight: 800; color: var(--color-text-primary); }
 .mt-3 { margin-top: 12px; }
-.sub-title { font-size: calc(11px * var(--font-scale)); font-weight: 700; color: var(--color-text-disabled); margin-bottom: 4px; }
+.sub-title { font-size: var(--fs-label); font-weight: 700; color: var(--color-text-disabled); margin-bottom: 4px; }
 .tag-wrap { display: flex; flex-wrap: wrap; gap: 4px; }
-.tag-chip { font-size: calc(10px * var(--font-scale)); padding: 2px 6px; background: rgba(245,158,11,0.1); color: #f59e0b; border-radius: 8px; }
+.tag-chip { font-size: var(--fs-caption); padding: 2px 6px; background: rgba(245,158,11,0.1); color: #f59e0b; border-radius: var(--ui-radius-lg); }
 
 /* ---------- 词条整合 ---------- */
 .header-actions { display: flex; align-items: center; gap: 6px; }
@@ -257,20 +257,20 @@ const formationName = (fid: string): string => FORMATIONS[fid as keyof typeof FO
   margin-top: 8px; display: flex; align-items: baseline; justify-content: center;
   gap: 2px; font-family: var(--dmc-font-mono);
 }
-.wc-num { font-size: calc(15px * var(--font-scale)); font-weight: 800; color: var(--dmc-gold); }
-.wc-den { font-size: calc(10px * var(--font-scale)); color: var(--color-text-disabled); }
-.wc-label { font-size: calc(9px * var(--font-scale)); color: var(--color-text-disabled); letter-spacing: 0.06em; margin-left: 4px; }
+.wc-num { font-size: var(--fs-body); font-weight: 800; color: var(--dmc-gold); }
+.wc-den { font-size: var(--fs-caption); color: var(--color-text-disabled); }
+.wc-label { font-size: var(--fs-caption); color: var(--color-text-disabled); letter-spacing: 0.06em; margin-left: 4px; }
 .wiki-block { border-top: 1px solid var(--color-border); padding-top: 10px; }
 .wiki-block-head { display: flex; align-items: center; justify-content: space-between; }
 .wiki-full-btn {
-  background: transparent; border: 1px solid var(--color-border); border-radius: 3px;
-  color: var(--color-text-secondary); font-size: calc(10px * var(--font-scale)); padding: 1px 7px; cursor: pointer;
+  background: transparent; border: 1px solid var(--color-border); border-radius: var(--ui-radius);
+  color: var(--color-text-secondary); font-size: var(--fs-caption); padding: 1px 7px; cursor: pointer;
   transition: all var(--duration-fast) var(--ease-out);
 }
 .wiki-full-btn:hover { color: var(--color-cyan); border-color: var(--color-cyan); }
 .wiki-inline-link {
   background: transparent; border: none; color: var(--color-cyan); font-size: inherit;
-  cursor: pointer; padding: 0 2px; border-bottom: 1px dashed rgba(52,152,219,0.45);
+  cursor: pointer; padding: 0 2px; border-bottom: 1px dashed rgba(var(--ui-accent-rgb), 0.45);
   font-family: inherit;
 }
 .wiki-inline-link:hover { color: var(--color-text-primary); }

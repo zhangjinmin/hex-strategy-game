@@ -17,9 +17,12 @@ export interface FactionScheme {
 
 export const FACTION_SCHEMES: FactionScheme[] = [
   {
-    key: 'default', name: '默认', desc: '经典 CRT 电子战术盘，冷调对比鲜明，科幻感最强',
-    ally: { main: 0x2dd4bf, glow: '45,212,191', cont: [45, 212, 191] },
-    empire: { main: 0x9D4EDD, glow: '157,78,221', cont: [157, 78, 221] },
+    // [统一界面语言] 与 design-system.css 的同盟蓝 / 帝国金逐位对齐。
+    // 原「青 vs 紫」是 CRT 战术盘时代的遗留，会让 3D 星图与界面强调色互相打架；
+    // key 不变（存量存档无需迁移），只重定标颜色与显示名。
+    key: 'default', name: '正典', desc: '同盟冷蓝 / 帝国金，与界面语言和军服制式统一',
+    ally: { main: 0x5B9DFF, glow: '91,157,255', cont: [91, 157, 255] },
+    empire: { main: 0xD8B26A, glow: '216,178,106', cont: [216, 178, 106] },
   },
   {
     key: 'redblue', name: '红蓝', desc: '传统大战略敌我识别：同盟冷蓝、帝国警戒红，直观易懂',

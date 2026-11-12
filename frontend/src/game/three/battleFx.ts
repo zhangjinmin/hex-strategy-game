@@ -51,6 +51,9 @@ export interface EnginePort {
   outlineScale?: number;
   /** [v27] **朝向四元数**（仅模型自带的 FX 锚点会给）：光斑平面垂直于锚点局部 +Z。 */
   q?: [number, number, number, number];
+  /** [v122] **实测腔深**（归一化，÷modelLen）：从锚点沿法线向舰内打射线的第一个命中距离。
+   *  0/缺省 = 没测到（通孔或射线擦边），由几何侧用兜底值。 */
+  cavityDepth?: number;
   /** [v27/v28] 该喷口来自模型自带锚点时的**作者指定形状**：
    *  `round`/`rect` ⇒ 以作者为准（不再描轮廓）；`outline`/`scan`/未指定 ⇒ 从该处几何描轮廓
    *  （v28 起默认走**扫描**：以锚点为原点向四周撞墙 ⇒ 形状与尺寸都不用作者给）。 */
@@ -1705,6 +1708,49 @@ function lookupByFile<T>(table: Record<string, T>, baseName?: string): T | undef
  *  ③ ENGINE_PORT_STYLE 覆盖形状/隐藏 → 否则自动探测（detectEnginePorts）。
  *  ⚠ [v27] **多点合并**：用户连点几下想圈出"一整块区域"（实报：点了 3 下却得到 3 个小光斑），
  *  故间距 ≤ 1.5× 半径的标注点归为一组 ⇒ 一组 = 一个喷口 = **一整块轮廓**。 */
+/** [v122] 从锚点沿法线**向舰内**打一条射线，量出凹槽/腔体的真实深度（原始单位）。
+ *  用户实拍："同盟这个尾喷是标注的那么长，但你的光就只有这么一点点" —— 根因是我用固定
+ *  `2% 舰长` 当腔深，而各舰凹槽深浅差一个量级。改为**逐喷口实测**。
+ *  @returns 命中距离；无命中（通孔/擦边）返回 0
+ */
+function measurePortDepth(
+  geo: THREE.BufferGeometry,
+  origin: { x: number; y: number; z: number },
+  normal: THREE.Vector3,
+  maxDist: number,
+): number {
+  const pos = geo.attributes?.position as THREE.BufferAttribute | undefined;
+  if (!pos) return 0;
+  const idx = geo.index as THREE.BufferAttribute | null;
+  const triCount = idx ? Math.floor(idx.count / 3) : Math.floor(pos.count / 3);
+  const o = new THREE.Vector3(origin.x, origin.y, origin.z);
+  const d = normal.clone().normalize().negate();          // 朝舰内
+  const v0 = new THREE.Vector3(), v1 = new THREE.Vector3(), v2 = new THREE.Vector3();
+  const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), pv = new THREE.Vector3();
+  const tv = new THREE.Vector3(), qv = new THREE.Vector3();
+  let best = Infinity;
+  for (let t = 0; t < triCount; t++) {
+    const i0 = idx ? idx.getX(t * 3) : t * 3;
+    const i1 = idx ? idx.getX(t * 3 + 1) : t * 3 + 1;
+    const i2 = idx ? idx.getX(t * 3 + 2) : t * 3 + 2;
+    v0.fromBufferAttribute(pos, i0); v1.fromBufferAttribute(pos, i1); v2.fromBufferAttribute(pos, i2);
+    e1.subVectors(v1, v0); e2.subVectors(v2, v0);
+    pv.crossVectors(d, e2);
+    const det = e1.dot(pv);
+    if (Math.abs(det) < 1e-12) continue;
+    const inv = 1 / det;
+    tv.subVectors(o, v0);
+    const u = tv.dot(pv) * inv;
+    if (u < -1e-6 || u > 1 + 1e-6) continue;
+    qv.crossVectors(tv, e1);
+    const v = d.dot(qv) * inv;
+    if (v < -1e-6 || u + v > 1 + 1e-6) continue;
+    const dist = e2.dot(qv) * inv;
+    if (dist > 1e-4 && dist < best) best = dist;
+  }
+  return Number.isFinite(best) ? Math.min(best, maxDist) : 0;
+}
+
 export function resolveEnginePortsFor(
   geo: THREE.BufferGeometry, modelLen: number, baseName?: string, anchors?: FxAnchor[],
 ): EnginePort[] {
@@ -1727,22 +1773,35 @@ export function resolveEnginePortsFor(
     const pm: PortShapeMode = opt?.mode ?? 'scan';
     for (const p of anchorPorts) {
       p.outlineScale = oscale;
-      if (p.fxMode === 'round' || p.fxMode === 'rect') continue;      // 作者钦定形状 ⇒ 一个字都不改
-      // 搜索半径：作者半径（已过滤离谱值）× N，再夹在"看得见"与"别盖住半个舰"之间
+      // [v121] **总是先扫描真实内腔轮廓** —— 用户定案："不是每个都固定的形状，
+      //   而是依据不同的舰船的舰尾的内部那一层做不同的状态"。
+      //   搜索半径 = 作者半径 × 1.35（3%~12% 舰长夹逼）⇒ 刚好够到腔壁、不会跨到相邻凹槽。
+      // [v125] 顺序调换：**先量腔深，再把扫描点往腔内挪**。
+      //   用户实拍："尖角是因为你扫出来的是最尾部的形状，而不是腔室最内侧的形状……光像是旁边伸出四肢"。
+      //   尾端外形带外扩的装甲片（尖角），腔室最内侧才是规整的截面 ⇒ 光必须按**内腔形状**发。
+      const qq = p.q ?? [0, 0, 0, 1];
+      const qn = new THREE.Quaternion(qq[0], qq[1], qq[2], qq[3]);
+      const nA = new THREE.Vector3(0, 0, 1).applyQuaternion(qn);
+      const dRaw = measurePortDepth(geo, { x: p.x * modelLen, y: p.y * modelLen, z: p.z * modelLen }, nA, modelLen * 0.10);
+      p.cavityDepth = dRaw > 0 ? dRaw / modelLen : 0;
+      // 往腔内退 55% 腔深去切截面（0.55 是"躲开外扩装甲、又不到腔底"的折中）
+      const inward = (p.cavityDepth > 1e-5 ? p.cavityDepth : 0.02) * 0.55;
+      const scanPt = { x: p.x - nA.x * inward, y: p.y - nA.y * inward, z: p.z - nA.z * inward };
       const search = Math.min(
-        Math.max(p.hx * modelLen * SCAN_SEARCH_MUL, modelLen * SCAN_SEARCH_N[0]),
-        modelLen * SCAN_SEARCH_N[1],
+        Math.max(p.hx * modelLen * 1.35, modelLen * 0.025),
+        modelLen * 0.12,
       );
-      if (pm === 'scan') {
-        const s = scanPortOpening(geo, modelLen, { x: p.x, y: p.y, z: p.z }, p.q, search);
-        if (s) { p.outline = s.outline; p.round = false; p.hx = s.hx; p.hy = s.hy; p.scan = s; }
-        // 扫不到墙（点不在开口里等）⇒ 保持"兜底圆盘"，不会退化成巨大的方片
-      } else {
+      const sc = scanPortOpening(geo, modelLen, scanPt, p.q, search);
+      const gotScan = !!(sc && sc.outline && sc.outline.length >= 6);
+      if (gotScan) {
+        p.outline = sc!.outline; p.round = false; p.hx = sc!.hx; p.hy = sc!.hy; p.scan = sc!;
+      } else if (p.fxMode !== 'round' && p.fxMode !== 'rect' && pm !== 'scan') {
+        // 扫描失败 + 作者要求外轮廓/内框线 ⇒ 走栅格化轮廓（旧路径）
         const raw = extractPortOutline(geo, modelLen, { x: p.x, y: p.y, z: p.z }, p.hx * modelLen, { mode: pm });
-        // 作者给的半径是"光斑多大"的**权威值** ⇒ 轮廓不得超过它 1.15 倍（详见 ANCHOR_OUTLINE_CAP）
         const outline = raw ? capOutlineSize(raw, p.hx * ANCHOR_OUTLINE_CAP, p.hy * ANCHOR_OUTLINE_CAP) : null;
         if (outline) { p.outline = outline; p.round = false; }
       }
+      // 扫描失败且作者钦定 round/rect ⇒ 保持钦定形状（hx/hy 仍是作者给的值）
       // [v28c] **绝对尺寸闸门**：锚点路径此前完全没有上限（v24 那四道只护自动探测路径）⇒
       //   作者手滑 / 扫描咬到大结构时会得到"盖住大半条舰"的光斑。超了整体等比缩回并点名。
       const kc = clampAnchorPort(p);
@@ -1901,6 +1960,51 @@ function buildFanPlate(pts: { x: number; y: number }[], thick: number): THREE.Bu
  *  @param edgeFade [v28d] 边缘淡出起点（0~1，相对"椭圆归一化半径"；1 = 不淡出）。
  *    加色混合下顶点色趋黑 = 不可见 ⇒ 硬多边形边收成柔和的光，且**超出开口的部分自动不可见**
  *    （用户实报"外面一圈穿模、不够精致"就是这么修的）。 */
+/** [v123] 把开口轮廓做成一个**杯状内腔**：底面 + 一圈不封顶的内壁（连续曲面，无叠层）。
+ *  · 几何提供纵深（侧看能看到腔的厚度，正面看到"底亮口暗"）；
+ *  · `aT` = 轴向参数（0 = 开口、1 = 腔底）；`aUv.xy` = 径向归一化坐标、`aUv.z` = 腔深；
+ *  · 全部顶点打在**同一张几何**里 ⇒ 一次 draw call，且没有任何层间缝隙。
+ *  @param pts 开口轮廓（世界单位、中心在原点、XY 平面）
+ *  @param depth 腔深（世界单位）
+ *  @param refX/refY 径向归一化分母（= 开口半宽/半高）
+ */
+function buildPortCup(
+  pts: { x: number; y: number }[], depth: number, refX: number, refY: number,
+): THREE.BufferGeometry {
+  // 24 层截面（用 buildFanPlate 生成，形状可靠）：层间距 = 腔深/23 ≈ 0.8% 舰长 ⇒ 看不出层但保留纵深。
+  //   ⚠ 少于 ~20 层会重新"一层一层"；手写扇形/锥面则容易出放射条纹或自交（都实测过）。
+  const LAYERS = 24;
+  const parts: THREE.BufferGeometry[] = [];
+  for (let li = 0; li < LAYERS; li++) {
+    const t = li / (LAYERS - 1);                 // 0 = 开口 → 1 = 腔底
+    // [v125] **从腔底向开口扩张**（0.80 → 1.50）：光源在腔室最里面，光向外越铺越大、越淡。
+    //   旧版是"从口往里收"，等于把光源放在船屁股上，外扩的装甲片就变成了"四肢"。
+    const s = 1.50 - 0.70 * t;
+    const ring = pts.map((q) => ({ x: q.x * s, y: q.y * s }));
+    const plate = buildFanPlate(ring, Math.max(1e-4, depth * 0.002));
+    plate.translate(0, 0, -depth * t);
+    const gp = plate.attributes.position as THREE.BufferAttribute;
+    const cnt = gp.count;
+    const auv = new Float32Array(cnt * 3);
+    const at = new Float32Array(cnt);
+    const wall = new Float32Array(cnt);
+    for (let k = 0; k < cnt; k++) {
+      auv[k * 3] = gp.getX(k) / Math.max(1e-9, refX);
+      auv[k * 3 + 1] = gp.getY(k) / Math.max(1e-9, refY);
+      auv[k * 3 + 2] = depth;
+      at[k] = 1 - t;
+    }
+    plate.setAttribute('aUv', new THREE.BufferAttribute(auv, 3));
+    plate.setAttribute('aT', new THREE.BufferAttribute(at, 1));
+    plate.setAttribute('aWall', new THREE.BufferAttribute(wall, 1));
+    parts.push(plate);
+  }
+  const nonIdx = parts.map((g) => (g.index ? g.toNonIndexed() : g));
+  const merged = mergeGeometries(nonIdx, false) || nonIdx[0];
+  parts.forEach((g) => g.dispose());
+  return merged;
+}
+
 export function buildEnginePortGeo(L: number, ports: EnginePort[], s: number, rMul: number, pScale?: number, edgeFade?: number): THREE.BufferGeometry {
   // [v56 性能] 同型舰的喷口几何完全同参 ⇒ 缓存共享（编队实体化时不再逐舰重建）
   const cacheKey = `${L.toFixed(4)}|${s.toFixed(5)}|${rMul}|${pScale ?? ''}|${edgeFade ?? ''}|` +
@@ -1930,12 +2034,11 @@ export function buildEnginePortGeo(L: number, ports: EnginePort[], s: number, rM
     const hy = Math.max(minHalfN * s, p.hy * k);
     // [v28d] 边缘柔化用的**形状半宽/半高**（与坐标同单位；下面按 1/ref 归一化算"椭圆半径"）
     let refX = hx, refY = hy;
-    let g: THREE.BufferGeometry;
+    // 开口轮廓（世界单位，中心在原点、XY 平面）
+    let basePts: { x: number; y: number }[];
     if (p.outline && p.outline.length >= 6) {
-      // [v25 手动标注] 按**模型内框线**描出的多边形挤出 —— 形状来自模型本身，
-      //   既不会像外接矩形那样四角伸出舰体（用户实报"长方块穿模"），也不是拿圆盘硬套。
-      //   ⚠ 轮廓是"该处真实结构"，可能很细 ⇒ 做**最小尺寸保底**（世界直径 ≥ L×1.2%），
-      //     否则远景下等于看不见（用户第一轮就报过"几乎是没的"）。
+      // [v25 手动标注] 按**模型内框线**描出的多边形 —— 形状来自模型本身，不会四角伸出舰体。
+      //   ⚠ 轮廓可能很细 ⇒ 做**最小尺寸保底**（世界直径 ≥ L×1.2%），否则远景等于看不见。
       let mx = 0, my = 0;
       for (let i = 0; i < p.outline.length; i += 2) {
         mx = Math.max(mx, Math.abs(p.outline[i]));
@@ -1945,50 +2048,37 @@ export function buildEnginePortGeo(L: number, ports: EnginePort[], s: number, rM
       const curWorld = Math.max(mx, my) * k * 2;
       const kk = curWorld < minWorld ? k * (minWorld / Math.max(1e-6, curWorld)) : k;
       const kk2 = kk * (p.outlineScale ?? 1);                  // [v27] 用户可"只缩小"轮廓
-      const pts: { x: number; y: number }[] = [];
-      for (let i = 0; i < p.outline.length; i += 2) pts.push({ x: p.outline[i] * kk2, y: p.outline[i + 1] * kk2 });
-      g = buildFanPlate(pts, thick);
+      basePts = [];
+      for (let i = 0; i < p.outline.length; i += 2) basePts.push({ x: p.outline[i] * kk2, y: p.outline[i + 1] * kk2 });
       refX = Math.max(1e-9, mx * kk2); refY = Math.max(1e-9, my * kk2);
     } else if (p.round) {
-      // 圆管口：走**同一条扇形路径**（48 段椭圆）—— 段数直接决定径向渐变的平滑度，
-      //   旧的 `CylinderGeometry(…,16,…)` 在封盖上只有"中心 + 16 个轮廓点"，
-      //   渐变呈 16 瓣（用户看到的"八边形饼"是更早的 8 段版）。
-      const pts: { x: number; y: number }[] = [];
+      // 圆口：48 段椭圆。乘 0.92 = **八边形内切圆/外接圆之比** —— 开口是切角方口时，
+      //   圆盘的四角不会从边角的缝里钻到外壳上去（用户实拍"光芒穿模来到外壳处"的成因之一）。
+      basePts = [];
       for (let i = 0; i < 48; i++) {
         const a = (i / 48) * Math.PI * 2;
-        pts.push({ x: Math.cos(a) * hx, y: Math.sin(a) * hy });
+        basePts.push({ x: Math.cos(a) * hx * 0.92, y: Math.sin(a) * hy * 0.92 });
       }
-      g = buildFanPlate(pts, thick);
-      refX = hx; refY = hy;                                    // 椭圆归一化半径的分母
     } else {
-      // 方 / 矩形开口：矩形薄片，宽高 = 开口实际跨度 ⇒ 方尾舰得到方光斑。
-      //   ⚠ 必须**有内部顶点**（3×3 网格）逐顶点淡出才成立（同 buildFanPlate 的理由）。
-      g = new THREE.BoxGeometry(hx * 2, hy * 2, thick, 3, 3, 1);
+      // 方 / 矩形开口：矩形四角。内腔由 buildPortCavity 拉出侧壁。
+      basePts = [{ x: -hx, y: -hy }, { x: hx, y: -hy }, { x: hx, y: hy }, { x: -hx, y: hy }];
     }
-    // 顶点色先上（用**局部** z），再平移 —— 避免把世界 z 混进渐变。
-    // [v28d] `edgeFade` = 从"椭圆半径"的哪一档开始向**黑**淡出（加色混合下黑=不可见）：
-    //   用户实报"外面一圈穿模、不够精致" ⇒ ①`glow` 层不再放大到 1.8×（必然捅穿内壁），
-    //   ②两层都把边缘淡掉 ⇒ 硬多边形边变成柔和的光，且超出开口的部分自动不可见。
-    const fadeStart = Math.min(1, Math.max(0, edgeFade ?? 1));
-    const gp = g.attributes.position as THREE.BufferAttribute;
-    const cols = new Float32Array(gp.count * 3);
-    for (let i = 0; i < gp.count; i++) {
-      const t = Math.min(1, Math.max(0, gp.getZ(i) / thick + 0.5));
-      let f = 1;
-      if (fadeStart < 1) {
-        const u = Math.hypot(gp.getX(i) / refX, gp.getY(i) / refY);       // 椭圆归一化半径（1 = 形状边缘）
-        const w = Math.min(1, Math.max(0, (u - fadeStart) / (1 - fadeStart)));
-        f = 1 - w * w * (3 - 2 * w);                                      // smoothstep 反向 ⇒ 平滑收边
-      }
-      cols[i * 3] = (cNear.r + (cFar.r - cNear.r) * t) * f;
-      cols[i * 3 + 1] = (cNear.g + (cFar.g - cNear.g) * t) * f;
-      cols[i * 3 + 2] = (cNear.b + (cFar.b - cNear.b) * t) * f;
-    }
-    g.setAttribute('color', new THREE.BufferAttribute(cols, 3));
-    // [v27] 锚点朝向：光斑平面垂直于锚点的局部 +Z ⇒ 先把整片几何按锚点四元数转好，再平移到锚点位置。
-    //   顶点色渐变用的是**旋转前**的局部 z（沿喷口轴），故必须在着色之后再转。
-    if (p.q) g.applyQuaternion(new THREE.Quaternion(p.q[0], p.q[1], p.q[2], p.q[3]));
-    g.translate(p.x * ps, p.y * ps, p.z * ps + thick * 0.5);      // 盘面贴喷口、向后略移（整片在舰尾之外）
+    // ── [v123] **杯状内腔**（几何提供纵深）+ 片元体积积分（提供连续与视角响应）──
+    //   三轮教训连起来看：①几何叠层 ⇒ 分层；②只有一张平面 ⇒ "悬浮的薄片"（用户实拍）。
+    //   ⇒ 纵深必须由**连续曲面**给：一个底面 + 一圈不封顶的内壁，没有第二层，也就没有缝。
+    const depthW = (p.cavityDepth && p.cavityDepth > 1e-5)
+      ? p.cavityDepth * ps                                   // 实测腔深（各喷口不同）
+      : Math.min(Math.max(hx, hy) * 0.95, L * 0.022);        // 没测到 ⇒ 兜底
+    const g = buildPortCup(basePts, depthW, refX, refY);
+    const q = p.q ? new THREE.Quaternion(p.q[0], p.q[1], p.q[2], p.q[3]) : null;
+    if (q) g.applyQuaternion(q);
+    const dirV = new THREE.Vector3(0, 0, 1);
+    if (q) dirV.applyQuaternion(q);
+    const nv = g.attributes.position.count;
+    const dirs = new Float32Array(nv * 3);
+    for (let k2 = 0; k2 < nv; k2++) { dirs[k2 * 3] = dirV.x; dirs[k2 * 3 + 1] = dirV.y; dirs[k2 * 3 + 2] = dirV.z; }
+    g.setAttribute('aDir', new THREE.BufferAttribute(dirs, 3));
+    g.translate(p.x * ps, p.y * ps, p.z * ps + thick * 0.15);
     parts.push(g);
   }
   // mergeGeometries 要求索引态一致 ⇒ 统一转非索引（光斑顶点极少，开销可忽略）
@@ -2011,19 +2101,116 @@ export function buildEnginePortGeo(L: number, ports: EnginePort[], s: number, rM
  *    ⇒ 可见能量**全部落在开口以内**，物理上不可能穿模（加色混合：黑 = 不加任何东西）；
  *    同时硬多边形边被 smoothstep 化开 ⇒ 观感从"一块硬板"变成"一团光"。
  *    （白核 = 亮核 + 柔和收边；暖晕 = 偏暖、更宽更软的余辉，负责"热"的观感。） */
+/** [v119] 引擎光两层的不透明度标定值（正对喷口时）。
+ *  单一真源 —— 预览页 / 战斗场景 / LOD 淡出都从这里乘 grow，避免多处各写一个数。 */
+// 片元内体积积分：正对时 acc≈0.37 ⇒ 1.6× 叠白核 + 0.9× 暖晕 ≈ 0.82（接近过曝但不爆）
+export const ENGINE_FX_OPACITY = { flame: 0.056, glow: 0.036 } as const;
+
+/** [v119] 喷口内透光的顶点着色器：
+ *  拿每个顶点自带的 `aDir`（该喷口的朝向）与**视线方向**做点积，得到"正对程度"。
+ *  ⇒ 从舰尾正看 = 1（满亮）；斜看按 `uFacingPow` 次幂衰减；侧看 ≈ 0（几乎不可见）。
+ *  这正是真实喷口内腔的表现：光被腔壁包住，只有正对开口时才看得到。 */
+const ENGINE_GLOW_VS = `
+attribute vec3 aUv;      // xy = 归一化平面坐标(-1..1)，z = 该喷口实测腔深（世界单位）
+attribute float aT;      // 轴向参数：0 = 开口，1 = 腔底
+attribute float aWall;   // 1 = 内壁，0 = 底面
+attribute vec3 aDir;     // 喷口朝向（模型空间）
+varying vec2  vUv;
+varying float vDepth;
+varying float vT;
+varying float vWall;
+varying vec3  vN;
+varying vec3  vV;
+void main() {
+  vUv = aUv.xy;
+  vDepth = aUv.z;
+  vT = aT;
+  vWall = aWall;
+  vec4 mv = modelViewMatrix * vec4(position, 1.0);
+  vN = normalize(normalMatrix * aDir);
+  vV = normalize(-mv.xyz);
+  gl_Position = projectionMatrix * mv;
+}`;
+
+/** [v122] 片元里做**体积积分**（而不是拿几何去堆层）：
+ *  · 视线与喷口法线的夹角决定光在腔内的行程 `L = depth / cosθ`；
+ *  · 密度沿行程指数衰减 `exp(-k·t)`，其平均值有解析解 ⇒ 连续、无层、无条带；
+ *  · 再乘 `pow(cosθ, 0.8)` 近似立体角衰减：正对满亮、越斜越少、正侧几乎为零。
+ *  这正是用户在参考图里看到的"充满内部的光"——它本质是**体积**，不是面片。 */
+const ENGINE_GLOW_FS = `
+precision highp float;
+uniform vec3  uColIn;
+uniform vec3  uColOut;
+uniform float uOpacity;
+varying vec2  vUv;
+varying float vDepth;
+varying float vT;
+varying float vWall;
+varying vec3  vN;
+varying vec3  vV;
+void main() {
+  float cosT = abs(dot(normalize(vN), normalize(vV)));
+  float pathLen = 1.0 / max(0.30, cosT);            // 斜视穿过更长的腔
+  float L = pathLen * max(1e-4, vDepth);
+  float k = 2.2 / max(1e-4, vDepth);                // 衰减尺度跟随该口自己的深度
+  float acc = (1.0 - exp(-k * L)) / max(1e-5, k * L);   // 指数衰减沿程的平均值（解析）
+  acc *= pow(cosT, 0.8);                            // 立体角：正对多、侧对少
+  float r = length(vUv);
+  // [v124] **"液态充满"** —— 用户定案："不是一个点向外扩散，而是充满整个腔室的光芒，是液态的充满"。
+  //   旧公式从中心就开始衰减 ⇒ 无论怎么调都是一颗发光的球/点。液体是**等亮度**的：
+  //   整腔同亮，只在贴壁的最后 ~14% 被壁面吸收而快速变暗；轴向只留 ±15% 的缓慢明暗。
+  // 光源在腔室最里面：底(vT=1)最亮，向开口(vT=0)逐渐暗淡
+  float axial = mix(0.34, 1.28, smoothstep(0.0, 1.0, vT));
+  float radial = mix(0.22, 1.0, smoothstep(1.0, 0.86, r));
+  // 内壁**不做径向衰减**：多边形轮廓的角/边半径不同，逐顶点径向会形成放射状条纹（实测过）。
+  radial = mix(radial, 0.97, vWall);
+  // 色温按**径向**：中心暖白 → 边缘橙（轴向只负责明暗）。之前按轴向 ⇒ 整口同色，看着就是一团白。
+  vec3  col = mix(uColIn, uColOut, smoothstep(0.40, 0.98, r));
+  float a = acc * axial * radial * uOpacity;
+  gl_FragColor = vec4(col * a, 1.0);
+}`;
+
+
+/** 造一份喷口发光材质。`colorOuter` 是边缘色（中心固定暖白），`opacity` 是总强度。 */
+function makeEngineGlowMat(colorOuter: number, opacity: number): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uColIn: { value: new THREE.Color(0xfff8ee) },
+      uColOut: { value: new THREE.Color(colorOuter) },
+      uOpacity: { value: opacity },
+    },
+    vertexShader: ENGINE_GLOW_VS,
+    fragmentShader: ENGINE_GLOW_FS,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    depthTest: true,
+    side: THREE.DoubleSide,
+  });
+}
+
+/** 统一改不透明度：ShaderMaterial 走 uniform，旧 MeshBasicMaterial 走 opacity（兼容旧调用）。 */
+export function setEngineGlowOpacity(mesh: THREE.Mesh, v: number): void {
+  const m = mesh.material as THREE.ShaderMaterial | THREE.MeshBasicMaterial;
+  const u = (m as THREE.ShaderMaterial).uniforms;
+  if (u && u.uOpacity) { (u.uOpacity.value as number) = v; return; }
+  (m as THREE.MeshBasicMaterial).opacity = v;
+}
+
+/** [v22 尾焰] 装配「喷口白核 + 暖晕」两层（材质每舰一份，几何同型共享）。
+ *  ⚠ [v119] **取消了外置光锥**：用户实拍反馈"那个梯形渐变是形状不是光"。
+ *    真实喷口是**内腔透光**，光应该被腔壁约束在开口里、正对才亮 ⇒ 全部交给
+ *    视角衰减 + 深度测试，不再往舰体外挂任何几何。
+ *  ⚠ 两层共用同一套喷口坐标（读作"同一个口里的核 + 余辉"，不是舰尾独立小球）。 */
 export function buildEngineFx(L: number, ports: EnginePort[], s: number, pScale?: number): { flame: THREE.Mesh; glow: THREE.Mesh } {
-  // ⚠⚠ [v28d 二次修正] **两层都必须 `vertexColors: true`**。
-  //   上一版给 `glow` 的材质漏了这个开关 ⇒ `edgeFade` 写进几何的顶点色**根本不被读取**，
-  //   于是暖晕仍是**满幅硬边琥珀板**：与白核同心 ⇒ 视觉上正是用户说的"外面一圈"，
-  //   硬多边形边 ⇒ 就是"不够精致"。开上之后两层共用同一套径向淡出，硬边收成光。
-  //   `color` 保留为**色相调制**：白核白、暖晕琥珀（顶点色只负责明暗与淡出）。
-  const flame = new THREE.Mesh(buildEnginePortGeo(L, ports, s, 1.0, pScale, 0.55), new THREE.MeshBasicMaterial({
-    vertexColors: true, color: 0xffffff, transparent: true, opacity: 0.9,
-    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
-  }));
-  const glow = new THREE.Mesh(buildEnginePortGeo(L, ports, s, 1.0, pScale, 0.0), new THREE.MeshBasicMaterial({
-    vertexColors: true, color: 0xffcc66, transparent: true, opacity: 0.55,
-    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
-  }));
+  const flame = new THREE.Mesh(
+    buildEnginePortGeo(L, ports, s, 1.0, pScale, 0.15),
+    makeEngineGlowMat(0xffd49a, ENGINE_FX_OPACITY.flame),
+  );
+  const glow = new THREE.Mesh(
+    buildEnginePortGeo(L, ports, s, 1.0, pScale, 0.0),
+    makeEngineGlowMat(0xff8f36, ENGINE_FX_OPACITY.glow),
+  );
   return { flame, glow };
 }
+

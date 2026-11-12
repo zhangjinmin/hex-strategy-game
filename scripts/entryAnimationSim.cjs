@@ -851,8 +851,19 @@ check('建舰路径（演习/战役）都调用 L1，且开战前有一次「按
   //   2 次 = 两条建舰路径；
   //   +1  = `planFactionBattle` 里"改完教范阵型**就地**重摆"；
   //   +1  = `activateDeployPhase` **末尾**统一重摆（必须在 planAiFactionsForDeploy 之后）。
-  //   ⇒ 期望 4；**少于 4 意味着某条重摆被删/被挪到阵型写入之前**（那就是真正的回归）。
-  return hits.length === 4;
+  // [v100b] +3 = `splitFleet` 末尾（母队一次 + 每个子队各一次）与 `rejoinDetachment`
+  //   （归队重排后就地重摆）—— 同一契约的加强：任何"槽位重编"都必须立即重摆，
+  //   否则舰船停留在旧队形几何上、整队限速爬向新阵型（用户实报的斜线/碎片形态）。
+  // [v101] +3 = **选阵即生效**（部署期键盘 1-5 / 军议 UI 各一次 + startBattleAfterDeploy
+  //   兜底重摆）：此前只改 `deployFormation` 字段、玩家舰队 formation 拖到回车才改写，
+  //   部署末尾重摆早已跑完 ⇒ 开战瞬间 sprite 停在旧阵型几何上，入场暂停期无人纠正，
+  //   暂停解除后 formKey 不匹配触发 3.5s morph 且硬锁被跳过 ⇒ "开场错误、过一会儿自愈"。
+  // [v102] +1 = `endEntryPhase` **开场定妆重摆**：入场暂停窗内 update() 全程不跑，
+  //   硬锁/追踪都不执行 ⇒ 必须在解除暂停前一刻按当前锚点重摆全舰队
+  //   （真机面板实锤：u0 与锚点 y 相同、x 差 2130px = sprite 停在旧锚点坐标系）。
+  //   ⇒ 期望 11；**少于 10 意味着选阵即生效链路被拆**（v101 回归）；
+  //     **少于 11 意味着开场定妆重摆被删**（v102 回归，开场错乱将复发）。
+  return hits.length === 11;
 });
 check('rotateOffsetPx 只有 formationLayout 一份实现（无第二套内联旋转）', () => {
   const inline = /const rx = ox \* Math\.cos\(/.test(scene);

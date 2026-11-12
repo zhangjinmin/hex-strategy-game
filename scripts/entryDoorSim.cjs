@@ -829,8 +829,12 @@ console.log('\n=== 6. ★设置项 \'off\'：不建特效对象 / 不聚焦 / �
   check('★v5：**离散能量块彻底移除**（无 buildDoorBlocks / PlaneGeometry(1,1) 逐块网格）', () =>
     !overlay.includes('buildDoorBlocks') && !overlay.includes('doorBlockMotion')
     && !overlay.includes('blocks.push(') && !doorSrc.includes('buildDoorBlocks'));
-  check('★v7：门框**锐利内缘 rim / 外柔边辉光 / 轮廓线 aperture 仍在**（保留项未丢）', () =>
-    doorBlk.includes('rimMat') && doorBlk.includes('makeGateHaloTexture(')
+  /* [v127] 面状雾（`makeGateHaloTexture` + PlaneGeometry）已删除：它是"一张贴图盖在面片"
+     （guizang-game-skill 明确点名的廉价感来源），且挂在 root.scale 下会随阵型宽高比变形。
+     替换为**四角能量节点**（世界尺度恒定）。保留项：rim / aperture / 四角节点。 */
+  check('★v7/v127：门框**锐利内缘 rim / 四角能量节点 / 轮廓线 aperture 仍在**（保留项未丢；面状雾已按"贴图盖面片"反模式删除）', () =>
+    doorBlk.includes('rimMat') && doorBlk.includes('cornerMats')
+    && !doorBlk.includes('makeGateHaloTexture(')
     && doorBlk.includes('const aperture = new THREE.LineLoop(')
     && doorBlk.includes('d.aperture.scale.set(1, ap, 1)'));
   check('★v7：**门内位面已彻底移除**（渲染块不含位面记号：makeDoorScanLineTexture / DOOR_SCAN_LINES / doorScanLine* / doorScanFalloff / scanLines / scanTex）', () =>
@@ -844,9 +848,12 @@ console.log('\n=== 6. ★设置项 \'off\'：不建特效对象 / 不聚焦 / �
   });
   check('★v7：**门内有横贯光条已彻底移除**（渲染块不含：makeDoorScanTexture / scanMat / `doorScanAmt` / `scanColor`）', () =>
     noInnerStrip(doorBlk));
-  check('★v7：**门内只剩**"空门 + 舰队"——门根组只 add 了「3 层光带 + aperture + rim + halo」（4 处 `root.add(`）', () => {
+  /* [v126] 4 → 5：新增**带状辉光**（门框更宽的两层同源光带，宽 5×/2.5×）。
+     它们挂在门根组、沿门框走，**不是门内位面**（不遮挡舰队），语义与 v7 契约不冲突；
+     门内光条的反例检查（`root.add(scan`）保持不变。 */
+  check('★v7/v126：**门内只剩**"空门 + 舰队"——门根组只 add 了「3 层光带 + aperture + rim + halo + 2 层带状辉光」（5 处 `root.add(`）', () => {
     const adds = (doorBlk.match(/root\.add\(/g) || []).length;
-    return adds === 4 && !doorBlk.includes('root.add(scan');
+    return adds === 5 && !doorBlk.includes('root.add(scan');
   });
   // 反例：把横贯光条塞回渲染块 ⇒ 必须红
   checkThrows('★反例：渲染块重新出现 `makeDoorScanTexture(`（横贯光条）⇒ "门内无横贯光条"断言必须红', () => {
@@ -886,8 +893,39 @@ console.log('\n=== 6. ★设置项 \'off\'：不建特效对象 / 不聚焦 / �
 
 
   // ── ★'off' 不暂停：BattleScene.beginEntryPhase 有 off 提前返回 + 显式解除暂停 ──
-  check('★BattleScene.beginEntryPhase：off ⇒ 提前返回且**显式 `isPaused = false`**（绝不卡在暂停）', () =>
-    scene.includes('if (this.entryFxDisabledBySetting()) { this.store.isPaused = false; return; }'));
+  // ⚠ 这里**不能**用逐字字符串匹配。旧写法断言源码里存在
+  //   `if (this.entryFxDisabledBySetting()) { this.store.isPaused = false; return; }` 一整行，
+  //   它锁的其实是「early-return 里没有别的东西」这个**旧形态**：
+  //   将来谁按"开场定妆重摆"在 unpause 之前插入一次摆位，改对了反而会变红（QA-B3 实测过）。
+  //   改为**结构 + 顺序**断言：三条 early-return 分支必须 (a) 显式解除暂停、(b) 在其后 return；
+  //   若将来插入 `settleFormationOnBattleStart()`，必须位于 unpause **之前**
+  //   （settle 之后才解除暂停 ⇒ 同一 tick 内锚点不会先动，摆位才对得上）。
+  check('★BattleScene.beginEntryPhase：三条 early-return 显式解除暂停后 return；若插入开场定妆重摆必须在 unpause 之前', () => {
+    const i0 = scene.indexOf('private beginEntryPhase(');
+    if (i0 < 0) return false;
+    const i1 = scene.indexOf('private entryFxDisabledBySetting(', i0);
+    const body = i1 > i0 ? scene.slice(i0, i1) : scene.slice(i0, i0 + 4000);
+    const heads = ['if (!ENTRY_HOLD_PAUSE)', 'if (this.entryFxDisabledBySetting())', 'if (!has3d)'];
+    for (const h of heads) {
+      const at = body.indexOf(h);
+      if (at < 0) return false;
+      const open = body.indexOf('{', at);
+      if (open < 0) return false;
+      let depth = 0; let end = -1;
+      for (let i = open; i < body.length; i++) {
+        if (body[i] === '{') depth++;
+        else if (body[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
+      }
+      if (end < 0) return false;
+      const blk = body.slice(open, end + 1);
+      const iUnpause = blk.indexOf('this.store.isPaused = false;');
+      const iReturn = blk.lastIndexOf('return;');
+      if (iUnpause < 0 || iReturn < 0 || iReturn < iUnpause) return false;
+      const iSettle = blk.indexOf('settleFormationOnBattleStart(');
+      if (iSettle >= 0 && iSettle > iUnpause) return false;
+    }
+    return true;
+  });
   check('★BattleScene 的 off 判定复用**同一设置项** getEntryFxStyleValue() === \'off\'（与 3D 层同源）', () =>
     scene.includes("getEntryFxStyleValue() === 'off'"));
   check('★3D 层与 BattleScene **同判**（两边都读 getEntryFxStyleValue ⇒ 永不背离）', () =>

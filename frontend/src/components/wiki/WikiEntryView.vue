@@ -196,7 +196,7 @@ const onImgErr = (e: Event) => {
 
 <style scoped>
 .wiki-view {
-  --wk-fs: calc(12.5px * var(--font-scale));
+  --wk-fs: var(--fs-label);
   --wk-hero: 118px;
   display: flex;
   flex-direction: column;
@@ -206,7 +206,7 @@ const onImgErr = (e: Event) => {
   line-height: 1.78;
 }
 .wiki-view.compact {
-  --wk-fs: calc(11px * var(--font-scale));
+  --wk-fs: var(--fs-label);
   --wk-hero: 82px;
   gap: 9px;
   line-height: 1.7;
@@ -217,7 +217,7 @@ const onImgErr = (e: Event) => {
   padding: 24px 0;
   text-align: center;
   color: var(--color-text-disabled);
-  font-size: calc(12px * var(--font-scale));
+  font-size: var(--fs-label);
 }
 
 /* ---------- 头部 ---------- */
@@ -256,7 +256,7 @@ const onImgErr = (e: Event) => {
 .wk-cat {
   font-size: 0.85em;
   padding: 1px 7px;
-  border-radius: 10px;
+  border-radius: var(--ui-radius-lg);
   border: 1px solid var(--dmc-gold);
   color: var(--dmc-gold);
   white-space: nowrap;
@@ -326,7 +326,7 @@ const onImgErr = (e: Event) => {
 .wk-mini-btn {
   background: transparent;
   border: 1px solid var(--color-border);
-  border-radius: 3px;
+  border-radius: var(--ui-radius);
   color: var(--color-text-secondary);
   font-size: 0.85em;
   padding: 1px 7px;
@@ -344,7 +344,7 @@ const onImgErr = (e: Event) => {
   gap: 6px;
   padding: 4px 6px;
   cursor: pointer;
-  border-radius: 3px;
+  border-radius: var(--ui-radius);
   border-left: 3px solid rgba(201, 169, 110, 0.5);
   background: rgba(255, 255, 255, 0.015);
   transition: background var(--duration-fast) var(--ease-out);
@@ -397,13 +397,13 @@ const onImgErr = (e: Event) => {
 /* ---------- 片段 ---------- */
 .frag-link {
   color: var(--color-cyan);
-  border-bottom: 1px dashed rgba(52, 152, 219, 0.45);
+  border-bottom: 1px dashed rgba(var(--ui-accent-rgb), 0.45);
   cursor: pointer;
   transition: all var(--duration-fast) var(--ease-out);
 }
 .frag-link:hover {
   color: var(--color-text-primary);
-  background: rgba(52, 152, 219, 0.2);
+  background: rgba(var(--ui-accent-rgb), 0.2);
   border-bottom-color: var(--color-cyan);
 }
 .frag-bold {
@@ -422,7 +422,7 @@ const onImgErr = (e: Event) => {
   width: 100%;
   aspect-ratio: 3 / 4;
   object-fit: cover;
-  border-radius: 3px;
+  border-radius: var(--ui-radius);
   border: 1px solid var(--color-border);
   cursor: zoom-in;
   background: var(--dmc-bg-input);

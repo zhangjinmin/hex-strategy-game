@@ -14,7 +14,7 @@
  */
 'use strict';
 
-const { formationOffsets } = require('../frontend/src/config/formationLayout.ts');
+const { formationOffsets, formationLayerOffsets } = require('../frontend/src/config/formationLayout.ts');
 
 let passed = 0;
 let failed = 0;
@@ -97,6 +97,68 @@ check('反例：把排宽换成"余量全堆末排"的旧算法 ⇒ 断言必须
   let worst = 0;
   for (let i = 1; i < w.length; i++) worst = Math.max(worst, w[i] - w[i - 1]);
   if (worst <= 2) throw new Error(`旧算法 n=24 竟未触发：${w.join(',')}`);
+});
+
+// ── 队内垂直分层：R2 低差异（去相关 + 居中 + 排内不单调）──────────────────
+//   规格真源 = formationLayerOffsets 的函数头注释。注意「同排同高」是**反模式**：
+//   v103 曾改成按排单调，真机立刻被用户驳回（正视=立柱、低视=楼梯，
+//   「哪家星际舰队是一层的」）⇒ 本组断言锁的就是"多高度错落"这套观感。
+check('分层① 排内不单调（R2 去相关，消"排内单调斜线"退化）', () => {
+  for (const n of [33, 89, 183]) {
+    const offs = formationOffsets('wedge', n);
+    const layerK = formationLayerOffsets(offs, 16);
+    const byGx = new Map();
+    offs.forEach(([gx], i) => {
+      if (!byGx.has(gx)) byGx.set(gx, []);
+      byGx.get(gx).push(i);
+    });
+    let monoRows = 0, wideRows = 0;
+    for (const [, idxs] of byGx) {
+      if (idxs.length < 3) continue;
+      wideRows++;
+      const vals = idxs.map((i) => layerK[i]);
+      let inc = true, dec = true;
+      for (let k = 1; k < vals.length; k++) {
+        if (vals[k] < vals[k - 1]) inc = false;
+        if (vals[k] > vals[k - 1]) dec = false;
+      }
+      if (inc || dec) monoRows++;
+    }
+    if (monoRows > 0) throw new Error(`n=${n} 有 ${monoRows}/${wideRows} 个多格排层号单调（应为 0）`);
+  }
+});
+check('分层② 居中 (max+min)/2 ≈ 0；L=1 全零', () => {
+  for (const n of [7, 33, 89, 183]) {
+    const offs = formationOffsets('wedge', n);
+    const layerK = formationLayerOffsets(offs, 16);
+    const lo = Math.min(...layerK), hi = Math.max(...layerK);
+    if (Math.abs((lo + hi) / 2) > 1e-9) throw new Error(`n=${n} 未居中：(lo+hi)/2=${(lo + hi) / 2}`);
+    const flat = formationLayerOffsets(offs, 1);
+    if (flat.some((v) => v !== 0)) throw new Error(`n=${n} L=1 应全 0`);
+  }
+});
+check('分层③ 层号落在 [0, L-1] 且多高度错落（非"一层"）', () => {
+  for (const n of [33, 89, 183]) {
+    const offs = formationOffsets('wedge', n);
+    for (const L of [4, 8, 16]) {
+      const layerK = formationLayerOffsets(offs, L);
+      const uniq = new Set(layerK);
+      for (const v of layerK) {
+        if (v < -(L - 1) / 2 - 1e-9 || v > (L - 1) / 2 + 1e-9) throw new Error(`n=${n} L=${L} 层号越界 ${v}`);
+      }
+      if (uniq.size < Math.min(L, n, 3)) throw new Error(`n=${n} L=${L} 只用了 ${uniq.size} 个高度（应错落）`);
+    }
+  }
+});
+check('分层④ 确定性（同输入同输出）+ 非楔形同规格', () => {
+  for (const f of ['wedge', 'line', 'circle', 'spindle', 'square']) {
+    for (const n of [33, 89]) {
+      const offs = formationOffsets(f, n);
+      const a = formationLayerOffsets(offs, 16);
+      const b = formationLayerOffsets(offs, 16);
+      if (a.some((v, i) => v !== b[i])) throw new Error(`${f} n=${n} 输出不确定`);
+    }
+  }
 });
 
 // ── 顺带打印关键样本，便于人工核对 ─────────────────────────────────────

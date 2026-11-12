@@ -210,8 +210,10 @@ import { acquirePlanetModel, buildPlanetMesh } from './planetModels';
 
 // 阵营配色（可变，根据 settingsStore 的方案切换；费沙 = 琥珀金不变）
 const FAC_COLOR: Record<number, { main: number; glow: string; cont: [number, number, number] }> = {
-  1: { main: 0x2dd4bf, glow: '45,212,191', cont: [45, 212, 191] },
-  2: { main: 0xc084fc, glow: '192,132,252', cont: [192, 132, 252] },
+  // [统一界面语言] 首帧兜底与 FACTION_SCHEMES.default 对齐，避免 applyFactionScheme
+  // 生效前闪一帧旧「青 / 紫」。0 号中立 = 费沙琥珀，保持独立。
+  1: { main: 0x5b9dff, glow: '91,157,255', cont: [91, 157, 255] },
+  2: { main: 0xd8b26a, glow: '216,178,106', cont: [216, 178, 106] },
   0: { main: 0xfbbf24, glow: '251,191,36', cont: [251, 191, 36] },
 };
 

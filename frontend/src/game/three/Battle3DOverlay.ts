@@ -28,6 +28,8 @@ import {
   makeShieldEntry, shieldFire, shieldStep,
   buildLaserEntry, laserStep, disposeLaserEntry,
   buildHitEntry, hitStep, disposeHitEntry,
+  // [hd 包] 引擎光斑（白核 + 暖晕）：喷口真源优先取模型自带 FX 锚点
+  getEnginePortsFor, buildEngineFx, ENGINE_FX_OPACITY, setEngineGlowOpacity,
   type LaserEntry, type HitEntry, type ShieldEntry,
 } from './battleFx';
 import { drainFx3d, type Fx3dEvent } from '../battle3dFx';
@@ -65,12 +67,12 @@ import {
   doorRibbonBandVertices, doorRibbonBandUvs, doorRibbonBandIndices, doorRibbonAspectK,
   doorRibbonGrowthK, doorRibbonFlowOffset, doorApertureK, doorBarrierAmt,
   doorAuxFadeK,
-  DOOR_RIBBON_SAMPLES, DOOR_DISPERSION_K, DOOR_PULSE_COUNT, DOOR_MOTION_DEFAULT,
+  DOOR_RIBBON_SAMPLES, DOOR_RIBBON_HALF_W, DOOR_DISPERSION_K, DOOR_PULSE_COUNT, DOOR_MOTION_DEFAULT,
 } from './entryDoor';
 import {
   SHIP_CLASS_ALIAS, FLAGSHIP_MODEL_ALIAS,
   acquireShipModelByFiles, setShipModelDetail, type ShipModelReg,
-  getShipScaleLength,
+  getShipScaleLength, getHdShipModel,
 } from './shipModels';
 // 设施模型（中继站/出生点基地/要塞 等）：assets/scene/，尺寸单点配置见 sceneProps.ts
 import {
@@ -87,6 +89,11 @@ import { TERRAIN_VISUAL, TERRAIN_EFFECT_TABLE } from '../../config/terrainEffect
 import { TERRAIN_ZONE, TERRAIN_SCAN, TERRAIN_CONTOUR, CAPTURE_RING } from '../../config/balance';
 import { hexChordHalfWidth, mergeSpans, scanLineY, scanSegCount } from '../../config/terrainScanGeometry';
 import { fbm2D, contourLevels, marchingSquares, chaikin } from '../../config/terrainField';
+// [v108 远景质感] 星云底 + 泛光：两者都是**远景档**的观感层，独立成模块（见各自文件头注）。
+//   ⚠ 泛光是唯一与分辨率挂钩的固定开销（半分辨率 3 趟全屏），接在"主场景渲染完"之后、
+//     "CRT 合成"之前；绝不可改写既有的离屏 RT 顺序（v99 的调档闪烁修复依赖它）。
+import { createNebulaTexture } from './battleBackdrop';
+import { createBloomChain, type BloomChain } from './battleBloom';
 // 分舰队阵型标记层：阵位数据必须与 BattleScene 同源（formationOffsets/formationSpacing 单一真源）
 import {
   formationOffsets, halfExtentOf, formationSpacing, formationLayerOffsets, formationFootprint, rotateOffsetPx, FORMATION_SPACING,
@@ -460,6 +467,18 @@ interface DoorRibbonVis {
   ky: number;
 }
 
+/** [v126] 门框带状辉光的一层（几何/材质/缩放系数）。 */
+interface DoorGlowBand {
+  geo: THREE.BufferGeometry;
+  pos: THREE.BufferAttribute;
+  mat: THREE.MeshBasicMaterial;
+  mesh: THREE.Mesh;
+  /** 带宽相对基础带宽的倍数 */
+  k: number;
+  /** 该层基础不透明度 */
+  base: number;
+}
+
 /** [v5 · D] **扇传送门**（门心 = 舰队投影包围盒中心；局部 X/Y/Z = 横向/竖向/朝向）。 */
 interface DoorVis {
   /** 根组（门心为原点；`scale = (halfU, halfV, 1)` ⇒ 局部 [-1,1] 映射到门框）。 */
@@ -468,9 +487,18 @@ interface DoorVis {
   ribbon: DoorRibbonVis;
   /** 门框轮廓（LineLoop）：组装前半段竖向从 0 → 1 展开 ⇒ "开启"动作。 */
   aperture: THREE.LineLoop;
-  /** 柔边**外辉光**（青/紫，中心透明 ⇒ 不遮舰队）。 */
-  halo: THREE.Mesh;
-  haloMat: THREE.MeshBasicMaterial;
+  /** [v127] **四角能量节点**（世界尺度恒定）。
+   *  ⚠ 旧版这里是 `PlaneGeometry(2.3)` + 径向贴图的**面状雾**——两张翻车点叠在一起：
+   *    ① 挂在 `root.scale=(halfU,halfV)` 下 ⇒ 阵型铺得越宽，雾就越扁越大（用户实拍发现）；
+   *    ② "一张贴图盖在面片"是廉价感的直接来源（见 guizang-game-skill 的特效章节）。
+   *    现改为**沿门框**的结构性元素：带状辉光 + 四角节点，都不随阵型比例变形。 */
+  cornerNodes: THREE.Object3D[];
+  /** 四角节点的材质（每节点 2 个：环 + 芯），逐帧统一改 opacity。 */
+  cornerMats: THREE.MeshBasicMaterial[];
+  /** [v126] **带状辉光**：沿门框的更宽光带（宽 5× / 2.5×，低亮度）。
+   *  旧版只有一根细带 + 一张面状雾 ⇒ 读作"贴上去的亮线"；加这两层后才是"能量场"。
+   *  几何与主带同源（同一条 `doorRibbonBandVertices`），只是 halfW 更大。 */
+  glowBands: DoorGlowBand[];
   /** 门框**锐利内缘**（加法混合的细环带，沿门框矩形）—— 保证任意视角下都读得出"门"的边框。 */
   rim: THREE.Mesh;
   rimMat: THREE.MeshBasicMaterial;
@@ -703,29 +731,40 @@ interface StrikeSquad {
 const BB_STYLE_ID = 'b3d-billboard-style';
 const BB_CSS = `
 .b3d-bb-layer{position:absolute;inset:0;pointer-events:none;z-index:6;overflow:hidden}
-.b3d-bb{position:absolute;left:0;top:0;transform:translate(-50%,-100%);pointer-events:none;box-sizing:border-box;width:184px;
+/* [v108 字号与比例] 用户实报「整个界面的字号显得很小气，字号和界面比例失调」。
+   病根不是"框太大"也不是"字太小"单方面，而是**两者比例**：字 9~12px 却占 184px 宽的深色板，
+   大片留白把文字压成脚注。处置 = 字号整体抬一档 + 板宽略收 + 行距收紧，让文字重新占主导。 */
+.b3d-bb{position:absolute;left:0;top:0;transform:translate(-50%,-100%);pointer-events:none;box-sizing:border-box;width:176px;
   font-family:inherit;white-space:nowrap;will-change:transform,opacity;
-  padding:5px 7px;border-radius:5px;background:rgba(10,16,28,.88);
+  padding:6px 8px;border-radius:5px;background:rgba(10,16,28,.90);
   border:1px solid rgba(148,163,184,.35);backdrop-filter:blur(3px)}
+/* [v108③] 侦察分队**不显示铭牌**（用户第三次裁定："不用显示，就是巡回侦查、搜索敌舰就可以了"）。
+   演进：184px 舰队铭牌 → 132px 缩水铭牌 → 一行标签 → **完全移除**。
+   结论：侦察分队的价值在"航迹与发现"，它本身不需要常驻文字；三个常驻标签会持续抢走主力舰队的注意力。
+   ⇒ 现在只在 World 里作为舰位/光点存在（由 _scoutFlight 的正常渲染路径负责），
+     情报结果仍走 recordKnownContact → 接触符号层，发现敌人时玩家照样看得到。
+   下方这些 .b3d-bb-tag 规则**保留但不再使用**：将来若要给"次要单位"做一行式标签，可直接复用。
+   注意：本段在模板字符串内，注释中不得出现反引号（曾两次因此触发 TS1005）。 */
+.b3d-bb-tag{display:none}
 /* [v99] 「态势」标签：此前**没有任何 CSS 规则** ⇒ 回落浏览器默认 16px，
    而旁边信息只有 8~9px ⇒ 用户实报"态势两个字那么大，其余字一点点、看不清"。
    这里把它降为**小号分组标签**（比舰名小、加字距、灰色），信息字号整体抬一档，
    让"标题 ≪ 正文"的层级反过来。 */
-.b3d-bb-grouptag{font-size:9.5px;font-weight:800;line-height:1.2;color:#94a3b8;letter-spacing:.18em;display:block;margin-bottom:2px}
-.b3d-bb-name{font-size:12.5px;font-weight:800;line-height:1.3;margin-bottom:3px;text-shadow:0 1px 2px #000;overflow:hidden;text-overflow:ellipsis}
+.b3d-bb-grouptag{font-size:10.5px;font-weight:800;line-height:1.2;color:#94a3b8;letter-spacing:.18em;display:block;margin-bottom:2px}
+.b3d-bb-name{font-size:13.5px;font-weight:800;line-height:1.3;margin-bottom:3px;text-shadow:0 1px 2px #000;overflow:hidden;text-overflow:ellipsis}
 .b3d-bb-bars{display:flex;flex-direction:column;gap:2px}
-.b3d-bb-bar{height:4px;border-radius:2px;background:rgba(30,41,59,.9);overflow:hidden}
+.b3d-bb-bar{height:5px;border-radius:2px;background:rgba(30,41,59,.9);overflow:hidden}
 .b3d-bb-bar>div{height:100%;transition:width .2s linear}
 .b3d-bb-stances{display:flex;gap:3px;margin-top:5px}
-.b3d-bb-btn{pointer-events:auto;cursor:pointer;font-family:inherit;font-size:11px;font-weight:700;flex:1 1 0;min-width:0;
+.b3d-bb-btn{pointer-events:auto;cursor:pointer;font-family:inherit;font-size:12px;font-weight:700;flex:1 1 0;min-width:0;
   padding:3px 3px;line-height:1.3;border-radius:3px;color:#94a3b8;
   background:rgba(15,23,42,.9);border:1px solid rgba(148,163,184,.4)}
 .b3d-bb-btn:hover{color:#0a0f1c;background:#4a9eff;border-color:#4a9eff}
 .b3d-bb-btn.active{color:#0a0f1c;background:#4a9eff;border-color:#4a9eff}
-.b3d-bb-mission{font-size:11px;font-weight:700;line-height:1.25;margin-top:4px;color:#22d3ee;
+.b3d-bb-mission{font-size:12px;font-weight:700;line-height:1.25;margin-top:4px;color:#22d3ee;
   text-shadow:0 1px 2px #000;max-width:176px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .b3d-bb-mission.idle{color:#94a3b8}
-.b3d-bb-maneuver{font-size:10.5px;font-weight:700;line-height:1.25;margin-top:3px;color:#cbd5e1;
+.b3d-bb-maneuver{font-size:11.5px;font-weight:700;line-height:1.25;margin-top:3px;color:#cbd5e1;
   text-shadow:0 1px 2px #000;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .b3d-cmd-notice{position:absolute;left:0;top:0;transform:translate(-50%,-100%);pointer-events:none;
   font-family:inherit;font-size:10px;font-weight:800;line-height:1.25;white-space:nowrap;
@@ -829,7 +868,14 @@ const MIN_MESH_PX = 14;
    ⚠ 400 是早期（单位数少）的取值；当前战场规模已到 480+（会战更大）。
    900 覆盖常见规模；**性能由 perfOn 自适应兜底**（帧时超预算时
    `meshBudget` 自动收缩，见 autoLodByLoad）⇒ 提高上限不会让低配机卡死。 */
-const MAX_MESHES = 900;
+/* [v108] **900 → 1500**。两件事同时变了：
+   ① `N_MAX_PER_FLEET` 200→260、`K_VISUAL_DEFAULT` 100→70 ⇒ 单队实体数 ×1.43，
+      6 队会战从 ~900 涨到 ~1,300 ⇒ 900 的池子会当场把后几队挤回光点（正是 v81 的病灶重演）；
+   ② 用户实报「近处的模型数量有点少，不够宏大」。
+   实测成本（Arc B390 / 1920×1080 / LOD2 2,474 面 / 每舰 = 实体 + EdgesGeometry 线框 = 2 draw call）：
+     1,800 舰（3,600 call）→ **2.89 ms**；1,500 舰约 **2.4 ms**。仍在一帧预算内。
+   ⚠ 再往上（3,000+）就必须改成实例化 —— 见 `_bench_1to1.html` 的实测：现架构 12,000 舰 ≈ 28 ms。 */
+const MAX_MESHES = 1500;
 
 // ⚠ `DOT_SLOTS`（光点层槽位总数）的**定义在下方 DOT_N 之后**（它依赖 DOT_N，而 DOT_N 声明在此之后，
 //   提到这里会触发 TS2448 "used before its declaration"。见 `DOT_SLOTS` 定义处的完整理由。）
@@ -948,12 +994,19 @@ const DOT_SCALE = 0.32;
  *
  * 【v12 光点加大】3.2 → 4.0（+25%）：放宽点距下限，配合 DOT_DIAM_K 0.85→0.90，
  *   使远景圆点整体变大仍是"离散圆点"而非糊成实心块。
+ *
+ * 【v108 更密的点阵】4.0 → 3.2（−20%，同样屏幕面积内**点数上限 +56%**）。
+ *   目标：远处的会战要读作"密集舰队云"，而不是"零星几点"（对齐用户给的远景参考图）。
+ *   配套把 `DOT_DIAM_K` 0.90 → 0.84：点随点距等比缩小，间隙 = 3.2 × (1−0.84) = 0.51px，
+ *   比 v12 的 0.40px 还大 ⇒ **更密但不会糊成实心块**（这是唯一需要同时改两个常量的原因）。
+ *   安全性：`DOT_MIN_PX` = 3.2 × 0.84 = 2.69 > 片元淡出门槛 2.4，不会触发防方块淡出。
+ *   ⇒ 想回退只需把这两个数字改回 4.0 / 0.90。
  */
-const DOT_PITCH_MIN_PX = 4.0;
+const DOT_PITCH_MIN_PX = 3.2;
 /** 点径 ÷ 点距。必须 < 1 才有间隙 ⇒ 读作点阵；= 1 开始糊，> 1 就是实心块。
- *  【v12 光点加大】0.85 → 0.90：点径占点距的比例提高，点更大；仍 < 1，间隙 = 4.0 × (1−0.90) = 0.40 px，
- *  读作"离散圆点"不糊块（原间隙 3.2 × (1−0.85) = 0.48 px）。 */
-const DOT_DIAM_K = 0.90;
+ *  【v12 光点加大】0.85 → 0.90：点径占点距的比例提高，点更大。
+ *  【v108 点阵加密】0.90 → 0.84：与点距 3.2 配对，保住 0.51px 间隙（详见 DOT_PITCH_MIN_PX 处）。 */
+const DOT_DIAM_K = 0.84;
 /**
  * 点屏径的**视觉下限**（px）= 点距下限 × 点径比 = `DOT_PITCH_MIN_PX × DOT_DIAM_K`（= 4.0 × 0.90 = 3.60）。
  * **派生值、不要写字面量** —— 它与 `DOT_PITCH_MIN_PX` / `DOT_DIAM_K` 必须成对改：
@@ -1016,11 +1069,124 @@ const MARKER_FLOOR = 0.05;
  * （用户实机截图里那块刺眼的红三角就是 0.22 的填充面）。 */
 const MARKER_FLOOR_OUTLINE = 0.35;
 /**
+ * [v107] 描边在**中近景**的可见下限（T2）。
+ *
+ * 问题：`outlineAlpha = max(fadeOut, MARKER_FLOOR_OUTLINE) × meshOff` 里那个 `meshOff`
+ * 在近景恒为 0（`lodNear` 时 lodLo=0/lodHi=8，战列舰在开场视距上就有 60+ px）⇒
+ * **一进入"看得清舰体"的距离，地面轮廓整层消失**。于是"阵型是不是三角"只能靠舰体本身读，
+ * 而舰体投影形状 100% 由相机方位决定（纵深轴俯视 = 三角；横向轴低仰角 = 等宽带）。
+ * 两者叠加 = 用户实报的「同盟侧开场楔形阵排不出三角形」。
+ *
+ * 修法：给**描边**一个不随近景归零的地板值，底板填充仍按原策略淡出（它才是"刺眼色板"的来源）。
+ * 轮廓是"贴地画的一圈线"，与舰体不争视觉焦点，却能在**任何相机方位**下把阵型形状读出来 ——
+ * 这是把"形状可读性"从"相机运气"里解耦出来的最小改动。
+ */
+const MARKER_OUTLINE_MIN = 0.30;
+/**
+ * [v107] 贴脸档把描边地板收掉的区间（px，战列舰屏幕投影长度）。
+ * 相机已经进到编队内部时，贴地轮廓会变成几条横贯屏幕的长线（反而糊屏）⇒ 收到 0。
+ * 取值：260 px ≈ 战列舰占屏 1/4 高度 —— 那个距离上玩家看的是单舰，不是队形。
+ */
+const MARKER_OUTLINE_MIN_FADE_LO = 150;
+const MARKER_OUTLINE_MIN_FADE_HI = 260;
+/**
  * 标记底板相对"队内最低舰"再下沉的量（× cruiseClearance）。
  * 底板必须压在整支编队之下：若停在队心高度，平面就从编队中间剖过去，读起来是"切面"而不是"底"。
  * 下沉量取巡航余量的一小部分，保证仍在地形之上（舰高 = 地形高 + cruiseClearance）。
  */
 const MARKER_DROP_K = 0.4;
+
+// ── [v107] 开场取景归位（T1）────────────────────────────────────────────────
+/**
+ * 开场取景的**相机仰角**（相机高于地平线，弧度）= 60°，落在 55°~65° 的要求区间中部。
+ *
+ * 为什么必须是这个量级（第一性原理，不是手感）：楔形的三角只在**纵深方向俯视**时可读 ——
+ * 相机低于 ~40° 时，队内纵向叠层（实测 15 × 8.13 = 121.9 世界单位）投出的屏幕竖直位移
+ * 会把等宽带进一步糊成"两列横行"（真机读数：仰角 17.4° 时 6 个纵向分箱宽度 310/336/348/303/349/380
+ * = 恒定；仰角 58.5° 时 79/166/292/317/367/403 = 严格递增）。
+ * 同时不能更陡（>70° 会把多面体压成一张纸，失去"军团有体积"的观感）。
+ */
+const OPEN_REFRAME_ELEV_ABOVE_HORIZON = (60 * Math.PI) / 180;
+/** 足迹半跨 → 取景距离的余量系数（1.2 ⇒ 编队占视野约 5/6，留一圈边） */
+const OPEN_REFRAME_FIT_K = 1.2;
+/** 取景距离的下/上限（× hexR）：下限保证不钻进舰队内部，上限保证还在地图视野里 */
+const OPEN_REFRAME_DIST_MIN_MUL = 6;
+const OPEN_REFRAME_DIST_MAX_MUL = 18;
+/**
+ * `entry_start` 之后延迟多久执行归位（ms）。
+ *
+ * [T0'] **0ms**（900ms → 200ms → 0）。真机实测暴露了"开场"的真身：
+ *   · 开战后 0.3s：`entryPhase=false / δ=90° / 仰角 35° / dist=3436` —— 这是
+ *     `buildSpaceWorld()` 的**固定机位**，阵型正好是正侧面 + 远景，读不出任何形状；
+ *   · 3.3s：归位才落下（δ=0° / 仰角 60° / dist=406）。
+ *   ⇒ 「开场看起来不对」指的就是**开战后头 3 秒**。900ms 的延迟叠上"tick 才执行 + 世界建好才成功"
+ *     把这段空窗拉到了 3s 量级 ⇒ 现在**武装当帧即可执行**（`_openReframeAt = 武装时刻`），
+ *     由 `framePlayerMainFleetForOpening` 的**就绪判据**（`spaceBuilt`）决定是否真的落，
+ *     未就绪则按 `OPEN_REFRAME_RETRY_MS` 快速重试。真机实测落下时刻见回传（<500ms）。
+ *
+ * 为什么能是 0ms 而不是"太早"：
+ *   · 归位在 `tick()` 里**紧跟 `syncShips()` 之后**执行 ⇒ 该帧的质心、档位（`lastTierY`）、
+ *     阵面朝向都是新鲜的，不存在"对准上一帧的旧坐标"；
+ *   · `startBattleAfterDeploy()` 在推送 `entry_start` **之前**已经 `placeUnitsAtFormationSlots`，
+ *     故武装那一刻 sprite 已在槽位上；
+ *   · 唯一真实的前置条件是 `spaceBuilt`（地形/舰体世界建好），它由就绪判据兜住。
+ *
+ * ⚠ 已知边界（不在本次范围）：若 `endEntryPhase` 的重摆把整队挪了位置（历史"锚-舰脱钩"），
+ *   归位落点会跟着旧质心偏。真机实测该路径 devMax 恒在 1~8px（v100b 集结期硬锁在兜），
+ *   未复现历史 2130px 脱钩 —— 处置见下方 T0 裁定。
+ */
+/**
+ * ── [T0 裁定 · 遗留项 W-1] 开战定妆重摆：**本批不做** ──────────────────────────
+ * 内容：把 `endEntryPhase` 里那段「全舰队无条件 `placeUnitsAtFormationSlots`」提到
+ *   `BattleScene.beginEntryPhase()` 的**全部三条 early-return 分支**（unpause 之前）。
+ * 裁定人：制作人　日期：2026-10-25
+ * 依据：`entryFxStyle='off'` 路径真机锚-舰偏差实测 0.000 / 0.80 / 8.12px
+ *   （开战后 0.3s / 3.3s / 8.3s），v100b 集结期硬锁每帧把 sprite 钉在槽位，
+ *   **未复现**历史那次 2130px 的锚-舰脱钩 ⇒ 为一个没有观测到症状的路径改入场时序，
+ *   回归风险大于收益。
+ * 重开条件：任一路径出现 >50px 的锚-舰偏差读数 ⇒ 按原设计在三条 early-return 内、
+ *   `isPaused = false` **之前**插入重摆，并把 `entryDoorSim` 的对应断言升级为时序断言。
+ */
+const OPEN_REFRAME_DELAY_MS = 0;
+/**
+ * 世界/舰队尚未就绪时的重试间隔（ms）与次数上限。
+ * [T0'] 300 → **100**：与首发配合，把"就绪即落位"的抖动压到一个刷新周期内。
+ *   次数上限 30 ⇒ 约 3s 的窗口；超过就放弃（不影响战斗）。
+ */
+const OPEN_REFRAME_RETRY_MS = 100;
+const OPEN_REFRAME_MAX_TRIES = 30;
+/**
+ * 用户拖拽期"完全放行镜头"的**硬上限**（ms）—— 见 OrbitControls start/end 注册处。
+ * 取 5s：正常一次拖拽远小于它；`end` 事件丢失时最多 5s 自动恢复跟随。
+ * ⚠ 不设上限的后果：`_camUserDragUntil` 停在 `Infinity` ⇒ 方位跟随与开场归位**永久失效**。
+ */
+const CAM_USER_DRAG_MAX_MS = 5000;
+/** 归位的绝对期限（ms）：超过它就不再尝试（防"用户一直拖拽/世界永不就绪"导致每帧空转） */
+const OPEN_REFRAME_DEADLINE_MS = 20000;
+/**
+ * [v108 修] 连续方位跟随的**默认开关**。
+ *
+ * 用户实报：「没动任何旋转/拖动，镜头突然自己动起来」。
+ * 根因：`tick()` 里有一段"每帧把相机绕 target 转向**最近舰队**的 formFacing"的逻辑，
+ * 判据只有「用户当前没在拖拽」⇒ 只要场上有舰队在转向，镜头就一直在转，**且永不停止**
+ * （终止条件是 `|d| > 1e-4`，即 0.006°）。
+ *
+ * ⇒ 默认**关闭**；`?follow=1` 可开（开启时走下面的秒基速率 + 死区 + 静默期）。
+ * 开场取景（`runOpeningReframe`）与「回到主舰队」是**独立路径**，不受本开关影响 ——
+ * 关掉它不会让开场停在侧面。
+ *
+ * 顺带收益：跟随关闭时整段"遍历全部舰队求最近者"的循环被跳过，
+ * 会战规模下每帧省掉 `Σ舰数` 次浮点累加（20 队 × 数百舰）。
+ */
+const CAM_FOLLOW_ENABLED_DEFAULT = false;
+/** 开启时的角速度上限（rad/s）。
+ *  ⚠ 旧实现是 `0.05 rad/**帧**` —— 60fps 下 = 3 rad/s = **172°/s**，144fps 下 412°/s。
+ *    这才是"自转感"的真正来源：它不是一个温和的跟随，是一个最高 170°/秒的持续旋转。 */
+const FOLLOW_MAX_RAD_PER_SEC = 0.35;
+/** 开启时的死区（rad，≈6.9°）：角差小于它就不动，避免被阵型微抖带着整屏晃 */
+const FOLLOW_DEADZONE_RAD = 0.12;
+/** 开启时用户离手后的额外静默期（ms）：松手 1.2s 就恢复跟随太急 */
+const FOLLOW_IDLE_MS = 2000;
 
 /**
  * DOT_N 个点的固定局部偏移（规则等距微网格，落在舰体水平面 x–z，含逐舰去均值）。
@@ -1390,15 +1556,57 @@ export class Battle3DOverlay {
     uIntensity: { value: 1.0 },
     uTime: { value: 0 },
     uRes: { value: new THREE.Vector2(1, 1) },
+    // [v108] 泛光纹理（线性空间，值可以 >1）+ 强度。禁用时 uBloom=0 且纹理为 null
+    tBloom: { value: null as THREE.Texture | null },
+    uBloom: { value: 0.85 },
   };
 
   // 地形
   // （原 `hexInst` / `wireGeo` / `tileMeta`：六棱柱地形实例与其线框，已随「3D 战场」模式删除）
+  /** [v108] 泛光链（半分辨率 3 趟：亮部提取 → H 模糊 → V 模糊）。null = 初始化失败 ⇒ 管线照旧 */
+  private bloom: BloomChain | null = null;
+  /** [v108] 星云底纹理（启动时一次性 GPU 烘焙）。null = 失败 ⇒ 保持原纯色背景 */
+  private nebulaTex: THREE.Texture | null = null;
   private hexR = 26;
   /** 地图跨度（`buildSpaceWorld` 时计算：max(宽,高)），固定雾参数与相机预设用 */
   private mapSpan = 0;
   /** [v76] 初始相机高度（相机取景时的 y）。缩放档判据的基准 —— 见 updateLodTier。 */
   private initCamY = 0;
+  /** [v104/v106] 镜头方位跟随：上一帧注视舰队的 formFacing（增量式跟随，见 tick()）。 */
+  private _camFollowFa: number | null = null;
+  /** [v108] 连续方位跟随开关（默认关；见 `CAM_FOLLOW_ENABLED_DEFAULT`）。null = 尚未解析 URL */
+  private _camFollowEnabled: boolean | null = null;
+  /** [v106] 用户拖拽/缩放的放行截止时刻（performance.now() 基准；Infinity=拖拽中）。 */
+  private _camUserDragUntil = 0;
+  /**
+   * [v107 T1] 增量跟随**当前跟的是哪支舰队**。
+   * 换人时必须重基线（不补转），否则会拿旧舰队的 formFacing 当基准，
+   * 把"镜头换了个目标"当成"目标急转 π"，镜头自己转半圈（AC-W4④ 的边界情形）。
+   */
+  private _camFollowFleet: any = null;
+  /**
+   * [v107 T1] **开场取景归位**的三件状态。
+   *
+   * 为什么需要一次"程序性归位"而不是继续靠 `focusOnPlayerMainFleetForEntry`：
+   *   ① 那条路径要求 `initCamY > 0`（世界几何已建），且方向只按 `formFacing` 取一次 ——
+   *      而 `endEntryPhase` 会在解除暂停前**无条件重摆全舰队**（重写 formFacing/格位），
+   *      于是"取景时用的阵型轴"与"玩家真正看到的第一帧阵型轴"可能不是同一条。
+   *   ② 归位是**一次性事件**（开场），与"战斗中逐帧跟随"是两件事：
+   *      逐帧跟随只跟**增量**，它保住用户相对视角，但**永远不会主动纠正**一个错误的初始方位。
+   *      ⇒ 初始方位一旦偏到横向轴（楔形读作等宽带），跟随再准也纠正不回来。
+   * 幂等由 `_openReframeDone` 保证：同一场战斗只归位一次（`entry_start` 重新武装）。
+   */
+  private _openReframeAt = -1;
+  private _openReframeDone = false;
+  private _openReframeTries = 0;
+  /** [v107 T1] 归位的**绝对期限**（performance.now）：兜住"用户一直按着拖拽"与"世界永远不就绪"两种挂死。 */
+  private _openReframeDeadline = 0;
+  /**
+   * [T0'] 武装时刻（= `entry_start` 那一帧）。用来把"归位到底多晚才落下"变成**可读数字**
+   * （`openingFrame.sinceEntryMs`）。验收口径是"≤500ms 内 δ≤20°、仰角∈[50,70]"——
+   * 没有这个字段就只能靠肉眼估时间，改了也不知道有没有改善。
+   */
+  private _openReframeArmedAt = 0;
   /**
    * [v77] 调试隐藏开关（URL 参数 `?hide=flame,stars,dots,halo`）。
    * 用途：用户报「贴脸还有圆点」但无法确认来源 ⇒ 提供二分定位手段，
@@ -1449,7 +1657,14 @@ export class Battle3DOverlay {
   private formOffsets(formation: string, n: number): FormationCell[] {
     const k = `${formation}:${n}`;
     let v = this.formOffsetsMemo.get(k);
-    if (v === undefined) { v = formationOffsets(formation, n); this.formOffsetsMemo.set(k, v); }
+    if (v === undefined) {
+      v = formationOffsets(formation, n);
+      // [v100] 防篡改冻结（与 BattleScene._formMemo 同案）：真机实锤 memo 数组被
+      //   单点原地改写（wedge 表里出现 circle 的格位）。冻结后写入者当场抛错带栈。
+      for (const c of v) Object.freeze(c);
+      Object.freeze(v);
+      this.formOffsetsMemo.set(k, v);
+    }
     return v;
   }
   /** 战舰巡航余量（世界单位，= √3 × hexR 的比例）；由 computeCruiseClearance() 按纵向包络推导 */
@@ -1646,6 +1861,19 @@ export class Battle3DOverlay {
     marks: 0,
     /** 本帧全队统一的标记透明度 = max(1−sstep(refPx), MARKER_FLOOR) × (1−sstep(meshIn, refPx)) */
     markerAlpha: 0,
+    /** [v107] 本帧全队统一的**描边**透明度（含近景可见地板 MARKER_OUTLINE_MIN） */
+    outlineAlpha: 0,
+    /**
+     * [v107 T1] 开场取景归位的落点读数（只写一次；`null` = 本场还没归位）。
+     * 存在理由：归位是否真的发生、用的什么距离/仰角/半跨，必须能从 `__b3dStats` 直接读到 ——
+     *   否则"改了但没生效"与"生效了但不好看"在真机上无法区分（本项目已踩过多次）。
+     */
+    openingFrame: null as null | {
+      fid: any; units: number; halfLat: number; halfDep: number;
+      dist: number; elevDeg: number; facingDeg: number;
+      /** [T0'] 归位落下时刻（ms，相对 `entry_start`）；null = 未武装 */
+      sinceEntryMs: number | null;
+    },
     /** 本帧实际绘出的未识别/末次位置接触符号数（fuzzy + last_known；不含 live/hidden） */
     intelContacts: 0,
     /** [WS7] 本帧实际生效的实体池预算（未开 governor 时恒 = MAX_MESHES） */
@@ -1853,6 +2081,7 @@ export class Battle3DOverlay {
       fragmentShader: [
         'varying vec2 vUv; uniform sampler2D tDiffuse;',
         'uniform float uIntensity; uniform float uTime; uniform vec2 uRes;',
+        'uniform sampler2D tBloom; uniform float uBloom;',
         'void main(){',
         '  vec2 uv=vUv, d=uv-0.5;',
         '  float ca=0.004*uIntensity;',
@@ -1868,6 +2097,9 @@ export class Battle3DOverlay {
         '  col*=1.0-sweep*0.035*uIntensity;',
         // 暗角较原型减弱：大地图空域占比高，全屏叠加会显"脏"且晕（demo 图密感知不明显）
         '  col*=1.0-dot(d,d)*(0.50*uIntensity);',
+        // [v108] 泛光叠加：必须在 sRGB 编码**之前**（此处 col 仍是线性值）。
+        //   放到编码之后会把 0.02 的暗部泛光放大成 0.15，整幅画面发灰。
+        '  col+=texture2D(tBloom, uv).rgb*uBloom;',
         // 线性→sRGB 输出编码：主场景以线性值写入 RT，自定义 ShaderMaterial 不会像内置材质
         // 那样自动追加 <colorspace_fragment>，缺这一步整幅画面会被压暗约 4 倍（实测
         // 平均亮度 12.54 → 2.87，非背景像素 21% → 1.6%）。必须先 clamp，pow 负底数未定义。
@@ -1883,9 +2115,33 @@ export class Battle3DOverlay {
       ].join('\n'),
     })));
 
+    // ── [v108] 远景质感：泛光链 + 星云底 ──
+    // 两者都在**既有管线之外**新增，不改动"离屏 RT → CRT 合成"的顺序（v99 的调档闪烁修复依赖它）。
+    try {
+      this.bloom = createBloomChain({ threshold: 0.70, knee: 0.35, radius: 2.2 });
+      this.bloom.setSize(w, h, dpr);
+      this.crtU.tBloom.value = this.bloom.texture;
+      this.crtU.uBloom.value = 0.60;
+    } catch (err) {
+      console.warn('[b3d] 泛光链初始化失败，退回无泛光:', err);
+      this.bloom = null;
+      this.crtU.uBloom.value = 0.0;
+    }
+    this.initNebulaBackdrop();
+
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.08;
+    // [v106] 用户拖拽/缩放期间**必须完全放行**镜头（否则方位跟随与 OrbitControls 对拉，
+    //   真机实报「一拖动旋转屏幕就疯狂自转」）。start→锁脏、end→延时 1.2s 再恢复跟随。
+    // [v107] ⚠ `start` 原先直接置 `Infinity`，而 `end` 依赖 pointer 抬起事件 ——
+    //   指针在画布外松开 / 标签页切走 / 事件被上层 UI 吞掉时 `end` 不触发 ⇒ `_camUserDragUntil`
+    //   **永久为 Infinity** ⇒ 镜头方位跟随与开场归位**双双永久失效**（用户症状：拖过一次之后，
+    //   之后每场开场都停在侧面、再也不会自动回到阵型正后方 —— 与本轮「楔形读不出三角」同源）。
+    //   ⇒ 改为**硬上限**：即使 end 丢失，最多 5s 后自动恢复。取 5s 而非更短，是因为
+    //   「边拖边被跟随」的手感比「松手后短暂不跟」差得多。
+    this.controls.addEventListener('start', () => { this._camUserDragUntil = performance.now() + CAM_USER_DRAG_MAX_MS; });
+    this.controls.addEventListener('end', () => { this._camUserDragUntil = performance.now() + 1200; });
     // [VIS-1] 滚轮缩放朝**光标**推进（three r152+ 官方选项），不再朝 controls.target：
     //   旧实现朝陈旧 target（战场中心）推进 ⇒ 敌群偏轴时拉近即滑出画框
     //   （用户实报"近景逐渐看不见→最近完全看不见"；probe4 d400→d200 截图复现滑出过程）。
@@ -1986,6 +2242,10 @@ export class Battle3DOverlay {
       // （远景 ≈ 1，中景降到 MARKER_FLOOR 支路，近景随 meshOff 归零；见 writeFleetMarks 的分支）
       marks: this.lastStats.marks,
       markerAlpha: this.lastStats.markerAlpha,
+      // [v107 T2] 描边透明度（含近景地板）：近景必须 > 0，否则"阵型常显轮廓"这条验收没有读数
+      outlineAlpha: this.lastStats.outlineAlpha,
+      // [v107 T1] 开场归位落点（null = 本场未归位）：dist / 仰角 / 足迹半跨 / 当时阵面朝向
+      openingFrame: this.lastStats.openingFrame,
       // 未识别/末次位置接触符号数（fuzzy + last_known；live/hidden 不计）
       intelContacts: this.lastStats.intelContacts,
       // 主场景 GPU 提交量（[WS7] 修：取主场景 render 后的快照，不是 CRT 后处理的 1 个 quad）
@@ -3376,10 +3636,16 @@ export class Battle3DOverlay {
     const meshOff = 1 - sstep(this.lodLo, this.lodHi, refPx);
     // 【标记层可见性策略】远景：填充 = 1（此时它是唯一的舰队表示）
     //   中景：填充 → MARKER_FLOOR(0.05)、描边 → MARKER_FLOOR_OUTLINE(0.35)（退成"队形轮廓"）
-    //   近景：随 meshOff 归零（实体已能表达阵型）
+    //   近景：填充随 meshOff 归零（实体已能表达阵型）；**描边保留可见地板**（T2，见 MARKER_OUTLINE_MIN）
     const markerAlpha = Math.max(fadeOut, MARKER_FLOOR) * meshOff;
-    const outlineAlpha = Math.max(fadeOut, MARKER_FLOOR_OUTLINE) * meshOff;
+    // [v107 T2] 描边两级：① 原有「中景保底」；② 再叠一道**不随近景归零**的地板。
+    //   ② 是让"任何相机方位都能从地面轮廓读出阵型形状"的唯一支点 —— 近景没有它时，
+    //   形状信息只剩舰体投影，而舰体投影随相机方位在"三角/等宽带/立柱"之间切换。
+    //   贴脸档（refPx ≥ 150px）把地板收掉：那时轮廓是几条横贯屏幕的长线，只会糊屏。
+    const outlineFloor = MARKER_OUTLINE_MIN * (1 - sstep(MARKER_OUTLINE_MIN_FADE_LO, MARKER_OUTLINE_MIN_FADE_HI, refPx));
+    const outlineAlpha = Math.max(Math.max(fadeOut, MARKER_FLOOR_OUTLINE) * meshOff, outlineFloor);
     this.lastStats.markerAlpha = markerAlpha;
+    this.lastStats.outlineAlpha = outlineAlpha;
 
     // 存活舰队 → 队内最低舰高 + 最长舰长 + **最宽舰宽**（数据源 unitVis：含"只有光点没有实体"的舰）
     // 舰长/舰宽都要：底板下限分轴（Y 用舰长、X 用舰宽，见 markerSpan）
@@ -3390,6 +3656,11 @@ export class Battle3DOverlay {
       if (!fl) continue;
       // v8：运输舰的渲染宿主（`_isAux`）**不是舰队** ⇒ 不画舰队托盘（它没有阵位、没有编队足迹）
       if ((fl as any)._isAux) continue;
+      // [v107 T2 · 迷雾门禁] 阵型托盘/轮廓 = **阵位足迹的形状**，它同样泄漏位置与朝向
+      //   ⇒ 必须与"舰队本体"同一道情报闸门（`_intelDisplayMode`）：未识别/末次位置的敌舰队
+      //   **一条轮廓都不许画**。否则"给雾里的敌人描个圈"就是绕过战争迷雾（阻断级）。
+      //   ⚠ 这条与 T2 的"轮廓常显"不冲突：常显只对**看得见的**舰队生效。
+      if (!this.isFleetIntelVisible(fl)) continue;
       const fid: number = fl.id !== undefined ? fl.id : fl.factionId;
       const a = agg.get(fid);
       if (a) {
@@ -3405,6 +3676,8 @@ export class Battle3DOverlay {
     });
 
     const visible = markerAlpha > 0.01;
+    // [v107 T2] 描边有独立于填充的可见性：近景由 _MIN 地板顶住 ⇒ 轮廓常显
+    const outlineVisible = outlineAlpha > 0.01;
     let shown = 0;
     // [2a] 选目标态候选集（BattleScene 每帧写入；退出即 cpCommandMode=false/targetCandidates=null
     //   ⇒ 本帧不做脉动覆盖 ⇒ 轮廓透明度回到下方原值，无残留高亮）。
@@ -3483,7 +3756,9 @@ export class Battle3DOverlay {
       m.fill.visible = visible && markerAlpha > 0.02;
       // [2a-1] 候选：近景档 meshOff=0 ⇒ visible=false，会把脉动连"可见性"一起吃掉（近景候选零表达）；
       //   候选强制可见（透明度已由上面的脉动给的 base 决定）。cands=null 时退化为原 `visible`，逐位不变。
-      m.outline.visible = visible || (cands !== null && cands.has(fid));
+      // [v107 T2] 描边可见性走自己的地板（`outlineVisible`），不再搭填充的便车 —
+      //   旧实现在近景把"队形轮廓"这条信息整层删掉，用户只能靠舰体投影猜阵型。
+      m.outline.visible = outlineVisible || (cands !== null && cands.has(fid));
       if (visible) shown += 1;
     });
     this.lastStats.marks = shown;
@@ -3548,6 +3823,9 @@ export class Battle3DOverlay {
     const candidates: string[] = [];
       if (cls) {
       if (flagshipKey) candidates.push(`flagship_${flagshipKey}.glb`);
+      // [hd 包] 高精度舰船模型（hd_ 前缀，不覆盖原文件）优先；加载失败会自动 continue 试下一个
+      const hdFile = getHdShipModel(factionKey, cls, flagshipKey);
+      if (hdFile) candidates.push(hdFile);
       candidates.push(`${factionKey}_${cls}.glb`, `${cls}.glb`);
       // 电子舰已有独立兵种和行为，但专属 GLB 尚未交付；明确回落巡洋舰，
       // 保持阵营外观一致，也避免模型缺失时退化成程序化小船。
@@ -3696,9 +3974,23 @@ export class Battle3DOverlay {
     //   造型由"锥形喷流"改为"几处微白光斑"（见 buildEnginePortGeo / buildEngineFx）。
     // ⚠ 第 4 参 pScale = **显示长度**（不是 s）：喷口坐标按模型原始长度归一化，
     //   舰体被缩放到显示尺寸，换算必须用显示长度（详见 battleFx.buildEnginePortGeo 注释）。
-    // 尾焰粒子对齐 + 调试断言用：喷口（归一化坐标）与模型缩放
-    // [v26b] 粒子发射点用的**换算系数**：喷口坐标是按模型原始长度归一化 ⇒ 必须乘**显示长度**
-    //   （不是 s）。旧代码粒子也用 s ⇒ 与光斑同样差 modelLen 倍（粒子会飞出舰体）。
+    // [hd 包] 重新接线（v83 之后这条链只剩注释、没有创建点 —— 战场其实一直没有引擎光）：
+    //   喷口真源优先级 = 模型自带 FX 锚点（hd GLB 里的 FX_ENGINE_* Empty）> 手点标注 > 自动探测。
+    //   两层材质 additive + 几何按 pScale=L 直接生成显示尺寸 ⇒ 挂到 group 下不随 body 的 s 再缩。
+    const engPorts = getEnginePortsFor(reg, geo, modelLen, reg.baseName, reg.fxAnchors);
+    if (engPorts.length) {
+      // ⚠ 舰体被缩放到 **0.96L**（见上 `s`），引擎光必须用**同一长度基准** ——
+      //   否则锚点按 L 换算会落在舰尾之外约 4% 舰长处（"光斑飘在船后面"）。
+      const fxL = L * 0.96;
+      const efx = buildEngineFx(fxL, engPorts, s, fxL);
+      efx.flame.userData.b3dFxPart = true;
+      efx.glow.userData.b3dFxPart = true;
+      efx.flame.renderOrder = 6;
+      efx.glow.renderOrder = 5;
+      group.add(efx.glow, efx.flame);
+      group.userData.engineFx = efx;
+      group.userData.enginePorts = engPorts;
+    }
 
     group.userData.dims = d;
     return { group };
@@ -4499,13 +4791,29 @@ export class Battle3DOverlay {
             const c = offsArr[u.formationSlot];
             return c ? `${c[0]},${c[1]}` : '∅';
           }).join(' ');
+          // [v100] **memo 篡改检测**：`_formOffsets` 必须与现算（同参纯函数）逐位一致；
+          //   不一致 ⇒ 有代码在原地改写共享 memo 数组（真机实锤过 wedge 表里混入
+          //   circle 格位的案例）。面板显示 `MUT@<首个不一致下标>`，一眼定位污染。
+          let mut = '';
+          if (offsArr) {
+            const n0Chk = Math.max(Number(ff?.formationCount0) || 0,
+              (ff?.units ?? []).filter((u: any) => (u.formationSlot ?? -1) >= 0).length, 1);
+            const fresh = this.formOffsets(String(ff?.formation || 'wedge'), n0Chk);
+            if (offsArr.length === fresh.length) {
+              const bi = offsArr.findIndex((c: any, i: number) =>
+                !fresh[i] || c[0] !== fresh[i][0] || c[1] !== fresh[i][1]);
+              if (bi >= 0) mut = ` MUT@${bi}`;
+            } else {
+              mut = ` MUT:len${offsArr.length}!=${fresh.length}`;
+            }
+          }
           // [v99] 再补"锚点 vs 首舰实际位置"：格位图显示"十字对、船偏在一边"时，
           //   唯一需要区分的就是"舰队锚点被挪过、舰船没跟上"还是"舰船被摆到别处"。
           const u0: any = us[0];
           const anc = `a=(${Math.round(Number(ff?.x) || 0)},${Math.round(Number(ff?.y) || 0)})`;
           const pos = u0?.sprite ? `u0=(${Math.round(u0.sprite.x)},${Math.round(u0.sprite.y)})` : 'u0=-';
           const ctk = `ctK=${(Number((ff as any)?._ctKNow) || 1).toFixed(2)}`;
-          dbgSlots = ` || slots=[${slotTxt}] cells=[${cellTxt}] ${anc} ${pos} ${ctk}`;
+          dbgSlots = ` || slots=[${slotTxt}] cells=[${cellTxt}]${mut} ${anc} ${pos} ${ctk}`;
         }
         rows.push({
           id: String(ff?.id ?? ff?.factionId ?? '?'), n: r.n, px: r.px, mesh: r.mesh, intel, mem, flips,
@@ -4700,6 +5008,19 @@ export class Battle3DOverlay {
       v.grow = this.entryActiveOf(v.key)
         ? 1
         : (_isAux ? auxGrowK(v.fleetPx, this.lodLo, this.lodHi) : sstep(this.lodLo, this.lodHi, v.fleetPx));
+
+      // [hd 包] 引擎光随 LOD `grow` 同步淡出 —— 否则中远景会重演 v83 的"线框已看不见、
+      //   只剩几颗孤立金点"（additive 面片不随线宽变细而消失）。阈值与 grow 同源，不另立一套。
+      const _efx = (g.userData as { engineFx?: { flame: THREE.Mesh; glow: THREE.Mesh } }).engineFx;
+      if (_efx) {
+        const gk = v.grow;
+        const on = gk > 0.05;
+        if (_efx.flame.visible !== on) { _efx.flame.visible = on; _efx.glow.visible = on; }
+        if (on) {
+          setEngineGlowOpacity(_efx.flame, ENGINE_FX_OPACITY.flame * gk);
+          setEngineGlowOpacity(_efx.glow, ENGINE_FX_OPACITY.glow * gk);
+        }
+      }
 
       // 【旗舰标识 v3】呼吸 / 随 LOD `grow` 淡入淡出 + 方案热切换（都只改材质或删除/新建标识，不动舰体）。
       //   ① 热切换：`window.__flagshipRingStyle` 变了 ⇒ 旧标识就地 dispose（b/c 还会还原被改写的舰体材质）、
@@ -5850,7 +6171,10 @@ export class Battle3DOverlay {
       }
       for (let y = 0; y < H; y++) {
         const v = H > 1 ? y / (H - 1) : 0.5;
-        const across = 1 - Math.pow(Math.abs(2 * v - 1), 1.6);   // 中心最亮、两侧渐隐（软边）
+        /* [v108] 横截面改用**指数衰减**（原来 1-|2v-1|^1.6 在中心附近太平 ⇒ 整条带子亮度均匀，
+           读作"画上去的色带"而不是"发光的管"）。exp(-(d/0.42)^2)：中心 1、半宽处 0.25、边缘≈0。
+           配合 v108 新接的泛光（阈值 0.70），核心才能把光溢到周围，形成真正的光晕。 */
+        const across = Math.exp(-Math.pow((2 * v - 1) / 0.42, 2));
         for (let x = 0; x < W; x++) {
           const a = bright[x] * across;
           if (a <= 0.003) continue;
@@ -5903,7 +6227,10 @@ export class Battle3DOverlay {
     ribbonGeo.setIndex(new THREE.BufferAttribute(doorRibbonBandIndices(N), 1));   // 1200 索引（Uint16 够）
     ribbonGeo.setDrawRange(0, 0);   // 初始不画（逐帧由 doorRibbonGrowthK 生长）
     const ribbonTex = this.makeDoorRibbonTexture();
-    const ribbonBase = 0.74;
+    /* [v108] 0.74 → **0.92**：泛光亮部阈值是 0.70（见 battleBloom 的 threshold），
+       0.74 只在阈值边缘蹭一下 ⇒ 几乎没有溢出，门框看着像"贴上去的亮线"。
+       抬到 0.92 后核心稳定过阈值，光晕由泛光链统一生成（色散层仍按比例，不动）。 */
+    const ribbonBase = 0.92;
     // 三层基础不透明度（主色为主，色散层**很弱**；加法混合下 3 层叠满会过曝 ⇒ 光带发白）
     const ribbonLayerOpacity = [ribbonBase, ribbonBase * 0.10, ribbonBase * 0.15];
     const ribbonMats: THREE.MeshBasicMaterial[] = [];
@@ -5940,6 +6267,30 @@ export class Battle3DOverlay {
     aperture.userData.baseOpacity = 0.55;
     root.add(aperture);
 
+    // ── [v126] 带状辉光（宽 5× / 2.5×）：让门框"发光"而不是"描边" ──
+    //   用户实拍："传送门效果不够自然，很生硬的光芒" —— 根因是只有一根细带 + 一张面状雾，
+    //   没有任何"沿边框向外扩散"的层次。这里补两层同源、更宽、更暗的光带。
+    const glowBands: DoorGlowBand[] = [];
+    for (const sp of [{ w: 5.0, c: 0x5ab4ff, o: 0.12, ord: 6 }, { w: 2.5, c: 0x9fe0ff, o: 0.18, ord: 8 }]) {
+      const gg = new THREE.BufferGeometry();
+      const gp = new THREE.BufferAttribute(
+        doorRibbonBandVertices(0, N, DOOR_RIBBON_HALF_W * sp.w, undefined, aspectKx, aspectKy, 0.35), 3);
+      gp.setUsage(THREE.DynamicDrawUsage);
+      gg.setAttribute('position', gp);
+      gg.setAttribute('uv', new THREE.BufferAttribute(doorRibbonBandUvs(N), 2));
+      gg.setIndex(new THREE.BufferAttribute(doorRibbonBandIndices(N), 1));
+      gg.setDrawRange(0, 0);
+      const gm = new THREE.MeshBasicMaterial({
+        map: ribbonTex, color: sp.c, transparent: true, opacity: 0,
+        blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+      });
+      const gmesh = new THREE.Mesh(gg, gm);
+      gmesh.frustumCulled = false;
+      gmesh.renderOrder = sp.ord;
+      root.add(gmesh);
+      glowBands.push({ geo: gg, pos: gp, mat: gm, mesh: gmesh, k: sp.w, base: sp.o });
+    }
+
     // 门框**锐利内缘**（加法混合细环带，沿矩形）—— 任意视角都读得出"门"的边框（复刻老门的可读性）
     const rimMat = new THREE.MeshBasicMaterial({
       color: P.core, transparent: true, opacity: 0,
@@ -5950,15 +6301,38 @@ export class Battle3DOverlay {
     rim.renderOrder = 11;
     root.add(rim);
 
-    // 柔边**外辉光**（青/紫；中心透明 ⇒ 不遮舰队；加法混合 ⇒ 无硬直边）
-    const haloMat = new THREE.MeshBasicMaterial({
-      map: this.makeGateHaloTexture(P.halo), color: 0xffffff, transparent: true,
-      opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
-    });
-    const halo = new THREE.Mesh(new THREE.PlaneGeometry(2.3, 2.3), haloMat);
-    halo.position.z = -0.002;
-    halo.renderOrder = 7;
-    root.add(halo);
+    // ── [v127] 四角能量节点（**世界尺度恒定**，用 1/halfU 反缩放）──
+    //   删除原来的面状雾：它是"一张贴图盖在面片"，且随阵型宽高比变形（用户实拍）。
+    //   四角节点给出"能量锚点"的结构感，尺寸只跟门的平均尺度有关，与铺开宽度无关。
+    const cornerNodes: THREE.Object3D[] = [];
+    const cornerMats: THREE.MeshBasicMaterial[] = [];
+    {
+      const ref = 0.5 * (g.halfU + g.halfV);
+      const R = Math.max(0.5, ref * 0.05);                 // 节点世界半径
+      const ringGeo = new THREE.RingGeometry(0.70, 1.0, 40);
+      const coreGeo = new THREE.CircleGeometry(0.24, 20);
+      for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+        const grp = new THREE.Group();
+        grp.position.set(sx * 0.945, sy * 0.945, 0);
+        // 反缩放：x/y 各自补偿 root 的非均匀 scale ⇒ 节点在世界上是正圆、半径恒为 R
+        grp.scale.set(R / Math.max(1e-6, g.halfU), R / Math.max(1e-6, g.halfV), 1);
+        const mr = new THREE.MeshBasicMaterial({
+          color: P.core ?? 0xbfefff, transparent: true, opacity: 0,
+          blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+        });
+        const mc = new THREE.MeshBasicMaterial({
+          color: 0xffffff, transparent: true, opacity: 0,
+          blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+        });
+        const ring = new THREE.Mesh(ringGeo, mr);
+        const core = new THREE.Mesh(coreGeo, mc);
+        ring.renderOrder = 12; core.renderOrder = 12;
+        grp.add(ring, core);
+        root.add(grp);
+        cornerNodes.push(grp);
+        cornerMats.push(mr, mc);
+      }
+    }
 
     this.scene.add(root);
     g.door = {
@@ -5967,7 +6341,7 @@ export class Battle3DOverlay {
         geo: ribbonGeo, pos: posAttr, mats: ribbonMats, meshes: ribbonMeshes, tex: ribbonTex,
         base: ribbonBase, kx: aspectKx, ky: aspectKy,
       },
-      aperture, halo, haloMat, rim, rimMat,
+      aperture, cornerNodes, cornerMats, rim, rimMat, glowBands,
       halfU: g.halfU, halfV: g.halfV,
     };
   }
@@ -5992,8 +6366,16 @@ export class Battle3DOverlay {
     //   ⇒ 生长 < 50% 恒 0（组装期只有光带）；生长 K → 0 时恒 0（陪衬不会晚于门框消失）。
     const gk = doorRibbonGrowthK(elapsed, cfg);
     const fadeK = doorAuxFadeK(elapsed, cfg);
-    // 外辉光**克制**（v5 的"边框"由光带承担；辉光过强会把门框冲成粉紫）
-    d.haloMat.opacity = 0.28 * barrierAmt * breathe * fadeK;
+    // [v127] 四角节点：呼吸 + 缓慢反向自转（相邻角反向 ⇒ 有"能量在角上打旋"的读感）
+    for (let ci = 0; ci < d.cornerNodes.length; ci++) {
+      const grp = d.cornerNodes[ci];
+      const ph = ci * 0.8;
+      grp.rotation.z = elapsed * (ci % 2 ? -0.55 : 0.85) + ph;
+      const pulse = 0.72 + 0.28 * Math.sin(elapsed * 2.3 + ph);
+      const k = barrierAmt * fadeK * pulse * breathe;
+      d.cornerMats[ci * 2].opacity = 0.55 * k;
+      d.cornerMats[ci * 2 + 1].opacity = 0.85 * k;
+    }
 
     // ── 门框光带：① 曲线（就地写顶点：轮廓 + 法线×平滑噪声×时间）② 生长 / 收回 ③ 流动 ④ 强度包络 ──
     const rb = d.ribbon;
@@ -6010,9 +6392,22 @@ export class Battle3DOverlay {
     rb.tex.offset.x = doorRibbonFlowOffset(elapsed) % 1;
     // ④ 强度包络：随生长系数渐入（组装）/ 渐出（消散）—— 收回末段整条淡掉
     const bandAmt = Math.min(1, gk * 1.8);
-    rb.mats[0].opacity = rb.base * bandAmt;
-    rb.mats[1].opacity = rb.base * 0.10 * bandAmt;
-    rb.mats[2].opacity = rb.base * 0.15 * bandAmt;
+    /* [v108] **呼吸**：静态恒定亮度是"贴图感"的第二个来源（真实能量输出永远在微动）。
+       6% 幅度、两个互质频率叠加 ⇒ 看不出周期，又不会闪。 */
+    const bandPulse = 0.94 + 0.06 * Math.sin(elapsed * 2.7) * Math.sin(elapsed * 1.13 + 1.2);
+    rb.mats[0].opacity = rb.base * bandAmt * bandPulse;
+    rb.mats[1].opacity = rb.base * 0.10 * bandAmt * bandPulse;
+    rb.mats[2].opacity = rb.base * 0.15 * bandAmt * bandPulse;
+
+    // [v126] 带状辉光：与主带**同源同帧**（同一 elapsed / 同一 drawRange / 同一生长包络）
+    for (const gb of d.glowBands) {
+      doorRibbonBandVertices(elapsed, DOOR_RIBBON_SAMPLES, DOOR_RIBBON_HALF_W * gb.k,
+        gb.pos.array as Float32Array, rb.kx, rb.ky, 0.35);
+      gb.pos.needsUpdate = true;
+      gb.geo.setDrawRange(0, idxCount);
+      gb.mesh.visible = show;
+      gb.mat.opacity = gb.base * bandAmt * bandPulse * fadeK;
+    }
 
     // 门框**锐利内缘**：**克制且跟在光带之后**（v5 里主观感由光带承担；rim 只做"内缘"的锐利提示）
     //   ★v7：乘 `fadeK`（`doorAuxFadeK`）⇒ 与门框同步归零（不会晚于门框）。
@@ -6075,6 +6470,15 @@ export class Battle3DOverlay {
     // [v2 · N1] 开战即把镜头对准**我方主力舰队**（近景 ⇒ 有模型；远景只有光点 ⇒ v1 的失败根因）
     // [v4] 设置项关闭（`off`）⇒ 不聚焦（舰队照常显示、不暂停，见 entryFxOn / beginEntryPhase）
     if (ENTRY_AUTO_FOCUS && !this.entryFxOff) this.focusOnPlayerMainFleetForEntry();
+    // [v107 T1] **开场取景归位**：上面的 entry 聚焦只保"近景 + 大致方位"，
+    //   而它的方位取自**此刻**的 formFacing；`endEntryPhase` 会在解除暂停前重摆全舰队，
+    //   阵面轴可能随之变化 ⇒ 归位必须在**重摆之后**再落一次，且只落一次（幂等）。
+    //   这里只**武装**（记下待执行时刻），实际执行在 tick()（世界/舰队就绪后）与 entry_end。
+    this._openReframeDone = false;
+    this._openReframeTries = 0;
+    this._openReframeArmedAt = performance.now();
+    this._openReframeAt = this._openReframeArmedAt + OPEN_REFRAME_DELAY_MS;
+    this._openReframeDeadline = this._openReframeArmedAt + OPEN_REFRAME_DEADLINE_MS;
   }
 
   /** [v2 · N1/N2] 聚焦我方主力舰队到 **LOD 近景档**（保证 `fleetPx` 越过阈值 ⇒ 有实体模型）。 */
@@ -6403,7 +6807,15 @@ export class Battle3DOverlay {
 
     dotTmpColor.setHex(factionColor(this.getFac(v.u.factionId) || {}));
     const isFlag = this.flagshipSet.has(v.u);
+    // [v108] 双层光点：按 `key` 的**稳定哈希**挑出约 6% 读作"更大的舰"，加亮 + 放大。
+    //   ⚠ 必须用 key 而不是随机数 —— 随机会让同一个点逐帧跳大小（用户会读作"闪"）。
+    //   成本：一次 ≤32 字符的乘加，只有**落选写点**的舰才走到这里（已过 grow / alpha 两道门），可忽略。
+    //   与旗舰的区别：旗舰靠 `flagshipSet` 语义确定，这里只是"大舰"的视觉层次，不参与任何判定。
+    let dotKeyHash = 0;
+    for (let i = 0; i < v.key.length; i++) dotKeyHash = (dotKeyHash * 31 + v.key.charCodeAt(i)) | 0;
+    const isBigShip = !isFlag && ((dotKeyHash >>> 7) & 1023) < 62;   // 62/1024 ≈ 6.1%
     if (isFlag) dotTmpColor.lerp(WHITE, 0.45);
+    else if (isBigShip) dotTmpColor.lerp(WHITE, 0.18);
     const cr = Math.min(1, dotTmpColor.r * 1.15);
     const cg = Math.min(1, dotTmpColor.g * 1.15);
     const cb = Math.min(1, dotTmpColor.b * 1.15);
@@ -6413,7 +6825,8 @@ export class Battle3DOverlay {
     // 【旗舰方案】远景档：点径放大 FLAGSHIP_DOT_GAIN 倍并偏白
     //（1 舰 1 点体系里，大小 + 色偏是唯一可用的区分手段；不改点着色器、不加 draw call）
     const R = DOT_SPREAD_K * v.shipLen * (1 - grow);
-    const dotPxSize = Math.max(DOT_MIN_PX, v.px * DOT_SCALE) * (1 - grow) * (isFlag ? FLAGSHIP_DOT_GAIN : 1);
+    const dotPxSize = Math.max(DOT_MIN_PX, v.px * DOT_SCALE) * (1 - grow)
+      * (isFlag ? FLAGSHIP_DOT_GAIN : (isBigShip ? 1.55 : 1));
     // ⚠ 局部变量名用 `siny` 而非 `sy`：避免与 UnitVis.sy（该舰屏幕 y 像素）命名重叠而误读。
     const cy = Math.cos(v.yaw), siny = Math.sin(v.yaw);
     const { dotPos, dotCol, dotAlpha, dotPx } = this;
@@ -6743,24 +7156,27 @@ export class Battle3DOverlay {
 
   /** 侦察航班不是舰队：只显示方向/状态/生命，不生成姿态、分兵或命令按钮。 */
   private createScoutBillboard(_fleet: any, team: number): FleetBillboard {
+    /* [v108③] 侦察分队**不建常驻铭牌**（用户裁定："不用显示"）。
+       仍返回一个**未挂到 DOM 的占位对象**而不是 null：
+         · `updateBillboards` 的更新链路对所有舰队一视同仁（名字/相位/血条…），
+           返回 null 会让那条链路多一层空值分支，回归面变大；
+         · 未挂载元素（detached + display:none）不参与布局与绘制，
+           每帧几次 textContent/style 写入的成本可忽略（同屏至多 3~6 个侦察分队）。
+       侦察的"结果"不走铭牌：发现接触由 `recordKnownContact` → 接触符号层呈现。
+       ⚠ 想恢复显示：给 root 加上 'b3d-bb-tag' 的真实样式并 appendChild 到 bbLayer 即可。 */
     const root = document.createElement('div');
-    root.className = 'b3d-bb b3d-bb-scout';
-    root.style.pointerEvents = 'none';
+    root.className = 'b3d-bb-tag';
+    root.style.display = 'none';
     const nameEl = document.createElement('div');
-    nameEl.className = 'b3d-bb-name';
+    nameEl.className = 'b3d-bb-tag-name';
     root.appendChild(nameEl);
-    const hpBar = document.createElement('div');
-    hpBar.className = 'b3d-bb-bar';
-    const hpFill = document.createElement('div');
-    hpBar.appendChild(hpFill);
-    root.appendChild(hpBar);
-    const missionEl = document.createElement('div');
-    missionEl.className = 'b3d-bb-mission';
-    root.appendChild(missionEl);
-    this.bbLayer!.appendChild(root);
+    const phaseEl = document.createElement('div');
+    phaseEl.className = 'b3d-bb-tag-phase';
+    root.appendChild(phaseEl);
     return {
-      root, nameEl, hpFill, supplyFill: null as any, moraleFill: null, controlsEl: null,
-      stanceBtns: [], missionEl,
+      root, nameEl,
+      hpFill: null as any, supplyFill: null as any, moraleFill: null, controlsEl: null,
+      stanceBtns: [], missionEl: phaseEl,
       lastStance: '', lastIntent: '', lastTeam: team, lastHpPct: -1, lastSupply: -1, lastMorale: -1,
     };
   }
@@ -7808,7 +8224,13 @@ export class Battle3DOverlay {
     // [切片传送入场 · 时机修复] 开战即启动切片入场（BattleScene.startBattleAfterDeploy 推送）
     if (e.kind === 'entry_start') { this.startEntryFx(); return; }
     // [v2] 入场结束（BattleScene 解除暂停时推送）：**立刻收掉所有门**（幂等；防"暂停已解、门还在切"）
-    if (e.kind === 'entry_end') { this.finishAllEntryGates(); return; }
+    if (e.kind === 'entry_end') {
+      this.finishAllEntryGates();
+      // [v107 T1] 重摆发生在 `endEntryPhase` 里、本事件推送**之前** ⇒ 此刻的 formFacing 才是
+      //   玩家第一帧看到的阵面轴。归位尚未执行（延迟窗没到）就立即补一次；已执行则幂等跳过。
+      this.runOpeningReframe();
+      return;
+    }
     // [W3] 指针反馈事件（battle3dFx 总线 → 三接口）
     if (e.kind === 'pointer_chevron' && e.at) { this.showPointerChevron(e.at.x, e.at.y); return; }
     if (e.kind === 'pointer_target_lock' && e.at) { this.showTargetLock(e.at.x, e.at.y); return; }
@@ -8242,7 +8664,16 @@ export class Battle3DOverlay {
     // only fog-approved sprites, so hidden fleets cannot be targeted here.
     if (button === 2 && !(this.battleScene as any).deployPhase) {
       const targetFid = this.pickFleetAtScreen(e.clientX, e.clientY);
-      if (targetFid !== null && (this.battleScene as any).orderSelectedFleetAttackById?.(targetFid)) return;
+      /* [v108 修] **命中敌舰就绝不能下沉成移动令**。
+         旧实现：`if (targetFid !== null && orderSelectedFleetAttackById(...)) return;`
+         ⇒ 攻击令被拒（距离/带宽/校验失败）时返回 false，代码继续往下走到地面分支，
+           在敌舰脚下生成一条**移动令** ⇒ 玩家看到「先亮攻击指示、然后它转头跑向别处」
+           （用户实报）。语义上：点敌舰 = 我只想打它，打不成就**什么都不做**并给出拒绝回执，
+           绝不该变成"移动到它脚下"。 */
+      if (targetFid !== null) {
+        (this.battleScene as any).orderSelectedFleetAttackById?.(targetFid);
+        return;
+      }
     }
     // 指挥制：无六棱柱可拾取，射线对准 y=0 基准面 → 最近地块 → 中继给 BattleScene
     if (!this.spaceBuilt) return;
@@ -8385,6 +8816,85 @@ export class Battle3DOverlay {
       this.updateCommandNotices();
     }
 
+    // [v107 T1] 开场取景归位的**执行点**：必须在 syncShips 之后（舰队质心/朝向本帧才有效）
+    //   且必须在下面的增量跟随**之前**（归位的方位不能被同一帧的跟随再拧一次）。
+    //   幂等：`_openReframeDone` 置位后本块永不再进；`_openReframeAt < 0` = 无待办。
+    if (!this._openReframeDone && this._openReframeAt > 0 && performance.now() >= this._openReframeAt) {
+      this.runOpeningReframe();
+    }
+
+    // [v106] **镜头方位增量跟随注视舰队**（拖拽期完全放行；绝不与 OrbitControls 对拉）：
+    //   v105 曾做"逐帧硬锁方位角"，真机实报「一拖动旋转屏幕就疯狂自转」——
+    //   硬锁与用户拖拽每帧对拉，叠加 damping 即自转放大器。红队规则：**用户拖拽期间
+    //   镜头主权归用户**，任何自动镜头只许在非拖拽期按**增量**跟舰队转向（fa 变多少
+    //   跟多少，用户相对视角不变），且 start/end 事件给出 1.2s 离手宽限。
+    //   视角对齐（开场正三角）由入场取景/focusOnFleet 与「回到主舰队」按钮负责。
+    //   [v108] **默认关闭**（`?follow=1` 才开）：这段逻辑本身就会让镜头"自己动" ——
+    //     只要场上有舰队在转向，相机就每帧朝它的 formFacing 扭一点，且没有终止条件。
+    //     用户实报「没动镜头它自己动起来」即此。开关与限速常量见 CAM_FOLLOW_ENABLED_DEFAULT 处。
+    {
+      const nowMs = performance.now();
+      // [v108] 开关懒解析一次（构造期可能早于 location 可用）
+      if (this._camFollowEnabled === null) {
+        try {
+          this._camFollowEnabled = new URLSearchParams(window.location.search).get('follow') === '1';
+        } catch {
+          this._camFollowEnabled = CAM_FOLLOW_ENABLED_DEFAULT;
+        }
+      }
+      const followOn = this._camFollowEnabled === true;
+      const userBusy = nowMs < this._camUserDragUntil + (followOn ? FOLLOW_IDLE_MS : 0);
+      const t = this.controls.target;
+      let near: any = null; let nearD2 = Infinity;
+      const bsz: any = this.battleScene as any;
+      if (followOn && !userBusy) {
+        for (const f of (bsz?.globalFleets || [])) {
+          if (!f || (f.units || []).length < 4) continue;
+          let cx = 0, cy = 0, n = 0;
+          for (const u of (f.units || [])) { if (!u?.sprite) continue; cx += u.sprite.x; cy += u.sprite.y; n++; }
+          if (!n) continue;
+          cx /= n; cy /= n;
+          const dx = cx - t.x, dz = -cy - t.z;
+          const d2 = dx * dx + dz * dz;
+          if (d2 < nearD2) { nearD2 = d2; near = f; }
+        }
+      }
+      if (near && nearD2 < (this.hexR * 16) * (this.hexR * 16)) {
+        const fa = typeof near.formFacing === 'number' ? near.formFacing
+          : (typeof near.facingSmooth === 'number' ? near.facingSmooth
+            : (typeof near.facingAngle === 'number' ? near.facingAngle : null));
+        if (fa !== null && Number.isFinite(fa)) {
+          // [v107 T1 · AC-W4④] 注视舰队**换人**时必须重基线、不补转：
+          //   否则会拿旧舰队的 fa 当基准，把"换目标"误判成"舰队急转 π"，镜头自己转半圈。
+          if (this._camFollowFleet !== near) {
+            this._camFollowFleet = near;
+            this._camFollowFa = fa;
+          } else if (this._camFollowFa !== null) {
+            let d = fa - this._camFollowFa;
+            d = Math.atan2(Math.sin(d), Math.cos(d));   // 归一化到 (−π, π]
+            // [v108] 限速改为**秒基**：旧实现 `0.05 rad/帧` 在 60fps 下是 172°/s、
+            //   144fps 下 412°/s —— 帧率越高转得越快，这本身就是缺陷。
+            //   现在固定 0.35 rad/s（≈20°/s），且叠加 6.9° 死区：小抖动一律不动。
+            const maxStep = FOLLOW_MAX_RAD_PER_SEC * dt;
+            const step = Math.max(-maxStep, Math.min(maxStep, d));
+            // [v108] 死区：角差小于 6.9° 一律不动（旧实现 0.006° 就开始转，等于永不停止）
+            if (Math.abs(d) > FOLLOW_DEADZONE_RAD && Math.abs(step) > 1e-5) {
+              const ox = this.camera.position.x - t.x;
+              const oz = this.camera.position.z - t.z;
+              const c = Math.cos(step), s2 = Math.sin(step);
+              this.camera.position.x = t.x + ox * c - oz * s2;
+              this.camera.position.z = t.z + ox * s2 + oz * c;
+              this.camera.lookAt(t.x, t.y, t.z);
+              this._camFollowFa = this._camFollowFa + step;
+            }
+          }
+        }
+      } else {
+        this._camFollowFa = null;
+        this._camFollowFleet = null;
+      }
+    }
+
     this.controls.update();
     // 空气透视：跟随相机距离的相对雾。
     // near = 相机到注视点距离 + 1.05×地图跨度，far 再往外推 1.2×跨度。
@@ -8416,6 +8926,16 @@ export class Battle3DOverlay {
     this.lastRender.calls = this.renderer.info.render.calls;
     this.lastRender.points = this.renderer.info.render.points;
     this.lastRender.triangles = this.renderer.info.render.triangles;
+    // [v108] 泛光：主场景已渲进 this.rt，这里在它之后、CRT 合成之前插三趟半分辨率 pass。
+    //   ⚠ 必须放在 lastRender 快照**之后** —— 快照取的是主场景那一次 render 的读数，
+    //     泛光会再触发 3 次 render，`renderer.info` 每次 render 前 autoReset。
+    if (this.bloom) {
+      const on = !this.debugHide.has('bloom');
+      this.bloom.setEnabled(on);
+      if (on) this.bloom.render(this.renderer, this.rt.texture);
+      this.crtU.tBloom.value = this.bloom.texture;
+      this.crtU.uBloom.value = on ? 0.60 : 0.0;
+    }
     this.renderer.setRenderTarget(null);
     this.renderer.render(this.postScene, this.postCam);
     // [WS7] 帧时统计与自适应降档（opts.perfGovernor 打开时才生效）
@@ -8518,9 +9038,21 @@ export class Battle3DOverlay {
    *   · 是**正式 API**（不改任何渲染状态、纯设相机），UI 不依赖调试口；
    *   · 保留当前俯仰观感（用默认 elev/azim，与 27°/俯视 预设正交）。
    *
+   * [v107 T1] `opts` 扩了三个字段，**默认值 = 旧行为逐位不变**（「回到主舰队」按钮不受影响）：
+   *   · `elevAboveHorizon`：相机**高于地平线**的仰角（弧度）。⚠ 与内部 `elev` 是互补角：
+   *     `elev` 是"从竖直向下的极角"（`cameraY = cos(elev)×dist`），故 `elev = π/2 − elevAboveHorizon`。
+   *     这个命名换来的是"55°~65° 仰角"这类人话可以直接写进调用方，不必每次心算互补角。
+   *   · `rebaseFollow`：归位后把 `_camFollowFa` 重置到本队 formFacing ⇒ 下一帧增量跟随的
+   *     delta 恒为 0（不补转）。不重置时，若上一帧跟随的是**另一支**舰队，delta 会在
+   *     阈值内把刚摆好的方位再拧一下 —— 这正是"归位后又歪掉"的隐性来源之一。
+   *   · `releaseUserDrag`：把 `_camUserDragUntil` 清零（程序性归位不受拖拽抑制，见 T1 规格）。
+   *
    *   @returns 是否命中该舰队（true=已取景；false=舰队不存在/已无单位）
    */
-  focusOnFleet(fleetId: number, opts?: { dist?: number }): boolean {
+  focusOnFleet(
+    fleetId: number,
+    opts?: { dist?: number; elevAboveHorizon?: number; rebaseFollow?: boolean; releaseUserDrag?: boolean },
+  ): boolean {
     if (this.disposed) return false;
     const fleets: any[] = (this.battleScene as any).globalFleets || [];
     const target = fleets.find((f: any) => f && f.id === fleetId && (f.units || []).length > 0);
@@ -8534,8 +9066,22 @@ export class Battle3DOverlay {
     const wy = this.heightAtPx(cx, cy) + this.cruiseClearance + tierY;
     const t = new THREE.Vector3(cx, wy, -cy);
     const dist = opts?.dist ?? this.hexR * 12;
-    const elev = 0.55;   // 俯角（弧度）
-    const azim = 0.6;
+    // [v107] 极角（从竖直向下量）；默认 0.55 rad ⇒ 相机高于地平线 90°−31.5° = 58.5°（旧行为）
+    const elev = Number.isFinite(opts?.elevAboveHorizon as number)
+      ? Math.PI / 2 - (opts!.elevAboveHorizon as number)
+      : 0.55;
+    // [v103] **方位角沿目标舰队的阵型轴取景**（原硬编码 0.6 rad 是「斜带/彗尾」的真因）：
+    //   楔形沿 formFacing 轴展开，相机固定偏 0.6 rad ⇒ 投影把三角旋转 ~34°，
+    //   用户看到的是「前面一艘 + 中间空隙 + 后面一堆」的斜线（真机截图 + 散点审计双实锤，
+    //   而 sprite 逐舰偏差恒 0 —— 数据从未错过，是**取景角**让三角读不出来）。
+    //   ⇒ 相机置于舰队**后方**（沿 −forward）：底边水平在近端、顶点朝向敌方，
+    //   教科书「△」，且敌方位于顶点之外天然是"舰队压向敌军"的构图。
+    //   公式：world 前向 = (cos fa, −sin fa)；相机水平偏移 = −前向
+    //   ⇒ (sin azim, cos azim) = (−cos fa, sin fa) ⇒ azim = atan2(−cos fa, sin fa)。
+    const _ffa = typeof (target as any)?.formFacing === 'number' ? (target as any).formFacing
+      : (typeof (target as any)?.facingSmooth === 'number' ? (target as any).facingSmooth
+        : (typeof (target as any)?.facingAngle === 'number' ? (target as any).facingAngle : 0));
+    const azim = Math.atan2(-Math.cos(_ffa), Math.sin(_ffa));
     this.controls.target.copy(t);
     this.camera.position.set(
       t.x + Math.sin(elev) * Math.sin(azim) * dist,
@@ -8544,6 +9090,9 @@ export class Battle3DOverlay {
     );
     this.camera.lookAt(t);
     this.controls.update();
+    // [v107 T1] 归位后重新基线（见 opts 注释）；`releaseUserDrag` 只给程序性归位用。
+    if (opts?.rebaseFollow) this._camFollowFa = _ffa;
+    if (opts?.releaseUserDrag) this._camUserDragUntil = 0;
     return true;
   }
 
@@ -8696,6 +9245,136 @@ export class Battle3DOverlay {
   }
 
   /**
+   * [v107 T1] **开场取景归位**：把相机一次性摆到玩家主舰队的「阵型纵深轴后方 + 仰角 60°」，
+   * 距离按**该舰队足迹**自适应。这是"楔形读作三角"的充要条件，与"跟随"是两件事（见 `_openReframeAt`）。
+   *
+   * 距离怎么算（不用魔法数）：相机在纵深轴后方时，阵型的四条边界正好落在屏幕的两条轴上 ——
+   *   · 横向半跨 `halfLat` → 屏幕 X；· 纵深半跨 `halfDep` → 屏幕 Y（俯角 60° 还要 ×sin60° 收缩，
+   *     这里故意**不收缩**：宁可远一点，让整队都进画面）。
+   * 于是"刚好装下"所需距离 = max(halfLat/tan(fovX/2), halfDep/tan(fovY/2)) × 余量。
+   * 半跨一律相对**质心**取（不是相对包围盒）：controls.target 就是质心，两侧不对称，
+   * 用包围盒会把距离高估近一倍（楔形 89 舰：质心到队尾 174px，而包围盒整跨 234px）。
+   *
+   * 归位是**直接改相机**，不读也不看 `_camUserDragUntil` —— 程序性归位不受用户拖拽抑制
+   * （T1 规格）。归位完成立刻把主权交回用户（`releaseUserDrag` 清零），战斗中仍走增量跟随，
+   * 绝不逐帧硬锁（v105 的"疯狂自转"教训）。
+   *
+   * @returns 是否成功归位（世界未就绪 / 无玩家舰队 ⇒ false，调用方按帧重试）
+   */
+  private framePlayerMainFleetForOpening(): boolean {
+    if (this.disposed || !this.controls || !this.camera) return false;
+    // [T0'] **就绪判据**：世界（地形/舰体）还没建好时不对焦 —— 否则 `heightAtPx` 取不到地形高、
+    //   目标点会偏一整个地形高度，而"落点已成功"的标记会让我们不再重试。交给 `runOpeningReframe` 重试。
+    if (!this.spaceBuilt) return false;
+    const player = ((this.store as any).factions || []).find((f: any) => f.type === 'player');
+    if (!player) return false;
+    const fleets: any[] = (this.battleScene as any).globalFleets || [];
+    const main = fleets.find((f: any) => f && f.factionId === player.id && (f.units || []).length > 0);
+    if (!main) return false;
+
+    // 与逐帧循环 / focusOnFleet 同一表达式，否则归位轴与实际阵面轴差一个角度（历史坑）
+    const fa = typeof main.formFacing === 'number' ? main.formFacing
+      : (typeof main.facingSmooth === 'number' ? main.facingSmooth
+        : (typeof main.facingAngle === 'number' ? main.facingAngle : 0));
+    if (!Number.isFinite(fa)) return false;
+
+    // ── 足迹半跨（相对质心）────────────────────────────────────────────────
+    // 格位真源 = `_formOffsets`（BattleScene 摆位时写下）；缺失时用同一个 formOffsets 现算。
+    // ⚠ 直接用格位**主轴坐标**（gx=纵深、gy=横向）取半跨，不再旋转：旋转是刚体变换，
+    //   半跨在阵型自身坐标系里就能算，转了再投影只会引入一次浮点往返。
+    const unitsLen = (main.units || []).length;
+    const n0 = Math.max(Number(main.formationCount0) || 0, unitsLen, 1);
+    const offs = (main as any)._formOffsets ?? this.formOffsets(String(main.formation || 'wedge'), n0);
+    const sp = Number((main as any)._formSpacing) || formationSpacing(offs as any, this.hexR);
+    let halfLat = 0, halfDep = 0;
+    if (Array.isArray(offs) && offs.length) {
+      // 质心（格位口径）—— 与 sprite 质心同轴的近似；用它把"两侧不对称"折成两个单向最大值
+      let cgx = 0, cgy = 0;
+      for (const c of offs as any[]) { cgx += Number(c[0]) || 0; cgy += Number(c[1]) || 0; }
+      cgx /= offs.length; cgy /= offs.length;
+      for (const c of offs as any[]) {
+        const dx = (Number(c[0]) - cgx) * sp;   // 纵深（gx）
+        const dy = (Number(c[1]) - cgy) * sp;   // 横向（gy）
+        if (Math.abs(dx) > halfDep) halfDep = Math.abs(dx);
+        if (Math.abs(dy) > halfLat) halfLat = Math.abs(dy);
+      }
+    }
+    // 极端兜底（无格位表）：用实体散布；再不行就交给默认视距
+    if (!(halfLat > 0) && !(halfDep > 0)) {
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for (const u of (main.units || [])) {
+        if (!u?.sprite) continue;
+        x0 = Math.min(x0, u.sprite.x); x1 = Math.max(x1, u.sprite.x);
+        y0 = Math.min(y0, u.sprite.y); y1 = Math.max(y1, u.sprite.y);
+      }
+      if (Number.isFinite(x0)) { halfLat = Math.max(halfLat, (x1 - x0) / 2); halfDep = Math.max(halfDep, (y1 - y0) / 2); }
+    }
+
+    // ── 距离：刚好装下整队，再留 OPEN_REFRAME_FIT_K 的边 ────────────────────
+    const fovY = (Number(this.camera.fov) || 50) * Math.PI / 180;
+    const aspect = Math.max(0.2, Number(this.camera.aspect) || 1);
+    const tanV = Math.tan(fovY / 2);
+    const tanH = tanV * aspect;
+    const needV = halfDep / Math.max(1e-3, tanV) * OPEN_REFRAME_FIT_K;
+    const needH = halfLat / Math.max(1e-3, tanH) * OPEN_REFRAME_FIT_K;
+    const dist = Math.min(
+      this.hexR * OPEN_REFRAME_DIST_MAX_MUL,
+      Math.max(this.hexR * OPEN_REFRAME_DIST_MIN_MUL, Math.max(needV, needH)),
+    );
+
+    const ok = this.focusOnFleet(main.id, {
+      dist,
+      elevAboveHorizon: OPEN_REFRAME_ELEV_ABOVE_HORIZON,
+      rebaseFollow: true,
+      releaseUserDrag: true,
+    });
+    if (ok) {
+      this.lastStats.openingFrame = {
+        fid: main.id, units: unitsLen, halfLat: +halfLat.toFixed(1), halfDep: +halfDep.toFixed(1),
+        dist: +dist.toFixed(1), elevDeg: +(OPEN_REFRAME_ELEV_ABOVE_HORIZON * 180 / Math.PI).toFixed(1),
+        facingDeg: +(fa * 180 / Math.PI).toFixed(1),
+        // [T0'] 归位**落下时刻**（相对 `entry_start` 的毫秒数）：验收口径 ≤500ms
+        sinceEntryMs: this._openReframeArmedAt > 0 ? +(performance.now() - this._openReframeArmedAt).toFixed(0) : null,
+      };
+      // 归位后再核一次 LOD：目标点很高（地形/队间叠层）时首次可能仍落远景档。
+      this.updateLodTier();
+    }
+    return ok;
+  }
+
+  /**
+   * [v107 T1] 执行一次开场归位（**唯一幂等入口**：同一场战斗触发次数恒为 1）。
+   *
+   * 幂等三层：
+   *   ① `_openReframeDone` 置位后永不进入 ⇒ **重复调用前后相机位姿逐位不变**（AC-W4①）；
+   *   ② 未就绪（世界/舰队没建好）时按帧重试，封顶 `OPEN_REFRAME_MAX_TRIES`（≈6s）后放弃 —— 绝不循环硬设；
+   *   ③ **用户拖拽期内跳过（推迟，不强制）**：`_camUserDragUntil` 有效时直接改相机等于抢用户的镜头，
+   *      与「疯狂自转」是同一类事故。推迟到离手宽限结束后再落（仍是 1 次，只是晚一点）。
+   *      ⚠ 与"程序性归位不受拖拽抑制"的区别：那条针对的是**事件语义**（归位是开场事件，不该因为
+   *      用户在入场窗里转了一下镜头就作废），本条针对的是**执行时机**（不许在用户手上抢镜头）。
+   *      两者合起来的正确行为 = "等用户松手，然后归位一次"。
+   */
+  private runOpeningReframe(): void {
+    if (this._openReframeDone) return;
+    const now = performance.now();
+    if (now < this._camUserDragUntil) {
+      // 拖拽期：**只推迟、不消费"未就绪"重试预算**（拖拽可能持续很多帧），
+      //   但整体仍有绝对期限 —— 否则用户一直按着不放会让归位永久丢失。
+      this._openReframeAt = now < this._openReframeDeadline ? now + OPEN_REFRAME_RETRY_MS : -1;
+      return;
+    }
+    if (this.framePlayerMainFleetForOpening()) {
+      this._openReframeDone = true;
+      this._openReframeAt = -1;
+      return;
+    }
+    this._openReframeTries += 1;
+    this._openReframeAt = this._openReframeTries <= OPEN_REFRAME_MAX_TRIES && now < this._openReframeDeadline
+      ? now + OPEN_REFRAME_RETRY_MS
+      : -1;
+  }
+
+  /**
    * 视锥裁剪面跟随地图尺度。
    * far 固定 4000 是"开局近黑、只剩零散星点"的真因：hexRadius 由 BattleScene 按总舰数
    * 在 26/32/38/44/50 五档浮动（演习模式恒 ≥38），相机到地图远侧达 4,306（26）～
@@ -8720,6 +9399,21 @@ export class Battle3DOverlay {
     return Math.min(window.devicePixelRatio, this.dprCap) * this.dprScale;
   }
 
+  /** [v108] 星云底：一次性烘焙成 equirect 纹理挂到 `scene.background`。
+   *  · `?hide=nebula` 可关（关掉后保持原纯色背景 `#040810`）；
+   *  · 烘焙失败不抛：保持纯色背景，战场照常可玩；
+   *  · ⚠ 颜色写的是**线性空间**值（屏幕亮度 ≈ pow(线性, 1/2.2)），改数值别按屏幕观感直接填。 */
+  private initNebulaBackdrop(): void {
+    if (this.debugHide.has('nebula')) return;
+    if (this.nebulaTex) return;
+    const tex = createNebulaTexture(this.renderer, { width: 1024 });
+    if (!tex) return;
+    this.nebulaTex = tex;
+    this.scene.background = tex;
+    // 雾色跟随星云的暗部：否则远处地形会褪进一块"比背景更黑"的洞里，边界一眼可见
+    if (this.scene.fog instanceof THREE.Fog) this.scene.fog.color.setHex(0x0a1220);
+  }
+
   resize() {
     const w = this.container.clientWidth, h = this.container.clientHeight;
     if (w === 0 || h === 0) return;
@@ -8737,6 +9431,8 @@ export class Battle3DOverlay {
     // [v56 性能] 动态分辨率生效点：dprScale 变化后由 updatePerfGovernor 调本方法重建 RT 尺寸，
     //   renderer 像素比必须同帧同步，否则合成阶段出现拉伸/采样发散。
     this.rt.setSize(Math.max(1, Math.floor(w * dpr)), Math.max(1, Math.floor(h * dpr)));
+    // [v108] 泛光缓冲与主 RT 同源跟随（调档/窗口变化都要重建，否则采样到旧尺寸会拉伸）
+    this.bloom?.setSize(w, h, dpr);
     this.crtU.uRes.value.set(w, h);
   }
 
@@ -8820,6 +9516,11 @@ export class Battle3DOverlay {
       }
     });
     this.rt.dispose();
+    // [v108] 泛光链与星云纹理都是自建 GL 资源，必须在这里显式释放（否则每次进出战场泄漏 3 个 RT）
+    this.bloom?.dispose();
+    this.bloom = null;
+    this.nebulaTex?.dispose();
+    this.nebulaTex = null;
     this.renderer.dispose();
     // P0：WebGL context 必须显式释放。dispose() 只清 three 侧资源，不归还浏览器 context。
     // Phaser 本体已占 1 个，浏览器上限约 16，每次进出 3D 战斗泄漏 1 个 → 约 16 次后新 context

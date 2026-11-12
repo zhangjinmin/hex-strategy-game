@@ -58,15 +58,15 @@ const handleAction = (action: string) => {
 </script>
 
 <style scoped>
-.battle-summary { background: rgba(255,255,255,0.03); padding: 12px; border-radius: 8px; border: 1px solid var(--overlay-border); }
+.battle-summary { background: rgba(255,255,255,0.03); padding: 12px; border-radius: var(--ui-radius-lg); border: 1px solid var(--overlay-border); }
 .action-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 .action-btn {
   display: flex; flex-direction: column; align-items: center; gap: 6px;
   padding: 16px 10px; text-align: center; cursor: pointer;
   border: 1px solid var(--overlay-hover); transition: all 0.2s;
 }
-.action-btn:hover { border-color: var(--color-cyan); background: rgba(6,182,212,0.05); }
+.action-btn:hover { border-color: var(--color-cyan); background: rgba(var(--ui-accent-rgb), 0.05); }
 .action-icon svg { display: block; margin: 0 auto; color: var(--color-cyan); }
-.action-name { font-size: calc(15px * var(--font-scale)); font-weight: 900; letter-spacing: 2px; }
-.action-desc { font-size: calc(10px * var(--font-scale)); color: var(--color-text-disabled); line-height: 1.4; }
+.action-name { font-size: var(--fs-body); font-weight: 900; letter-spacing: 2px; }
+.action-desc { font-size: var(--fs-caption); color: var(--color-text-disabled); line-height: 1.4; }
 </style>

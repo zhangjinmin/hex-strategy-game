@@ -117,7 +117,7 @@
       <div class="chart-card">
         <div class="section-title">国库趋势（近30日）</div>
         <svg viewBox="0 0 200 60" class="trend-svg">
-          <polyline :points="trendPoints" fill="none" stroke="#3498db" stroke-width="1.5"/>
+          <polyline :points="trendPoints" fill="none" stroke="var(--ui-accent)" stroke-width="1.5"/>
         </svg>
         <div class="trend-labels">
           <span>30日前<br/><b>{{ formatGoldShort(trendFirst) }}</b></span>
@@ -287,7 +287,7 @@ const monthlyExtrasTotal = computed(() => monthlyExtras.value.reduce((s, e) => s
 
 const pctOf = (v: number, total: number) => total > 0 ? Math.round((v / total) * 100) : 0;
 
-const CHART_COLORS = ['#27ae60', '#f39c12', '#3498db', '#8e44ad', '#16a085'];
+const CHART_COLORS = ['#27ae60', '#f39c12', 'var(--ui-accent)', '#8e44ad', '#16a085'];
 const EXPENSE_COLORS = ['#e74c3c', '#f97316', '#f1c40f', '#e84393', '#8e44ad'];
 
 const incomeSegs = computed(() => {
@@ -399,14 +399,14 @@ const topPlanets = computed(() => {
   background: linear-gradient(90deg, transparent, var(--dmc-gold), transparent);
 }
 .hero-balance { flex: 1; min-width: 0; }
-.hero-label { font-size: calc(11px * var(--font-scale)); color: var(--dmc-text-secondary); letter-spacing: 2px; display: flex; align-items: center; gap: 6px; }
+.hero-label { font-size: var(--fs-label); color: var(--dmc-text-secondary); letter-spacing: 2px; display: flex; align-items: center; gap: 6px; }
 .hero-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dmc-gold); box-shadow: 0 0 8px var(--dmc-gold); }
 .hero-value {
-  font-family: var(--dmc-font-mono); font-size: calc(34px * var(--font-scale)); font-weight: 700; line-height: 1.1;
+  font-family: var(--dmc-font-mono); font-size: var(--fs-h1); font-weight: 700; line-height: 1.1;
   margin: 6px 0 2px; letter-spacing: -0.5px; font-variant-numeric: tabular-nums;
 }
-.hero-currency { font-size: calc(10px * var(--font-scale)); color: var(--dmc-text-muted); letter-spacing: 1px; }
-.hero-meta { margin-top: 8px; font-size: calc(12px * var(--font-scale)); color: var(--dmc-text-secondary); }
+.hero-currency { font-size: var(--fs-caption); color: var(--dmc-text-muted); letter-spacing: 1px; }
+.hero-meta { margin-top: 8px; font-size: var(--fs-label); color: var(--dmc-text-secondary); }
 .hero-meta b { font-weight: 600; }
 .dot-sep { margin: 0 6px; color: var(--dmc-text-muted); }
 
@@ -416,9 +416,9 @@ const topPlanets = computed(() => {
   background: var(--dmc-bg-input); border: var(--dmc-border);
   display: flex; flex-direction: column; justify-content: center;
 }
-.stat-label { font-size: calc(10px * var(--font-scale)); color: var(--dmc-text-muted); letter-spacing: 1px; }
-.stat-value { font-family: var(--dmc-font-mono); font-size: calc(20px * var(--font-scale)); font-weight: 700; margin: 4px 0 2px; font-variant-numeric: tabular-nums; }
-.stat-sub { font-size: calc(10px * var(--font-scale)); color: var(--dmc-text-muted); }
+.stat-label { font-size: var(--fs-caption); color: var(--dmc-text-muted); letter-spacing: 1px; }
+.stat-value { font-family: var(--dmc-font-mono); font-size: var(--fs-h2); font-weight: 700; margin: 4px 0 2px; font-variant-numeric: tabular-nums; }
+.stat-sub { font-size: var(--fs-caption); color: var(--dmc-text-muted); }
 
 /* ===== 三方国库 ===== */
 .eco-treasuries { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px; }
@@ -430,54 +430,54 @@ const topPlanets = computed(() => {
 .treasury-card.empire { border-left: 2px solid var(--dmc-empire-bright); }
 .treasury-card.fezzan { border-left: 2px solid var(--dmc-gold); }
 .tc-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-.tc-flag { font-size: calc(10px * var(--font-scale)); font-weight: 700; padding: 1px 6px; border-radius: 3px; letter-spacing: 1px; }
+.tc-flag { font-size: var(--fs-caption); font-weight: 700; padding: 1px 6px; border-radius: var(--ui-radius); letter-spacing: 1px; }
 .alliance .tc-flag { background: var(--dmc-alliance-dim); color: var(--dmc-alliance-bright); }
 .empire .tc-flag { background: var(--dmc-empire-dim); color: var(--dmc-empire-bright); }
 .fezzan .tc-flag { background: var(--dmc-gold-dim); color: var(--dmc-gold); }
-.tc-name { font-size: calc(11px * var(--font-scale)); color: var(--dmc-text-secondary); }
-.tc-value { font-family: var(--dmc-font-mono); font-size: calc(16px * var(--font-scale)); font-weight: 700; font-variant-numeric: tabular-nums; }
-.tc-foot { font-size: calc(10px * var(--font-scale)); color: var(--dmc-text-muted); margin-top: 2px; }
+.tc-name { font-size: var(--fs-label); color: var(--dmc-text-secondary); }
+.tc-value { font-family: var(--dmc-font-mono); font-size: var(--fs-body); font-weight: 700; font-variant-numeric: tabular-nums; }
+.tc-foot { font-size: var(--fs-caption); color: var(--dmc-text-muted); margin-top: 2px; }
 .tc-foot.is-player { color: var(--dmc-gold); font-weight: 600; }
 
 /* ===== 预警 ===== */
-.eco-warning { padding: 8px 12px; border-radius: var(--radius-sm); margin-bottom: 12px; font-size: calc(12px * var(--font-scale)); background: var(--dmc-gold-dim); color: var(--dmc-gold); border: 1px solid rgba(201,169,110,0.3); }
+.eco-warning { padding: 8px 12px; border-radius: var(--radius-sm); margin-bottom: 12px; font-size: var(--fs-label); background: var(--dmc-gold-dim); color: var(--dmc-gold); border: 1px solid rgba(201,169,110,0.3); }
 .eco-warning.critical { background: var(--dmc-empire-dim); color: var(--dmc-empire-bright); border-color: rgba(231,76,60,0.3); }
 
 /* ===== 图表 ===== */
 .chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-bottom: 14px; min-width: 0; /* 修复：grid 子项缺横向收缩项，三张图表卡在窄容器被撑破、右侧裁切 */ }
 .chart-card { border: var(--dmc-border); border-radius: var(--radius-md); padding: 12px; background: var(--dmc-bg-panel); }
-.section-title { font-size: calc(11px * var(--font-scale)); font-weight: 700; color: var(--dmc-text-secondary); margin-bottom: 8px; letter-spacing: 1px; }
+.section-title { font-size: var(--fs-label); font-weight: 700; color: var(--dmc-text-secondary); margin-bottom: 8px; letter-spacing: 1px; }
 
 .donut-wrap { position: relative; width: 120px; height: 120px; margin: 0 auto 8px; }
 .donut { width: 100%; height: 100%; }
 .donut-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
-.dc-label { font-size: calc(9px * var(--font-scale)); color: var(--dmc-text-muted); }
-.dc-val { font-size: calc(13px * var(--font-scale)); font-weight: 700; font-family: var(--dmc-font-mono); }
-.legend-row { display: flex; align-items: center; gap: 6px; font-size: calc(11px * var(--font-scale)); padding: 2px 0; color: var(--dmc-text-secondary); }
-.legend-dot { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+.dc-label { font-size: var(--fs-caption); color: var(--dmc-text-muted); }
+.dc-val { font-size: var(--fs-label); font-weight: 700; font-family: var(--dmc-font-mono); }
+.legend-row { display: flex; align-items: center; gap: 6px; font-size: var(--fs-label); padding: 2px 0; color: var(--dmc-text-secondary); }
+.legend-dot { width: 8px; height: 8px; border-radius: var(--ui-radius); flex-shrink: 0; }
 .legend-label { flex: 1; }
-.legend-val { font-family: var(--dmc-font-mono); font-size: calc(10px * var(--font-scale)); color: var(--dmc-text-secondary); }
-.legend-pct { color: var(--dmc-text-muted); font-size: calc(10px * var(--font-scale)); width: 30px; text-align: right; }
+.legend-val { font-family: var(--dmc-font-mono); font-size: var(--fs-caption); color: var(--dmc-text-secondary); }
+.legend-pct { color: var(--dmc-text-muted); font-size: var(--fs-caption); width: 30px; text-align: right; }
 
-.bar-row { display: flex; align-items: center; gap: 6px; font-size: calc(11px * var(--font-scale)); padding: 4px 0; color: var(--dmc-text-secondary); }
+.bar-row { display: flex; align-items: center; gap: 6px; font-size: var(--fs-label); padding: 4px 0; color: var(--dmc-text-secondary); }
 .bar-label { width: 60px; flex-shrink: 0; }
-.bar-track { flex: 1; height: 10px; background: rgba(148,163,184,0.1); border-radius: 3px; overflow: hidden; }
-.bar-fill { height: 100%; border-radius: 3px; }
-.bar-val { width: 70px; text-align: right; font-size: calc(10px * var(--font-scale)); color: var(--dmc-text-secondary); font-family: var(--dmc-font-mono); }
-.bar-foot { font-size: calc(10px * var(--font-scale)); color: var(--dmc-text-muted); text-align: center; padding: 8px; }
+.bar-track { flex: 1; height: 10px; background: rgba(148,163,184,0.1); border-radius: var(--ui-radius); overflow: hidden; }
+.bar-fill { height: 100%; border-radius: var(--ui-radius); }
+.bar-val { width: 70px; text-align: right; font-size: var(--fs-caption); color: var(--dmc-text-secondary); font-family: var(--dmc-font-mono); }
+.bar-foot { font-size: var(--fs-caption); color: var(--dmc-text-muted); text-align: center; padding: 8px; }
 
 .trend-svg { width: 100%; height: 60px; }
-.trend-labels { display: flex; justify-content: space-between; font-size: calc(9px * var(--font-scale)); color: var(--dmc-text-muted); }
-.trend-labels b { font-size: calc(11px * var(--font-scale)); color: var(--dmc-text-primary); font-family: var(--dmc-font-mono); }
+.trend-labels { display: flex; justify-content: space-between; font-size: var(--fs-caption); color: var(--dmc-text-muted); }
+.trend-labels b { font-size: var(--fs-label); color: var(--dmc-text-primary); font-family: var(--dmc-font-mono); }
 
 /* ===== 明细 ===== */
 .eco-details { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
 .eco-section { min-width: 0; } /* 修复：grid 子项缺横向收缩项，三栏在窄容器被撑破 */
-.detail-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: calc(12px * var(--font-scale)); color: var(--dmc-text-secondary); }
-.pct { font-size: calc(10px * var(--font-scale)); color: var(--dmc-text-muted); font-style: normal; margin-left: 4px; }
+.detail-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: var(--fs-label); color: var(--dmc-text-secondary); }
+.pct { font-size: var(--fs-caption); color: var(--dmc-text-muted); font-style: normal; margin-left: 4px; }
 .month-total { border-top: 1px dashed var(--dmc-border); margin-top: 4px; padding-top: 6px; font-weight: 600; }
 .month-label { color: var(--dmc-text-primary); }
-.month-extras { font-size: calc(11px * var(--font-scale)); }
+.month-extras { font-size: var(--fs-label); }
 
 /* ===== 底部三栏：费沙 / 政策 / 星球 ===== */
 .eco-bottom { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 14px; min-width: 0; }
@@ -495,30 +495,30 @@ const topPlanets = computed(() => {
 .fezzan-board .neo-btn { margin-top: 8px; }
 
 /* ===== 政策 ===== */
-.eco-slider { display: flex; align-items: center; gap: 10px; font-size: calc(12px * var(--font-scale)); margin-bottom: 8px; }
+.eco-slider { display: flex; align-items: center; gap: 10px; font-size: var(--fs-label); margin-bottom: 8px; }
 .slider { flex: 1; min-width: 0; accent-color: var(--dmc-info); }
 .slider-label { color: var(--dmc-text-secondary); white-space: nowrap; }
 .tax-val { font-family: var(--dmc-font-mono); font-weight: 700; color: var(--dmc-gold); min-width: 32px; text-align: right; }
-.eco-slider-hint { display: flex; justify-content: space-between; font-size: calc(9px * var(--font-scale)); color: var(--dmc-text-muted); padding: 0 2px; margin-top: 2px; }
-.tax-preview { margin-top: 8px; font-size: calc(12px * var(--font-scale)); color: var(--dmc-text-secondary); display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.eco-slider-hint { display: flex; justify-content: space-between; font-size: var(--fs-caption); color: var(--dmc-text-muted); padding: 0 2px; margin-top: 2px; }
+.tax-preview { margin-top: 8px; font-size: var(--fs-label); color: var(--dmc-text-secondary); display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
 .tax-preview b { font-family: var(--dmc-font-mono); font-variant-numeric: tabular-nums; }
-.eco-toggle { margin-top: 10px; font-size: calc(12px * var(--font-scale)); }
+.eco-toggle { margin-top: 10px; font-size: var(--fs-label); }
 .eco-toggle label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
 
 /* ===== 星球 TOP5（横向条形图） ===== */
 .planet-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .planet-bar:last-child { margin-bottom: 0; }
 .planet-rank {
-  width: 18px; height: 18px; line-height: 18px; text-align: center; border-radius: 4px;
-  font-size: calc(10px * var(--font-scale)); font-weight: 700; background: var(--dmc-bg-input); color: var(--dmc-gold); flex-shrink: 0;
+  width: 18px; height: 18px; line-height: 18px; text-align: center; border-radius: var(--ui-radius);
+  font-size: var(--fs-caption); font-weight: 700; background: var(--dmc-bg-input); color: var(--dmc-gold); flex-shrink: 0;
 }
 .planet-bar-body { flex: 1; min-width: 0; }
-.planet-bar-top { display: flex; align-items: baseline; gap: 6px; font-size: calc(11px * var(--font-scale)); margin-bottom: 3px; }
+.planet-bar-top { display: flex; align-items: baseline; gap: 6px; font-size: var(--fs-label); margin-bottom: 3px; }
 .planet-name { color: var(--dmc-text-primary); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.planet-type { font-size: calc(9px * var(--font-scale)); color: var(--dmc-text-muted); padding: 0 5px; background: var(--dmc-bg-input); border-radius: 3px; flex-shrink: 0; }
-.planet-economy { margin-left: auto; color: var(--dmc-info); font-weight: 600; font-family: var(--dmc-font-mono); font-size: calc(10px * var(--font-scale)); }
-.planet-bar-track { height: 6px; background: rgba(148,163,184,0.1); border-radius: 3px; overflow: hidden; }
-.planet-bar-fill { height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--dmc-info), #22d3ee); transition: width 0.3s; }
+.planet-type { font-size: var(--fs-caption); color: var(--dmc-text-muted); padding: 0 5px; background: var(--dmc-bg-input); border-radius: var(--ui-radius); flex-shrink: 0; }
+.planet-economy { margin-left: auto; color: var(--dmc-info); font-weight: 600; font-family: var(--dmc-font-mono); font-size: var(--fs-caption); }
+.planet-bar-track { height: 6px; background: rgba(148,163,184,0.1); border-radius: var(--ui-radius); overflow: hidden; }
+.planet-bar-fill { height: 100%; border-radius: var(--ui-radius); background: linear-gradient(90deg, var(--dmc-info), var(--ui-accent)); transition: width 0.3s; }
 
 .text-green { color: var(--dmc-success); }
 .text-red { color: var(--dmc-empire-bright); }

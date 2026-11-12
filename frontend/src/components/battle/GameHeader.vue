@@ -10,8 +10,8 @@
           <!-- [v57] 面板信息密度升级：舰况/士气/补给三细条 + 编制行；「军费」已随经济项目移除 -->
           <div class="stat-row" v-if="f.active">
             <span class="stat-k">舰况</span>
-            <div class="hp-bar-container"><div class="hp-bar-fill" :class="f.team === 1 ? 'bg-cyan' : 'bg-red'" :style="{ width: clampPct(f.hp) + '%' }"></div></div>
-            <span class="stat-v">{{ Math.round(clampPct(f.hp)) }}</span>
+            <div class="hp-bar-container"><div class="hp-bar-fill" :class="f.team === 1 ? 'bg-cyan' : 'bg-red'" :style="{ width: hpPct(f) + '%' }"></div></div>
+            <span class="stat-v">{{ Math.round(hpPct(f)) }}</span>
           </div>
           <div class="stat-row" v-if="f.active">
             <span class="stat-k">士气</span>
@@ -24,7 +24,7 @@
             <span class="stat-v">{{ Math.round(clampPct(f.supply)) }}</span>
           </div>
           <div class="mini-gold" v-if="f.active">
-            编制 <span class="text-cyan">{{ f.unitCount }}/{{ getShipLimit(f.rank) }}</span>
+            编制 <span class="text-cyan">{{ f.unitCount }}<template v-if="getShipLimit(f.rank) > 0">/{{ getShipLimit(f.rank) }}</template></span>
           </div>
           <!-- [W2.3] 阵型（中文名）+ 编成摘要（P2 成果可见） -->
           <div class="mini-gold" v-if="f.active">阵型 <span class="text-cyan">{{ formationCn(f) || '—' }}</span></div>
@@ -88,62 +88,78 @@ const getShipLimit = (rank: any) => {
 /** [v57] 面板数值防溢出：镜像字段可能 undefined（尚未同步）或超界，统一夹到 0-100 */
 const clampPct = (v: any) => Math.max(0, Math.min(100, Number(v) || 0));
 
+/** [v108 修] 舰况百分比。
+ *  病灶：`BattleScene` 每帧写的是 **`f.hp = Σu.hp`（绝对耐久和）** 与 `f.maxHp = Σu.maxHp`
+ *    （见 `store.factions.forEach` 那段镜像），而本面板直接 `clampPct(f.hp)` 当百分比用
+ *    ⇒ 绝对值 12,000 被夹到 100 ⇒ **打到快灭团，舰况条仍是满的**（用户实报）。
+ *  正确口径：有 maxHp 时取比值；没有时（尚未镜像/旧存档）退回按百分比解释。 */
+const hpPct = (f: any): number => {
+  const max = Number(f?.maxHp) || 0;
+  const cur = Number(f?.hp) || 0;
+  if (max <= 0) return clampPct(cur);
+  const ratio = (cur / max) * 100;
+  /* 两种口径都可能出现在镜像里：
+       · cur/max 都是绝对值（正常路径）⇒ ratio 就是百分比；
+       · cur 已是百分比、而 max 仍是绝对值（历史写入）⇒ ratio 会畸小（<1）。
+     判据取"ratio<1 且 cur 落在 0..100" ⇒ 按百分比解释。
+     ⚠ 这是**兜底**，不是根治：真正的单位归属由 `[W3.7 舰队快照]` 里新加的
+       `factionHp=/fleetΣ=` 两个读数确认（见 BattleScene.collectFleetSnapshot）。 */
+  if (ratio < 1 && cur > 0 && cur <= 100) return clampPct(cur);
+  return clampPct(ratio);
+};
+
 const handleImgError = (e: Event) => {
   (e.target as HTMLImageElement).src = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="40"><rect width="32" height="40" fill="%231e293b"/></svg>';
 };
 </script>
 
 <style scoped>
-/* 完全独立锚定：faction-infos 绝对定位贴左、GameControls 绝对定位贴右，
-   二者不在同一 flex 流里，舰队卡再多/换行也不会把右侧按钮推出视口（实报 bug 根治） */
-.ui-header { position: absolute; top: 15px; left: 0; right: 0; z-index: 10; pointer-events: none; }
-/* 舰队卡贴左，与右侧控制区**互不挤压**（两者都是绝对定位，不在同一 flex 流里）。
-   横向预留右侧控制区宽度：实测 GameControls 在演习/战役两种布局下都不到 560px，
-   旧预留更小时卡片排满会钻到按钮底下（1920 下实测重叠 84~199px）。
-   ⚠ 这个数是**预留宽度**，不是"卡片区可用宽度"——后者由视口决定，见下一条。 */
-/* [v99] **不再出现滚动条**（用户实报：窗口缩小后左上状态板冒出纵向滚动条）。
-   旧实现是「固定 max-height + overflow-y:auto」—— 只要窗口变窄把卡片挤到第三行，
-   高度就溢出，于是长出滚动条；在战斗界面上滚动条既丑又挡信息。
-   现改为「不裁切、不滚动」：容器高度随内容自然增长，宽度到极限就换行，行多就往下铺。
-   同时把卡片本身做成**可收缩**的（`.info-content` 用 clamp 随视口变窄），
-   同样的宽度能多放一张卡 ⇒ 换行更晚、占的高度更少。 */
-.faction-infos { position: absolute; top: 0; left: 15px; display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; pointer-events: auto; max-width: calc(100% - 560px); overflow: visible; }
-/* 控制区贴右：绝对锚定，不受左侧内容宽度影响 */
+/* 两侧独立绝对锚定，卡片再多也不会把右侧控制区推出视口（沿用既有修复） */
+.ui-header { position: absolute; top: var(--ui-3); left: 0; right: 0; z-index: 10; pointer-events: none; }
+/* 右侧控制区预留宽度随按钮放大同步扩到 640px；卡片区不裁切、不滚动 */
+.faction-infos {
+  position: absolute; top: 0; left: var(--ui-3);
+  display: flex; align-items: flex-start; gap: var(--ui-2); flex-wrap: wrap;
+  pointer-events: auto; max-width: calc(100% - 640px); overflow: visible;
+}
 .ui-header > :deep(.game-controls),
-.game-controls { position: absolute; top: 0; right: 15px; flex: 0 0 auto; }
-.side-info { display: flex; gap: 8px; padding: 5px 6px; align-items: center; background: var(--overlay-surface); backdrop-filter: blur(4px); transition: opacity 0.3s; }
+.game-controls { position: absolute; top: 0; right: var(--ui-3); flex: 0 0 auto; }
+.side-info {
+  display: flex; gap: var(--ui-2); padding: var(--ui-1) var(--ui-2); align-items: center;
+  background: var(--ui-panel); border: var(--ui-frame); border-radius: var(--ui-radius);
+  box-shadow: var(--ui-shadow-raised); backdrop-filter: blur(8px);
+  transition: opacity var(--ui-dur-normal);
+}
 .side-info.inactive { opacity: 0.4; filter: grayscale(1); }
-.mini-portrait { width: 32px; height: 44px; object-fit: cover; border-radius: 4px; border: 1px solid rgba(255,255,255,0.2); flex-shrink: 0; }
-/* [v99] 卡片内容宽度随视口收缩（120~168px）：窗口变窄时**先压卡片**再换行，
-   避免"一缩窗就多出一行、把面板撑高"。下限 120px 是「舰况/士气/补给」+ 进度条 + 数值仍可读的最小宽度。 */
-.info-content { display: flex; flex-direction: column; width: clamp(120px, 9.5vw, 168px); }
-.faction-name { font-size: calc(14px * var(--font-scale)); font-weight: 900; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* [v57] 三细条行：标签 + 条 + 数值，扫读式提高面板信息密度 */
-.stat-row { display: flex; align-items: center; gap: 4px; margin-bottom: 2px; }
-/* [v66] 标签/数值用 min-width + nowrap 而不是固定 width：
-   字号放大后（尤其 fontScale×uiScale 双高时）「舰况 / 士气 / 补给」会被挤成竖排两行、把整张卡撑高。
-   改成不换行 + 最小宽度，宽度不够时挤占中间的条，而不是折行。 */
-.stat-k { min-width: 26px; flex-shrink: 0; white-space: nowrap; font-size: calc(11px * var(--font-scale)); color: var(--color-text-secondary); font-weight: 800; letter-spacing: 1px; }
-.stat-v { min-width: 24px; flex-shrink: 0; white-space: nowrap; text-align: right; font-size: calc(11px * var(--font-scale)); color: var(--color-text-secondary); font-family: var(--font-family); font-weight: 800; }
-.hp-bar-container { flex: 1; min-width: 0; height: 4px; background: var(--color-border); border-radius: 2px; overflow: hidden; }
-.hp-bar-fill { height: 100%; transition: width 0.3s; }
-.bg-cyan { background: var(--color-cyan); }
-.bg-red { background: var(--color-empire); }
-.bg-gold { background: var(--color-warning, #f59e0b); }
-.bg-green { background: #22c55e; }
-.mini-gold { color: var(--color-text-secondary); font-size: calc(13px * var(--font-scale)); font-family: var(--font-family); font-weight: 800; }
-/* [W2.3] 编成摘要（较小，单行省略） */
-.mini-comp { color: var(--color-text-disabled); font-size: calc(11px * var(--font-scale)); font-family: var(--font-family); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.text-cyan { color: var(--color-cyan); }
-/* [v58] .battle-dialog-overlay 立绘对话框样式已随模板删除（banter 改走旗舰浮动气泡） */
+.mini-portrait {
+  width: 48px; height: 64px; object-fit: cover; border-radius: 0;
+  border: 1px solid var(--ui-line-strong); flex-shrink: 0;
+}
+/* 卡片内容宽度下限从 120 提到 168：字号上阶梯后仍能单行显示「舰况/士气/补给」 */
+.info-content { display: flex; flex-direction: column; width: clamp(168px, 12vw, 232px); }
+.faction-name {
+  font-family: var(--ui-display-font); font-size: var(--fs-body); font-weight: 800;
+  margin-bottom: var(--ui-1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  letter-spacing: 0.04em;
+}
+.stat-row { display: flex; align-items: center; gap: var(--ui-1); margin-bottom: 3px; }
+.stat-k { min-width: 36px; flex-shrink: 0; white-space: nowrap; font-size: var(--fs-caption); color: var(--ui-ink-2); font-weight: 800; }
+.stat-v { min-width: 32px; flex-shrink: 0; white-space: nowrap; text-align: right; font-size: var(--fs-caption); color: var(--ui-ink-2); font-weight: 800; font-variant-numeric: tabular-nums; }
+.hp-bar-container { flex: 1; min-width: 0; height: 8px; background: var(--ui-surface-3); border: 1px solid var(--ui-line); overflow: hidden; }
+.hp-bar-fill { height: 100%; transition: width var(--ui-dur-normal) var(--ui-ease); }
+.bg-cyan { background: var(--ui-accent); }
+.bg-red { background: var(--side-foe); }
+.bg-gold { background: var(--dmc-warning); }
+.bg-green { background: var(--dmc-success); }
+.mini-gold { color: var(--ui-ink-2); font-size: var(--fs-caption); font-weight: 800; font-variant-numeric: tabular-nums; }
+.mini-comp { color: var(--ui-ink-3); font-size: var(--fs-caption); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.text-cyan { color: var(--ui-accent); }
 
 @media (max-width: 768px) {
   .faction-infos { max-width: calc(100% - 30px); }  .side-info { width: calc(50% - 5px); }
   .info-content { width: 100%; }
-  /* 回归修复：flex-direction:column 在独立锚定后已失效（两者都是 absolute，不在同一流里），
-     旧版靠它把控制区挤到卡片下方。窄屏必须显式下移，否则控制区与卡片同排重叠整条宽度。
-     142px = 卡片区上限 132px + 10px 间距。 */
+  /* 卡片变高后控制区下移量同步增大，避免窄屏同排重叠 */
   .ui-header > :deep(.game-controls),
-  .game-controls { top: 142px; }
+  .game-controls { top: 186px; }
 }
 </style>

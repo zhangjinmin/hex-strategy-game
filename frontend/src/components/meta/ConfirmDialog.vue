@@ -91,7 +91,7 @@ const formatNum = (n: number): string => {
 .confirm-card {
   background: var(--neo-body);
   border: 1px solid var(--overlay-hover);
-  border-radius: 12px;
+  border-radius: var(--ui-radius-lg);
   width: 360px;
   max-width: 90vw;
   display: flex;
@@ -114,7 +114,7 @@ const formatNum = (n: number): string => {
 }
 
 .confirm-title {
-  font-size: calc(16px * var(--font-scale));
+  font-size: var(--fs-body);
   font-weight: 900;
   color: var(--color-text-primary);
   letter-spacing: 0.05em;
@@ -122,7 +122,7 @@ const formatNum = (n: number): string => {
 
 .abort-btn {
   color: var(--color-empire);
-  font-size: calc(14px * var(--font-scale));
+  font-size: var(--fs-body);
   font-weight: 800;
   padding: 4px 8px;
   line-height: 1;
@@ -133,7 +133,7 @@ const formatNum = (n: number): string => {
 }
 
 .confirm-message {
-  font-size: calc(13px * var(--font-scale));
+  font-size: var(--fs-label);
   color: var(--color-text-secondary);
   line-height: 1.5;
   margin: 0;
@@ -146,11 +146,11 @@ const formatNum = (n: number): string => {
   padding: 12px 20px;
   margin: 0 16px 8px;
   background: var(--color-overlay-pressed);
-  border-radius: 8px;
+  border-radius: var(--ui-radius-lg);
 }
 
 .cost-label {
-  font-size: calc(12px * var(--font-scale));
+  font-size: var(--fs-label);
   color: var(--color-text-disabled);
   font-weight: 700;
   text-transform: uppercase;
@@ -158,7 +158,7 @@ const formatNum = (n: number): string => {
 }
 
 .cost-value {
-  font-size: calc(20px * var(--font-scale));
+  font-size: var(--fs-h2);
   font-weight: 900;
   font-family: var(--font-family);
   color: var(--color-warning);

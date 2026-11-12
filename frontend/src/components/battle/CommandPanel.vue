@@ -175,80 +175,74 @@ onUnmounted(() => window.removeEventListener('keydown', onKey));
 </script>
 
 <style scoped>
-/* [2a] 非模态：overlay 不再全屏拦截（07 §5.1「点击战场是选择操作，不是取消」）。
-   pointer-events:none ⇒ 点击穿透到 3D/2D 战场用于选目标；仅面板本体可点。
-   右侧停靠（03-command-flow-3d.md §2：宽 320px，不遮挡战场中心），z-index 保持盖住 3D canvas。 */
+/* 非模态：点击战场是选择操作而非取消；仅面板本体可点（沿用既有约定） */
 .command-panel-overlay {
-  position: fixed; inset: 0; z-index: 1200;
-  pointer-events: none;
+  position: fixed; inset: 0; z-index: 1200; pointer-events: none;
   display: flex; align-items: flex-start; justify-content: flex-end;
-  padding: 88px 16px 16px 0;
+  padding: 96px var(--ui-3) var(--ui-3) 0;
 }
 .command-panel {
   pointer-events: auto;
-  width: 320px; max-height: calc(100vh - 120px); overflow-y: auto;
-  padding: 0;
-  background: rgba(10,20,40,0.95); border: 1px solid rgba(6,182,212,0.3);
-  border-radius: 8px; display: flex; flex-direction: column;
+  width: 380px; max-height: calc(100vh - 128px); overflow-y: auto;
+  padding: 0; background: var(--ui-panel);
+  border: var(--ui-frame-strong); border-radius: var(--ui-radius);
+  box-shadow: var(--ui-shadow-panel); backdrop-filter: blur(10px);
+  display: flex; flex-direction: column;
 }
 .cp-header {
-  padding: 14px 16px 10px;
-  border-bottom: 1px solid rgba(6,182,212,0.15);
-  display: flex; align-items: center; gap: 10px;
+  padding: var(--ui-3); border-bottom: var(--ui-frame);
+  display: flex; align-items: center; gap: var(--ui-2);
 }
-.cp-title { font-size: calc(15px * var(--font-scale)); font-weight: 800; color: var(--color-gold, #f59e0b); }
-.cp-bar-wrapper { flex: 1; display: flex; align-items: center; gap: 6px; }
-.cp-bar { flex: 1; height: 6px; background: rgba(255,255,255,0.1); border-radius: 3px; overflow: hidden; }
-.cp-fill { height: 100%; background: var(--color-cyan, #06b6d4); border-radius: 3px; transition: width 0.3s; }
-.cp-text { font-size: calc(11px * var(--font-scale)); font-weight: 700; color: var(--color-text-secondary); white-space: nowrap; }
-.cp-close { background: none; border: none; color: var(--color-text-disabled); font-size: calc(16px * var(--font-scale)); cursor: pointer; }
+.cp-title { font-family: var(--ui-display-font); font-size: var(--fs-h3); font-weight: 800; letter-spacing: 0.1em; color: var(--dmc-gold); }
+.cp-bar-wrapper { flex: 1; display: flex; align-items: center; gap: var(--ui-1); }
+.cp-bar { flex: 1; height: 8px; background: var(--ui-surface-3); border: 1px solid var(--ui-line); overflow: hidden; }
+.cp-fill { height: 100%; background: var(--ui-accent); transition: width var(--ui-dur-normal) var(--ui-ease); }
+.cp-text { font-size: var(--fs-caption); font-weight: 800; color: var(--ui-ink-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cp-close { background: none; border: none; color: var(--ui-ink-3); font-size: var(--fs-h3); cursor: pointer; }
+.cp-close:hover { color: var(--ui-ink); }
 
 .staff-briefing {
-  margin: 8px 16px 0; padding: 6px 10px;
-  font-size: calc(11px * var(--font-scale)); font-weight: 600; color: var(--color-gold, #f59e0b);
-  background: rgba(245,158,11,0.06); border: 1px solid rgba(245,158,11,0.2);
-  border-radius: 4px; line-height: 1.5;
+  margin: var(--ui-2) var(--ui-3) 0; padding: var(--ui-1) var(--ui-2);
+  font-size: var(--fs-caption); font-weight: 700; color: var(--dmc-warning);
+  background: rgba(245, 158, 11, 0.07); border: 1px solid rgba(245, 158, 11, 0.24);
+  border-radius: var(--ui-radius); line-height: 1.55;
 }
-
 .bw-briefing {
-  margin: 6px 16px 0; padding: 5px 10px;
-  font-size: calc(11px * var(--font-scale)); font-weight: 600; color: #00ccff;
-  background: rgba(0,204,255,0.05); border: 1px solid rgba(0,204,255,0.18);
-  border-radius: 4px; line-height: 1.5;
+  margin: var(--ui-1) var(--ui-3) 0; padding: var(--ui-1) var(--ui-2);
+  font-size: var(--fs-caption); font-weight: 700; color: var(--ui-accent);
+  background: var(--ui-accent-soft); border: 1px solid var(--ui-line-strong);
+  border-radius: var(--ui-radius); line-height: 1.55;
 }
-.bw-briefing.degraded { color: #ef4444; border-color: rgba(239,68,68,0.3); background: rgba(239,68,68,0.05); }
+.bw-briefing.degraded { color: var(--dmc-danger); border-color: var(--dmc-danger); background: var(--color-error-muted); }
 
-.cp-body { padding: 12px 16px; display: flex; flex-direction: column; gap: 10px; }
-.cp-section { display: flex; flex-direction: column; gap: 6px; }
-.cp-section-title { font-size: calc(11px * var(--font-scale)); font-weight: 700; color: var(--color-text-disabled); text-transform: uppercase; letter-spacing: 0.05em; }
+.cp-body { padding: var(--ui-3); display: flex; flex-direction: column; gap: var(--ui-2); }
+.cp-section { display: flex; flex-direction: column; gap: var(--ui-1); }
+.cp-section-title { font-size: var(--fs-caption); font-weight: 800; color: var(--ui-ink-3); letter-spacing: 0.18em; }
 
 .cp-command {
-  padding: 10px 12px; border: 1px solid rgba(6,182,212,0.12); border-radius: 5px;
-  cursor: pointer; transition: all 0.15s; background: rgba(0,0,0,0.2);
+  padding: var(--ui-2); border: var(--ui-frame); border-radius: var(--ui-radius);
+  cursor: pointer; background: var(--ui-surface-3);
+  transition: border-color var(--ui-dur-micro), background var(--ui-dur-micro);
 }
-.cp-command:hover:not(.disabled) { border-color: rgba(6,182,212,0.4); background: rgba(6,182,212,0.06); }
-.cp-command.selected { border-color: var(--color-cyan); background: rgba(6,182,212,0.1); }
+.cp-command:hover:not(.disabled) { border-color: var(--ui-accent); background: var(--ui-accent-soft); }
+.cp-command.selected { border-color: var(--ui-accent); background: var(--ui-accent-soft); }
 .cp-command.disabled { opacity: 0.4; cursor: not-allowed; }
-.cp-command.admiral { border-color: rgba(245,158,11,0.2); }
-.cp-command.admiral.selected { border-color: var(--color-gold, #f59e0b); background: rgba(245,158,11,0.08); }
+.cp-command.admiral { border-color: rgba(245, 158, 11, 0.28); }
+.cp-command.admiral.selected { border-color: var(--dmc-warning); background: rgba(245, 158, 11, 0.08); }
 
-.cmd-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px; }
-.cmd-name { font-size: calc(13px * var(--font-scale)); font-weight: 700; color: var(--color-text-primary); }
-.cmd-cost { font-size: calc(11px * var(--font-scale)); font-weight: 700; color: var(--color-cyan); }
-.cmd-desc { font-size: calc(11px * var(--font-scale)); color: var(--color-text-secondary); }
-.cmd-cd { font-size: calc(10px * var(--font-scale)); color: var(--color-warning); margin-top: 2px; }
+.cmd-row { display: flex; justify-content: space-between; align-items: center; gap: var(--ui-2); margin-bottom: 2px; }
+.cmd-name { font-size: var(--fs-label); font-weight: 800; color: var(--ui-ink); }
+.cmd-cost { font-size: var(--fs-caption); font-weight: 800; color: var(--ui-accent); font-variant-numeric: tabular-nums; }
+.cmd-desc { font-size: var(--fs-caption); color: var(--ui-ink-2); line-height: 1.5; }
+.cmd-cd { font-size: var(--fs-caption); color: var(--dmc-warning); margin-top: 2px; }
 
-/* 未实现命令：同样置灰，但 opacity 高于普通 disabled —— 0.4 会让警示徽章难以辨认，
-   而这些命令的置灰理由是"永久性"的（效果层不存在），玩家需要看清原因。 */
+/* 未实现命令：置灰理由需可读，opacity 高于普通 disabled */
 .cp-command.unimplemented { opacity: 0.62; }
-.cmd-unimplemented { font-size: calc(10px * var(--font-scale)); font-weight: 700; color: var(--color-warning); margin-top: 2px; }
-.cmd-partial { font-size: calc(10px * var(--font-scale)); color: var(--color-text-secondary); margin-top: 2px; font-style: italic; }
-/* [2a] 无可见敌方舰队：目标命令置灰原因（07 §6 显式原因文字） */
-.cmd-no-target { font-size: calc(10px * var(--font-scale)); font-weight: 700; color: var(--color-warning); margin-top: 2px; }
+.cmd-unimplemented { font-size: var(--fs-caption); font-weight: 700; color: var(--dmc-warning); margin-top: 2px; }
+.cmd-partial { font-size: var(--fs-caption); color: var(--ui-ink-2); margin-top: 2px; }
+.cmd-no-target { font-size: var(--fs-caption); font-weight: 700; color: var(--dmc-warning); margin-top: 2px; }
 
-.cp-footer {
-  padding: 10px 16px; border-top: 1px solid rgba(6,182,212,0.15);
-}
-.selected-hint { font-size: calc(12px * var(--font-scale)); color: var(--color-text-primary); font-weight: 600; }
-.selected-hint.dim { color: var(--color-text-disabled); }
+.cp-footer { padding: var(--ui-2) var(--ui-3); border-top: var(--ui-frame); }
+.selected-hint { font-size: var(--fs-label); color: var(--ui-ink); font-weight: 700; }
+.selected-hint.dim { color: var(--ui-ink-3); }
 </style>

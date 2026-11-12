@@ -212,6 +212,41 @@ export function stepShipMotion(
 }
 
 /**
+ * [v100] **阵位追踪预算**（追赶预算，单一真源）。
+ *
+ * ── 为什么 0.9 追不上 ────────────────────────────────────────────────────────
+ * 阵位目标（槽位）随舰队机动而移动，其横向摆速 ≈ ω × r（舰队转向角速率 × 槽位臂长）。
+ * 大舰队外缘槽臂 300px、转向 ω≈0.02 rad/帧 ⇒ 槽位摆速 ~6px/帧，是
+ * `UNIT_MOTION_LIMITS.maxSpeed = 0.9`（"阵位内相对机动"上限）的 ~7 倍。
+ * 舰队巡航时上面叠加 `_fleetSpd` 尚可覆盖；**舰队一停（vx/vy≈0）**，叠加项消失，
+ * 船以 0.9px/帧去追一个刚才以 6px/帧移动过的槽位 ⇒ 每次机动欠下数百 px 残差，
+ * 要爬数百帧才收敛 —— 表现即"排头一艘、中间空一段、后面一截"（转向中）与
+ * "偶尔自行变正常"（残差终于爬完）。
+ *
+ * ── 方案：残差自适应预算 ─────────────────────────────────────────────────────
+ * 以**当前位置到槽位的距离**（slotGapPx）为自变量放大预算：
+ *   · gap ≤ SMALL（15px ≈ 0.6 槽宽）：逐位还原 `base`（不引入任何行为变化）；
+ *   · gap > SMALL：预算 = base + (gap − SMALL) × GAIN（线性放大；追赶期仍受
+ *     accel / omegaMax 约束 —— 速度从 0 起步，accel 决定"多久能追上"，不会瞬移）；
+ *   · 追近后预算自动回落 ⇒ 稳态行为与旧实现相同（残差冻结在 ARRIVE_EPS 附近）。
+ * 舰队巡航叠加（`+ fleetSpd`）在调用方继续生效：预算 = 本函数结果 + fleetSpd。
+ *
+ * ⚠ 这是纯函数：同输入恒同输出，台架可直接 require 断言"312px 残差的新旧收敛帧数夹逼"。
+ *
+ * @param base      基础相对机动上限（= UNIT_MOTION_LIMITS.maxSpeed，禁手抄）
+ * @param slotGapPx 当前船位到槽位的距离（px）
+ */
+export function slotTrackingMaxSpeed(base: number, slotGapPx: number): number {
+  const gap = Number(slotGapPx);
+  if (!Number.isFinite(gap) || gap <= SLOT_TRACK_SMALL_GAP) return base;
+  return base + (gap - SLOT_TRACK_SMALL_GAP) * SLOT_TRACK_CATCHUP_GAIN;
+}
+/** 残差低于此值（px）不放大预算（≈0.6 槽宽；稳态 ARRIVE_EPS=2.5 远小于它 ⇒ 零行为变化）。 */
+export const SLOT_TRACK_SMALL_GAP = 15;
+/** 追赶增益：每 1px 残差追加的预算（px/帧）。0.12 ⇒ 312px 残差首帧预算 ≈ 0.9 + 35.6。 */
+export const SLOT_TRACK_CATCHUP_GAIN = 0.12;
+
+/**
  * [P2] 舰级运动参数（单一真源；BattleScene 引用，台架同源断言——禁手抄常量）。
  *
  * 自洽验算（dt=1，槽距 FORMATION_SPACING=26）：
@@ -223,8 +258,16 @@ export function stepShipMotion(
 export const UNIT_MOTION_LIMITS: ShipMotionLimits = Object.freeze({
   /** 阵位移动硬速度上限（px/帧@dt=1），沿用 UNIT_FORMATION_SPEED 口径 */
   maxSpeed: 0.9,
-  /** 舰级加速度向量上限 |dv/dt|（px/帧²）：质量感来源 */
-  accel: 0.06,
+  /** 舰级加速度向量上限 |dv/dt|（px/帧²）：**阵位保持带宽**（不是舰队机动性）。
+   *  [v108] 0.06 → **0.28**。
+   *  量化复盘（`_probe_snake.cjs`，n=300 / hexR=74 / 战列 12.7°/s 转向）：
+   *    0.06 ⇒ 队形刚体残差峰值 **9.1% 半跨**、尾舰滞后 **168px**、转向后 **>480 帧仍不回稳**；
+   *    0.28 ⇒ **2.4%**、滞后 36px、**108 帧回稳**。
+   *  即：0.06 让尾舰永远追不上槽位，残差只增不减 —— 这就是用户说的"尾巴像一根绳子在飘"。
+   *  ⚠ 与"厚重感"不冲突：**舰队**的机动性由 `shipKinematics` 的 vMax/omegaMax/alphaMax 决定
+   *    （战列 180° 仍需 14~26s）；本值只管"舰在队内保持位置"的响应速度。
+   *    真实舰船保持队位是主动 RCS 闭环，响应快；转向慢的是整支舰队。 */
+  accel: 0.28,
   /** 速度方向转速上限 ω_max（rad/帧）：操纵性约束，满速转弯半径 = maxSpeed/omegaMax */
   omegaMax: 0.03,
 });

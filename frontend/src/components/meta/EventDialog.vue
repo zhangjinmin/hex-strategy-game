@@ -149,7 +149,7 @@ const handleBackdropClick = () => {
 }
 
 .event-icon {
-  font-size: calc(48px * var(--font-scale));
+  font-size: var(--fs-display);
   flex-shrink: 0;
 }
 
@@ -158,14 +158,14 @@ const handleBackdropClick = () => {
 }
 
 .event-title {
-  font-size: calc(24px * var(--font-scale));
+  font-size: var(--fs-h2);
   font-weight: 800;
   color: var(--color-text-primary);
   margin: 0 0 4px 0;
 }
 
 .event-category {
-  font-size: calc(13px * var(--font-scale));
+  font-size: var(--fs-label);
   color: var(--color-text-secondary);
   font-weight: 600;
   text-transform: uppercase;
@@ -177,7 +177,7 @@ const handleBackdropClick = () => {
 }
 
 .event-description {
-  font-size: calc(15px * var(--font-scale));
+  font-size: var(--fs-body);
   line-height: 1.7;
   color: var(--color-text-primary);
   margin: 0;
@@ -204,13 +204,13 @@ const handleBackdropClick = () => {
 }
 
 .choice-text {
-  font-size: calc(15px * var(--font-scale));
+  font-size: var(--fs-body);
   font-weight: 700;
   margin-bottom: 4px;
 }
 
 .choice-effect {
-  font-size: calc(12px * var(--font-scale));
+  font-size: var(--fs-label);
   color: var(--color-text-secondary);
   font-weight: 600;
 }
@@ -222,7 +222,7 @@ const handleBackdropClick = () => {
 .skip-btn {
   width: 100%;
   padding: 12px;
-  font-size: calc(13px * var(--font-scale));
+  font-size: var(--fs-label);
   border: 1px dashed var(--overlay-border);
 }
 
@@ -253,11 +253,11 @@ const handleBackdropClick = () => {
   }
 
   .event-icon {
-    font-size: calc(36px * var(--font-scale));
+    font-size: var(--fs-h1);
   }
 
   .event-title {
-    font-size: calc(20px * var(--font-scale));
+    font-size: var(--fs-h2);
   }
 
   .choice-btn {

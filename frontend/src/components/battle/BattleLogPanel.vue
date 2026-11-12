@@ -49,13 +49,13 @@ defineExpose({ addLogEntry });
   z-index: 1200; pointer-events: none; max-width: 600px;
 }
 .log-entry {
-  font-size: calc(11px * var(--font-scale)); font-weight: 600; padding: 3px 12px;
-  background: rgba(0,0,0,0.7); border-radius: 4px;
+  font-size: var(--fs-label); font-weight: 600; padding: 3px 12px;
+  background: rgba(0,0,0,0.7); border-radius: var(--ui-radius);
   animation: logFadeIn 0.3s ease-out;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .log-entry.kill { color: #f59e0b; }
-.log-entry.ability { color: #06b6d4; }
+.log-entry.ability { color: var(--ui-accent); }
 .log-entry.damage { color: #ef4444; }
 .log-entry.info { color: #94a3b8; }
 

@@ -53,17 +53,17 @@ const diffLabel: Record<string, string> = { easy: '简单', normal: '标准', ha
 }
 .scenario-grid { display: flex; gap: 12px; margin-bottom: 16px; }
 .scenario-card {
-  flex: 1; padding: 16px; border: 1px solid rgba(6,182,212,0.15); border-radius: 6px;
+  flex: 1; padding: 16px; border: 1px solid rgba(var(--ui-accent-rgb), 0.15); border-radius: var(--ui-radius-lg);
   cursor: pointer; transition: all 0.15s; background: rgba(0,0,0,0.2);
 }
-.scenario-card:hover, .scenario-card.selected { border-color: var(--color-cyan); background: rgba(6,182,212,0.06); }
-.scenario-year { font-size: calc(13px * var(--font-scale)); color: var(--color-cyan); font-weight: 700; margin-bottom: 6px; }
-.scenario-name { font-size: calc(16px * var(--font-scale)); font-weight: 800; color: var(--color-text-primary); margin-bottom: 8px; }
-.scenario-desc { font-size: calc(12px * var(--font-scale)); color: var(--color-text-secondary); line-height: 1.5; margin-bottom: 10px; }
-.scenario-meta { display: flex; gap: 6px; font-size: calc(11px * var(--font-scale)); }
-.scenario-meta span { padding: 2px 8px; border-radius: 3px; font-weight: 600; }
+.scenario-card:hover, .scenario-card.selected { border-color: var(--color-cyan); background: rgba(var(--ui-accent-rgb), 0.06); }
+.scenario-year { font-size: var(--fs-label); color: var(--color-cyan); font-weight: 700; margin-bottom: 6px; }
+.scenario-name { font-size: var(--fs-body); font-weight: 800; color: var(--color-text-primary); margin-bottom: 8px; }
+.scenario-desc { font-size: var(--fs-label); color: var(--color-text-secondary); line-height: 1.5; margin-bottom: 10px; }
+.scenario-meta { display: flex; gap: 6px; font-size: var(--fs-label); }
+.scenario-meta span { padding: 2px 8px; border-radius: var(--ui-radius); font-weight: 600; }
 .diff-easy { background: rgba(16,185,129,0.15); color: #10b981; }
-.diff-normal { background: rgba(6,182,212,0.15); color: #06b6d4; }
+.diff-normal { background: rgba(var(--ui-accent-rgb), 0.15); color: var(--ui-accent); }
 .diff-hard { background: rgba(239,68,68,0.15); color: #ef4444; }
 .faction-tag { background: rgba(148,163,184,0.1); color: #94a3b8; }
 .scenario-actions { display: flex; justify-content: flex-end; gap: 8px; }

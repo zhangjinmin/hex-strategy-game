@@ -30,7 +30,7 @@
   --dmc-empire-bright: #e74c3c;
   --dmc-empire-dim: rgba(192, 57, 43, 0.15);
   --dmc-alliance: #2471a3;
-  --dmc-alliance-bright: #3498db;
+  --dmc-alliance-bright: var(--ui-accent);
   --dmc-alliance-dim: rgba(36, 113, 163, 0.15);
 
   /* 功能色 */
@@ -39,7 +39,10 @@
   --dmc-success: #27ae60;
   --dmc-warning: #f39c12;
   --dmc-danger: #e74c3c;
-  --dmc-info: #3498db;
+  /* [统一界面语言] 泛用「科技蓝 / 青」不再各自为政，统一收敛到当前阵营强调色。
+     旧常量名全部保留（未改造的组件零破坏），只把值换成主题变量：
+     ⇒ 全站强调色随 data-faction 一起变，不再出现「UI 青、3D 紫、战略层红」三套打架。 */
+  --dmc-info: var(--ui-accent);
 
   /* 字体：[v65] 内嵌乐米像素体为全局首选（@font-face 在 App.vue）；Inter 已移除联网 @import，
      仅作拉丁后备。
@@ -58,7 +61,7 @@
      · 页面里所有 `font-size` 都写成 `calc(Npx * var(--font-scale))` —— **只放大文字，不动间距/盒尺寸**，
        与 `--ui-scale`（zoom，整体等比放大）语义分离，两者可叠加。
      · 由 settingsStore.fontScale 驱动，App.vue 的 applyFontScale() 写到 <html> 行内样式。
-     · ⚠ 必须始终有值：calc(11px * var(--font-scale)) 在变量缺失时整条声明失效（font-size 变 inherit），
+     · ⚠ 必须始终有值：var(--fs-label) 在变量缺失时整条声明失效（font-size 变 inherit），
        所以这里给默认 1，绝不要删。 */
   --font-scale: 1;
 
@@ -67,10 +70,10 @@
   --sp-4: 16px; --sp-5: 20px; --sp-6: 24px;
   --sp-8: 32px; --sp-10: 40px;
 
-  /* 圆角 */
-  --radius-sm: 4px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
+  /* 圆角 —— 收敛到统一骨架（硬朗直角微倒角） */
+  --radius-sm: var(--ui-radius);
+  --radius-md: var(--ui-radius-lg);
+  --radius-lg: var(--ui-radius-lg);
 
   /* 动画 */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
@@ -78,22 +81,22 @@
   --duration-normal: 250ms;
 
   /* ---------- 向后兼容别名 ---------- */
-  --color-background-body: var(--dmc-bg-base);
-  --color-background-surface: var(--dmc-bg-panel);
-  --color-background-card: var(--dmc-bg-raised);
-  --color-background-popover: var(--dmc-bg-raised);
-  --color-background-muted: rgba(20, 28, 38, 0.5);
+  --color-background-body: var(--ui-bg);
+  --color-background-surface: var(--ui-surface);
+  --color-background-card: var(--ui-surface-2);
+  --color-background-popover: var(--ui-surface-2);
+  --color-background-muted: var(--ui-panel);
   --color-background-inverted: #dfe3e8;
-  --color-text-primary: var(--dmc-text-primary);
-  --color-text-secondary: var(--dmc-text-secondary);
-  --color-text-disabled: var(--dmc-text-muted);
+  --color-text-primary: var(--ui-ink);
+  --color-text-secondary: var(--ui-ink-2);
+  --color-text-disabled: var(--ui-ink-3);
   --color-text-on-inverted: var(--dmc-text-inverse);
-  --color-border: rgba(255, 255, 255, 0.06);
-  --color-border-emphasized: rgba(255, 255, 255, 0.12);
-  --color-accent: var(--dmc-text-primary);
-  --color-accent-muted: rgba(223, 227, 232, 0.14);
-  --color-on-accent: var(--dmc-text-inverse);
-  --color-brand: var(--dmc-info);
+  --color-border: var(--ui-line);
+  --color-border-emphasized: var(--ui-line-strong);
+  --color-accent: var(--ui-accent);
+  --color-accent-muted: var(--ui-accent-soft);
+  --color-on-accent: var(--ui-accent-ink);
+  --color-brand: var(--ui-accent);
   --color-success: var(--dmc-success);
   --color-success-muted: rgba(39, 174, 96, 0.15);
   --color-warning: var(--dmc-warning);
@@ -106,10 +109,10 @@
   --color-shadow: rgba(0, 0, 0, 0.4);
   --color-skeleton: var(--dmc-text-muted);
   --color-track: var(--dmc-text-muted);
-  --color-blue: var(--dmc-info);
-  --color-blue-muted: var(--dmc-alliance-dim);
-  --color-cyan: var(--dmc-info);
-  --color-cyan-muted: var(--dmc-alliance-dim);
+  --color-blue: var(--ui-accent);
+  --color-blue-muted: var(--ui-accent-soft);
+  --color-cyan: var(--ui-accent);
+  --color-cyan-muted: var(--ui-accent-soft);
   --color-green: var(--dmc-success);
   --color-green-muted: rgba(39, 174, 96, 0.15);
   --color-orange: var(--dmc-warning);
@@ -119,23 +122,33 @@
   --color-purple: #8e44ad;
   --color-purple-muted: rgba(142, 68, 173, 0.15);
 
-  /* 阵营别名 */
+  /* 阵营别名（敌我识别色，保持红色语义不变，避免破坏未改造组件） */
   --color-alliance: var(--dmc-alliance-bright);
   --color-alliance-dim: var(--dmc-alliance-dim);
   --color-empire: var(--dmc-empire-bright);
   --color-empire-dim: var(--dmc-empire-dim);
   --color-neutral-gold: var(--dmc-gold);
 
-  /* 面板别名 */
-  --neo-surface: var(--dmc-bg-panel);
-  --neo-surface-raised: var(--dmc-bg-raised);
-  --neo-surface-inset: var(--dmc-bg-input);
-  --neo-body: var(--dmc-bg-base);
-  --overlay-surface: rgba(20, 28, 38, 0.95);
-  --overlay-border: rgba(255, 255, 255, 0.08);
-  --overlay-border-strong: rgba(255, 255, 255, 0.14);
-  --overlay-scrim: rgba(0, 0, 0, 0.85);
-  --overlay-hover: var(--dmc-bg-hover);
+  /* [统一界面语言] 阵营归属色恒定；敌我语义色随主题走。
+     新代码用这四个，不要用 --color-empire 表达「帝国」。 */
+  --color-faction-alliance: #5b9dff;
+  --color-faction-empire: #d8b26a;
+  /* rgb 分量：供 rgba(var(--color-faction-*-rgb), a) 做半透明底，避免手抄数字 */
+  --color-faction-alliance-rgb: 91, 157, 255;
+  --color-faction-empire-rgb: 216, 178, 106;
+  --side-self: var(--ui-accent);
+  --side-foe: var(--ui-rival);
+
+  /* 面板别名 —— 收敛到统一骨架 */
+  --neo-surface: var(--ui-surface);
+  --neo-surface-raised: var(--ui-surface-2);
+  --neo-surface-inset: var(--ui-surface-3);
+  --neo-body: var(--ui-bg);
+  --overlay-surface: var(--ui-panel);
+  --overlay-border: var(--ui-line);
+  --overlay-border-strong: var(--ui-line-strong);
+  --overlay-scrim: var(--ui-scrim);
+  --overlay-hover: var(--ui-accent-soft);
 
   /* 阵营色 navbar */
   --nav-empire-bg: rgba(192, 57, 43, 0.12);
@@ -156,75 +169,84 @@
   --radius-container: var(--radius-lg);
   --radius-page: var(--radius-lg);
   --font-family: var(--dmc-font);
-  --shadow-low: none;
-  --shadow-med: 0 4px 16px rgba(0, 0, 0, 0.3);
-  --shadow-high: 0 8px 32px rgba(0, 0, 0, 0.5);
+  --shadow-low: var(--ui-shadow-raised);
+  --shadow-med: var(--ui-shadow-panel);
+  --shadow-high: var(--ui-shadow-panel);
 }
 
 /* ========== 全局基础 ========== */
 
 body {
-  background: var(--dmc-bg-base);
-  color: var(--dmc-text-primary);
+  background: var(--ui-bg);
+  color: var(--ui-ink);
   font-family: var(--dmc-font);
   margin: 0;
   -webkit-font-smoothing: antialiased;
+  transition: background-color var(--ui-dur-normal) var(--ui-ease),
+              color var(--ui-dur-normal) var(--ui-ease);
 }
 
-/* ========== 扁平面板风格（替代拟态） ========== */
+/* ========== 统一骨架：面板 / 按钮 / 输入框 ==========
+   [统一界面语言] 全站只有这一份实现；圆角、边框、字号、交互六态
+   一律取 design-system.css 的 --ui-* / --fs-* 令牌。 */
 
 .neo-card {
-  background: var(--dmc-bg-panel);
-  border: var(--dmc-border);
-  border-radius: var(--radius-md);
+  background: var(--ui-panel);
+  border: var(--ui-frame);
+  border-radius: var(--ui-radius);
+  box-shadow: var(--ui-shadow-raised);
 }
 
 .neo-card.active {
-  border-color: var(--dmc-info);
-  background: rgba(52, 152, 219, 0.08);
+  border-color: var(--ui-accent);
+  background: var(--ui-accent-soft);
 }
 
 .neo-btn {
-  display: inline-flex; align-items: center; justify-content: center;
-  background: var(--dmc-bg-raised);
-  border: var(--dmc-border);
-  border-radius: var(--radius-sm);
-  color: var(--dmc-text-secondary);
-  font-weight: 600; font-size: calc(13px * var(--font-scale));
-  cursor: pointer; padding: 6px 14px;
-  transition: all var(--duration-fast) var(--ease-out);
-  user-select: none;
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--ui-1);
+  min-height: 38px; padding: 0 var(--ui-2);
+  background: var(--ui-surface-2);
+  border: var(--ui-frame-strong);
+  border-radius: var(--ui-radius);
+  color: var(--ui-ink-2);
+  font-weight: 800; font-size: var(--fs-body); letter-spacing: 0.04em;
+  cursor: pointer; user-select: none;
+  transition: background var(--ui-dur-micro) var(--ui-ease),
+              color var(--ui-dur-micro) var(--ui-ease),
+              border-color var(--ui-dur-micro) var(--ui-ease),
+              transform var(--ui-dur-micro) var(--ui-ease);
 }
 .neo-btn:hover:not(:disabled) {
-  background: var(--dmc-bg-hover);
-  color: var(--dmc-text-primary);
-  border-color: rgba(255, 255, 255, 0.12);
+  background: var(--ui-accent-soft);
+  color: var(--ui-ink);
+  border-color: var(--ui-accent);
 }
-.neo-btn:active:not(:disabled),
-.neo-btn.active {
-  background: rgba(52, 152, 219, 0.1);
-  border-color: var(--dmc-info);
-  color: var(--dmc-info);
+.neo-btn:active:not(:disabled) { transform: scale(0.975); }
+.neo-btn:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
+/* ⚠ 契约：本规则的「实心强调底 + --ui-accent-ink 反色暗字」是一对，
+   任何子类若把 background 覆盖成半透明/深色，必须同时覆盖 color 为亮字，
+   否则暗字落在暗底上不可读（AdmiralSelectModal 曾实测对比度 1.12）。 */
+.neo-btn.active,
+.neo-btn:active:not(:disabled) {
+  background: var(--ui-accent);
+  border-color: var(--ui-accent);
+  color: var(--ui-accent-ink);
 }
-.neo-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.neo-btn:disabled { opacity: 0.38; cursor: not-allowed; }
 
-.neo-btn.outline {
-  background: transparent;
-  border: var(--dmc-border);
-}
+.neo-btn.outline { background: transparent; border: var(--ui-frame); }
 
-.neo-btn.btn-sm { padding: 3px 10px; font-size: calc(12px * var(--font-scale)); }
-.neo-btn.btn-xs { padding: 2px 6px; font-size: calc(11px * var(--font-scale)); }
+.neo-btn.btn-sm { min-height: 30px; padding: 0 var(--ui-1); font-size: var(--fs-label); }
+.neo-btn.btn-xs { min-height: 26px; padding: 0 6px; font-size: var(--fs-caption); }
 .neo-btn.btn-confirm {
   background: rgba(39, 174, 96, 0.12);
   border-color: rgba(39, 174, 96, 0.3);
   color: var(--dmc-success);
 }
 .neo-btn.abort-btn {
-  background: transparent;
-  border: none;
-  color: var(--dmc-text-muted);
-  padding: 4px 8px; font-size: calc(16px * var(--font-scale));
+  background: transparent; border: none;
+  color: var(--ui-ink-3);
+  padding: 4px 8px; font-size: var(--fs-h3);
 }
 .neo-btn.abort-btn:hover {
   color: var(--dmc-danger);
@@ -232,39 +254,47 @@ body {
 }
 
 .neo-inset {
-  background: var(--dmc-bg-input);
-  border: var(--dmc-border);
-  border-radius: var(--radius-sm);
+  background: var(--ui-surface-3);
+  border: var(--ui-frame);
+  border-radius: var(--ui-radius);
 }
 
 /* ========== 工具类 ========== */
 
-.text-cyan { color: var(--dmc-info); }
+.text-cyan { color: var(--ui-accent); }
+.text-accent { color: var(--ui-accent); }
 .text-gold { color: var(--dmc-gold); }
 .text-emerald { color: var(--dmc-success); }
 .text-red { color: var(--dmc-danger); }
 .text-amber { color: var(--dmc-warning); }
-.text-player { color: var(--dmc-info); }
-.text-ally { color: var(--dmc-alliance-bright); }
-.text-slate-400 { color: var(--dmc-text-secondary); }
-.text-slate-500 { color: var(--dmc-text-muted); }
+.text-player { color: var(--side-self); }
+.text-foe { color: var(--side-foe); }
+.text-ally { color: var(--color-faction-alliance); }
+.text-slate-400 { color: var(--ui-ink-2); }
+.text-slate-500 { color: var(--ui-ink-3); }
 .text-amber { color: var(--dmc-warning); }
-.text-gray { color: var(--dmc-text-muted); }
+.text-gray { color: var(--ui-ink-3); }
+.bg-foe { background: var(--side-foe); }
 
+/* 全局通知：右上角锚定。原来固定居中 top:72px 会压住「战前军议」等
+   居中 display 级主标题；右上锚点不占用仪式性版面的视觉中轴。 */
 .global-toast {
-  position: fixed; top: 72px; left: 50%; transform: translateX(-50%);
-  background: var(--dmc-bg-raised);
-  color: var(--dmc-success);
-  padding: 12px 24px; border-radius: 99px;
-  font-weight: 600; font-size: calc(14px * var(--font-scale)); z-index: 9999;
-  border: var(--dmc-border);
-  box-shadow: var(--shadow-med);
-  animation: slideDown 0.4s var(--ease-out);
+  /* 纵向锚点落在顶栏之下：右上但不压住顶栏两端的阵营/倒计时读数 */
+  position: fixed; top: calc(var(--ui-10) + var(--ui-5)); right: var(--ui-5); left: auto;
+  max-width: min(420px, 34vw);
+  background: var(--ui-panel-solid, var(--ui-surface-3));
+  color: var(--ui-ink);
+  padding: var(--ui-2) var(--ui-3); border-radius: var(--ui-radius);
+  font-weight: 700; font-size: var(--fs-label); line-height: 1.5; z-index: 9999;
+  border: 1px solid var(--ui-line-strong);
+  border-left: 3px solid var(--ui-accent);
+  box-shadow: var(--ui-shadow-raised);
 }
 
-@keyframes slideDown {
-  from { top: 0; opacity: 0; transform: translateX(-50%) scale(0.95); }
-  to { top: 40px; opacity: 1; transform: translateX(-50%) scale(1); }
+/* 位移不再含 translateX(-50%)：进场/退场都由 Transition 类驱动 */
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(18px); }
+  to   { opacity: 1; transform: translateX(0); }
 }
 
 /* 说明：已移除明暗模式（用户需求），统一保留暗色+阵营配色方案 */

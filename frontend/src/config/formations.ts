@@ -17,6 +17,15 @@ export interface FormationConfig {
   speedMod: number;       // 机动乘数
   moraleCost: number;     // 阵型转换士气消耗
   counters: FormationType; // 克制谁
+  /** [v108] 转向速率倍率：乘在"按队形半径反解出的角速度上限"上。
+   *  为什么要有：大编队整体转身的角速度上限 ≈ 4.4 / 半跨（见 BattleScene 的队形限速），
+   *  这条与阵型无关；本值表达"这个阵型本身好不好转"——
+   *  楔形舰首先行、转向最灵；横阵横向铺开、转身最笨（真实舰队也是如此）。
+   *  ⚠ 转得慢是**特性不是缺陷**：慢转向 = 对侧翼/后方突袭反应慢，代价必须在战术上兑现。 */
+  turnMul: number;
+  /** [v108] 被侧翼/背击时的额外受伤倍率（乘在已有 `dirArmorMul` 之上）。
+   *  接的是既有方向装甲乘区，不新造一套：>1 = 该阵型侧后更脆，<1 = 全向防御更匀。 */
+  flankVulnMul: number;
 }
 
 /**
@@ -38,6 +47,8 @@ export const FORMATIONS: Record<FormationType, FormationConfig> = {
     speedMod: 0.90,
     moraleCost: 10,
     counters: 'line',
+    turnMul: 1.25,
+    flankVulnMul: 1.3,
   },
   line: {
     id: 'line',
@@ -49,6 +60,8 @@ export const FORMATIONS: Record<FormationType, FormationConfig> = {
     speedMod: 0.85,
     moraleCost: 5,
     counters: 'spindle',
+    turnMul: 0.7,
+    flankVulnMul: 1.15,
   },
   spindle: {
     id: 'spindle',
@@ -60,6 +73,8 @@ export const FORMATIONS: Record<FormationType, FormationConfig> = {
     speedMod: 1.10,
     moraleCost: 8,
     counters: 'circle',
+    turnMul: 1.1,
+    flankVulnMul: 1.4,
   },
   circle: {
     id: 'circle',
@@ -71,6 +86,8 @@ export const FORMATIONS: Record<FormationType, FormationConfig> = {
     speedMod: 0.60,
     moraleCost: 12,
     counters: 'square',
+    turnMul: 0.8,
+    flankVulnMul: 0.8,
   },
   square: {
     id: 'square',
@@ -82,6 +99,8 @@ export const FORMATIONS: Record<FormationType, FormationConfig> = {
     speedMod: 0.70,
     moraleCost: 8,
     counters: 'wedge',
+    turnMul: 0.85,
+    flankVulnMul: 0.95,
   },
 };
 

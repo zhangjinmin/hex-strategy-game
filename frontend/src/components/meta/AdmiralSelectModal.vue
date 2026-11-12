@@ -252,56 +252,68 @@ const confirmSelect = () => {
   display: flex; flex-direction: column; padding: 28px; gap: 14px;
 }
 .flex-header { display: flex; justify-content: space-between; align-items: center; }
-.m-0 { margin: 0; font-size: calc(22px * var(--font-scale)); font-weight: 900; }
+.m-0 { margin: 0; font-size: var(--fs-h2); font-weight: 900; }
 .px-4 { padding: 8px 16px; }
 
-.select-desc { font-size: calc(13px * var(--font-scale)); color: var(--color-text-secondary); margin: 0; line-height: 1.5; }
+.select-desc { font-size: var(--fs-label); color: var(--color-text-secondary); margin: 0; line-height: 1.5; }
 
 /* 阵营按钮 */
 .faction-switch { display: flex; gap: 12px; }
 .faction-btn {
+  /* 阵营归属色恒定，不随 <html data-faction> 漂移（同盟冷蓝 / 帝国金） */
+  --fac-rgb: var(--color-faction-alliance-rgb);
   flex: 1; padding: 12px 16px;
   display: flex; flex-direction: row; align-items: center; justify-content: flex-start; gap: 12px;
-  font-size: calc(13px * var(--font-scale)); font-weight: 700;
+  font-size: var(--fs-label); font-weight: 700;
   background: var(--overlay-surface); border: 2px solid var(--overlay-hover);
   transition: all 0.25s; cursor: pointer; text-align: left;
+  color: var(--ui-ink-2);
 }
-.faction-btn.active { border-color: var(--color-cyan); background: rgba(6,182,212,0.08); }
-.faction-btn.faction-emp.active { border-color: var(--color-empire); background: rgba(239,68,68,0.08); }
-.faction-flag { width: 48px; height: 48px; object-fit: cover; border-radius: 4px; border: 1px solid var(--overlay-border); flex-shrink: 0; }
+.faction-btn:nth-child(2) { --fac-rgb: var(--color-faction-empire-rgb); }
+/* .neo-btn.active 默认给「实心强调底 + 反色暗字」；这里改成半透明阵营底，
+   必须把字色一并改回亮字，否则鼠标离开后暗字落暗底（实测 1.12:1）。 */
+.faction-btn.active,
+.faction-btn:hover:not(:disabled) {
+  border-color: rgb(var(--fac-rgb));
+  background: rgba(var(--fac-rgb), 0.10);
+  color: var(--ui-ink);
+}
+.faction-btn:hover:not(:disabled) { background: rgba(var(--fac-rgb), 0.16); }
+.faction-flag { width: 48px; height: 48px; object-fit: cover; border-radius: var(--ui-radius); border: 1px solid var(--overlay-border); flex-shrink: 0; }
 .faction-titles { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
-.faction-label { font-size: calc(15px * var(--font-scale)); font-weight: 900; }
-.faction-count { font-size: calc(11px * var(--font-scale)); color: var(--color-text-disabled); }
+.faction-label { font-size: var(--fs-body); font-weight: 900; color: var(--ui-ink); }
+.faction-count { font-size: var(--fs-label); color: var(--color-text-secondary); }
 
 /* 搜索 */
 .search-bar { display: flex; align-items: center; gap: 8px; padding: 0; }
-.search-icon { font-size: calc(14px * var(--font-scale)); opacity: 0.5; }
+.search-icon { font-size: var(--fs-body); opacity: 0.85; }
 .neo-input {
   flex: 1; padding: 9px 14px;
-  background: rgba(0,0,0,0.4); border: 1px solid rgba(6,182,212,0.25);
-  color: var(--color-text-primary); font-size: calc(13px * var(--font-scale)); font-weight: 600;
-  border-radius: 6px; outline: none; transition: border 0.2s;
+  background: rgba(0,0,0,0.4); border: 1px solid rgba(var(--ui-accent-rgb), 0.25);
+  color: var(--color-text-primary); font-size: var(--fs-label); font-weight: 600;
+  border-radius: var(--ui-radius-lg); outline: none; transition: border 0.2s;
 }
+.neo-input::placeholder { color: var(--ui-ink-2); opacity: 0.8; }
 .neo-input:focus { border-color: var(--color-cyan); }
-.sort-hint { font-size: calc(11px * var(--font-scale)); color: var(--color-text-disabled); white-space: nowrap; }
+.sort-hint { font-size: var(--fs-label); color: var(--color-text-secondary); white-space: nowrap; }
 
 /* 表格 */
 .table-wrapper {
-  flex: 1; overflow: auto; border-radius: 8px;
+  flex: 1; overflow: auto; border-radius: var(--ui-radius-lg);
   border: 1px solid var(--overlay-hover);
 }
-.admiral-table { width: 100%; border-collapse: collapse; font-size: calc(12px * var(--font-scale)); }
+.admiral-table { width: 100%; border-collapse: collapse; font-size: var(--fs-label); }
 .admiral-table thead { position: sticky; top: 0; z-index: 10; background: var(--neo-surface); }
 .admiral-table th {
   padding: 10px 5px; font-weight: 800; color: var(--color-text-secondary);
-  border-bottom: 2px solid rgba(6,182,212,0.25); white-space: nowrap; user-select: none;
+  border-bottom: 2px solid rgba(var(--ui-accent-rgb), 0.25); white-space: nowrap; user-select: none;
 }
 .admiral-table th.sortable { cursor: pointer; }
-.admiral-table th.sortable:hover { color: var(--color-cyan); background: rgba(6,182,212,0.06); }
-.sort-arrow { font-size: calc(10px * var(--font-scale)); color: var(--color-warning); margin-left: 2px; }
+.admiral-table th.sortable:hover { color: var(--color-cyan); background: rgba(var(--ui-accent-rgb), 0.06); }
+.sort-arrow { font-size: var(--fs-caption); color: var(--color-warning); margin-left: 2px; }
 .admiral-table td { padding: 4px 5px; border-bottom: 1px solid rgba(255,255,255,0.03); white-space: nowrap; }
 .admiral-row { cursor: pointer; transition: background 0.12s; }
-.admiral-row:hover { background: rgba(6,182,212,0.05); }
+.admiral-row:hover { background: rgba(var(--ui-accent-rgb), 0.05); }
 .admiral-row.selected { background: rgba(16,185,129,0.1); }
 .admiral-row.selected td { border-bottom-color: rgba(16,185,129,0.2); }
 
@@ -309,45 +321,45 @@ const confirmSelect = () => {
 .col-portrait { width: 44px; text-align: center; }
 .col-name { min-width: 75px; font-weight: 800; }
 .col-rank { min-width: 52px; }
-.col-flagship { min-width: 72px; font-size: calc(11px * var(--font-scale)); }
-.num-col { text-align: center; font-family: var(--font-family); font-weight: 700; width: 30px; font-size: calc(11px * var(--font-scale)); }
+.col-flagship { min-width: 72px; font-size: var(--fs-label); }
+.num-col { text-align: center; font-family: var(--font-family); font-weight: 700; width: 30px; font-size: var(--fs-label); }
 .col-traits { min-width: 80px; }
 .col-total { width: 42px; }
 
-.row-portrait { width: 34px; height: 42px; object-fit: cover; border-radius: 4px; border: 1px solid var(--color-border); vertical-align: middle; }
+.row-portrait { width: 34px; height: 42px; object-fit: cover; border-radius: var(--ui-radius); border: 1px solid var(--color-border); vertical-align: middle; }
 
 .radio-dot { display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--color-border-emphasized); background: transparent; transition: all 0.2s; }
 .radio-dot.checked { border-color: var(--color-green); background: var(--color-green); box-shadow: 0 0 6px rgba(16,185,129,0.5); }
 
-.rank-badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: calc(10px * var(--font-scale)); font-weight: 800; color: var(--color-warning); background: rgba(251,191,36,0.1); border: 1px solid rgba(251,191,36,0.2); }
-.total-badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: calc(11px * var(--font-scale)); font-weight: 900; color: var(--color-cyan); background: rgba(6,182,212,0.1); border: 1px solid rgba(6,182,212,0.2); }
+.rank-badge { display: inline-block; padding: 2px 7px; border-radius: var(--ui-radius); font-size: var(--fs-caption); font-weight: 800; color: var(--color-warning); background: rgba(251,191,36,0.1); border: 1px solid rgba(251,191,36,0.2); }
+.total-badge { display: inline-block; padding: 2px 6px; border-radius: var(--ui-radius); font-size: var(--fs-label); font-weight: 900; color: var(--color-cyan); background: rgba(var(--ui-accent-rgb), 0.1); border: 1px solid rgba(var(--ui-accent-rgb), 0.2); }
 
-.trait-tag { display: inline-block; padding: 1px 5px; margin: 1px; border-radius: 3px; font-size: calc(9px * var(--font-scale)); font-weight: 700; color: #a78bfa; background: rgba(139,92,246,0.1); border: 1px solid rgba(139,92,246,0.2); white-space: nowrap; }
+.trait-tag { display: inline-block; padding: 1px 5px; margin: 1px; border-radius: var(--ui-radius); font-size: var(--fs-caption); font-weight: 700; color: #a78bfa; background: rgba(139,92,246,0.1); border: 1px solid rgba(139,92,246,0.2); white-space: nowrap; }
 
 /* 属性高亮 */
 .stat-s { color: #fbbf24 !important; }  /* 85+ 金色 */
 .stat-a { color: #34d399 !important; }  /* 70+ 绿色 */
 .stat-b { color: #94a3b8 !important; }  /* 50+ 灰色 */
-.stat-c { color: #64748b !important; }  /* <50 暗灰 */
+.stat-c { color: #8b9cb2 !important; }  /* <50 暗灰：仍需 >=4.5:1，不靠「看不见」表达低属性 */
 
 /* 已选详情卡片 */
 .action-row { display: flex; justify-content: space-between; align-items: center; gap: 14px; padding-top: 14px; border-top: 1px solid var(--overlay-hover); flex-shrink: 0; }
 .selected-info { flex: 1; }
 .selected-card { display: flex; gap: 12px; align-items: center; }
-.selected-portrait { width: 48px; height: 60px; object-fit: cover; border-radius: 6px; border: 2px solid var(--color-warning); }
+.selected-portrait { width: 48px; height: 60px; object-fit: cover; border-radius: var(--ui-radius-lg); border: 2px solid var(--color-warning); }
 .selected-details { display: flex; flex-direction: column; gap: 4px; }
-.selected-name { display: flex; gap: 8px; align-items: baseline; font-weight: 900; font-size: calc(15px * var(--font-scale)); }
-.selected-rank { font-size: calc(11px * var(--font-scale)); color: var(--color-warning); }
-.selected-meta { font-size: calc(12px * var(--font-scale)); color: var(--color-text-secondary); display: flex; gap: 12px; }
-.selected-hidden { font-size: calc(11px * var(--font-scale)); color: var(--color-text-disabled); display: flex; gap: 14px; }
-.hidden-stat { opacity: 0.7; }
+.selected-name { display: flex; gap: 8px; align-items: baseline; font-weight: 900; font-size: var(--fs-body); }
+.selected-rank { font-size: var(--fs-label); color: var(--color-warning); }
+.selected-meta { font-size: var(--fs-label); color: var(--color-text-secondary); display: flex; gap: 12px; }
+.selected-hidden { font-size: var(--fs-label); color: var(--color-text-secondary); display: flex; gap: 14px; }
+.hidden-stat { opacity: 1; }
 
-.btn-confirm { padding: 14px 36px; font-size: calc(15px * var(--font-scale)); font-weight: 900; flex-shrink: 0; }
+.btn-confirm { padding: 14px 36px; font-size: var(--fs-body); font-weight: 900; flex-shrink: 0; }
 .btn-confirm:disabled { opacity: 0.35; cursor: not-allowed; }
 
 .text-cyan { color: var(--color-cyan) !important; }
 .text-red { color: var(--color-empire) !important; }
-.text-muted { color: var(--color-text-disabled); }
+.text-muted { color: var(--color-text-secondary); }
 .text-gold { color: var(--color-warning); }
 .text-emerald { color: var(--color-green) !important; }
 </style>

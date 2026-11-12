@@ -259,13 +259,13 @@ export function doorRibbonPoint(t: number, time: number, amp = DOOR_NOISE_AMP): 
  * （`nx/ny` = **未加噪的轮廓法线**，用于把中心线扩成带宽；小噪声下与真实法线差异可忽略，
  *  且不会自交 ⇒ 光带干净）。采样点 `i` 的参数 `t = i / count`。
  */
-export function doorRibbonSamples(time: number, count = DOOR_RIBBON_SAMPLES): Float32Array {
+export function doorRibbonSamples(time: number, count = DOOR_RIBBON_SAMPLES, ampK = 1): Float32Array {
   const n = Math.max(8, Math.floor(count));
   const out = new Float32Array(n * 4);
   for (let i = 0; i < n; i++) {
     const t = i / n;
     const o = doorRibbonOutline(t);
-    const d = doorRibbonNoise(t, time) * DOOR_NOISE_AMP;
+    const d = doorRibbonNoise(t, time) * DOOR_NOISE_AMP * ampK;   // ampK：辉光层传小值 ⇒ 宽带的波浪不会被放大
     out[i * 4] = o.x + o.nx * d;
     out[i * 4 + 1] = o.y + o.ny * d;
     out[i * 4 + 2] = o.nx;
@@ -285,10 +285,10 @@ export function doorRibbonSamples(time: number, count = DOOR_RIBBON_SAMPLES): Fl
  */
 export function doorRibbonBandVertices(
   time: number, count = DOOR_RIBBON_SAMPLES, halfW = DOOR_RIBBON_HALF_W, out?: Float32Array,
-  kx = 1, ky = 1,
+  kx = 1, ky = 1, ampK = 1,
 ): Float32Array {
   const n = Math.max(8, Math.floor(count));
-  const s = doorRibbonSamples(time, n);
+  const s = doorRibbonSamples(time, n, ampK);
   const dst = (out && out.length >= n * 6) ? out : new Float32Array(n * 2 * 3);
   const wx = halfW * kx, wy = halfW * ky;
   for (let i = 0; i < n; i++) {

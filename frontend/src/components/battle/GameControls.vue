@@ -37,8 +37,8 @@
       </button>
     </template>
 
-    <!-- 演习模式：返回菜单 -->
-    <button v-if="!isCampaign" @click="store.returnToMetaMenu()" class="neo-btn text-red">撤退</button>
+    <!-- 演习模式：撤退（[v102] 加二次确认 —— Esc 退出已移除后，这是唯一出口，不能一点就走） -->
+    <button v-if="!isCampaign" @click="confirmLeaveSim" class="neo-btn text-red">撤退</button>
   </div>
 </template>
 
@@ -122,6 +122,12 @@ const togglePause = () => {
   }
 };
 
+// [v102] 演习撤退：Esc 退出已移除 ⇒ 本按钮是唯一出口，必须二次确认（与战役轨一致）
+const confirmLeaveSim = () => {
+  if (!confirm('确定退出本次演习吗？\n\n战斗进度不会保留。')) return;
+  store.returnToMetaMenu();
+};
+
 // AI 裁决：基于双方当前剩余兵力自动结算
 const autoResolve = () => {
   if (!confirm('确定要交由 AI 裁决战斗结果吗？\n\n将基于双方当前剩余兵力自动结算，无法撤回。')) return;
@@ -143,18 +149,19 @@ const confirmRetreat = () => {
 </script>
 
 <style scoped>
-.game-controls { 
-    display: flex; gap: 10px; align-items: center; 
-    pointer-events: auto; 
+.game-controls { display: flex; gap: var(--ui-2); align-items: center; pointer-events: auto; }
+.speed-controls { display: flex; gap: var(--ui-1); padding: var(--ui-1); border-radius: var(--ui-radius); }
+.btn-speed {
+  min-height: 36px; padding: 0 var(--ui-2); background: transparent; border: 1px solid transparent;
+  color: var(--ui-ink-3); font-size: var(--fs-label); font-weight: 800;
+  font-variant-numeric: tabular-nums; cursor: pointer;
+  border-radius: var(--ui-radius); transition: color var(--ui-dur-micro), background var(--ui-dur-micro);
 }
-.speed-controls { display: flex; gap: 4px; padding: 4px; border-radius: 6px; }
-.btn-speed { background: transparent; border: none; color: var(--color-text-disabled); font-size: calc(12px * var(--font-scale)); font-weight: 800; padding: 4px 8px; cursor: pointer; transition: all 0.2s; border-radius: 4px; }
-.btn-speed:hover { color: var(--color-text-secondary); }
-.btn-speed.active { background: var(--color-cyan); color: var(--neo-surface); }
-.btn-ctrl { padding: 6px 12px; font-size: calc(12px * var(--font-scale)); font-weight: 800; }
-.active-bomb { border-color: var(--color-empire); color: var(--color-empire); animation: pulse-red 1s infinite; }
-/* [W5.2] 指挥点按钮：面板开启时高亮（与 active-bomb 同风格的常亮态） */
-.active-cp { border-color: var(--color-cyan); color: var(--color-cyan); box-shadow: 0 0 10px rgba(34, 211, 238, 0.55); }
-.cp-key { opacity: 0.6; font-size: calc(10px * var(--font-scale)); }
-@keyframes pulse-red { 50% { box-shadow: 0 0 10px var(--color-empire); } }
+.btn-speed:hover { color: var(--ui-ink); background: var(--ui-accent-soft); }
+.btn-speed.active { background: var(--ui-accent); color: var(--ui-accent-ink); }
+.btn-ctrl { min-height: 38px; padding: 0 var(--ui-2); }
+.active-bomb { border-color: var(--dmc-danger) !important; color: var(--dmc-danger) !important; }
+.active-cp { border-color: var(--ui-accent); color: var(--ui-accent); box-shadow: var(--ui-glow); }
+.cp-key { opacity: 0.6; font-size: var(--fs-caption); }
+@keyframes pulse-red { 50% { box-shadow: 0 0 12px var(--dmc-danger); } }
 </style>

@@ -132,7 +132,7 @@ onBeforeUnmount(() => { cancelAnimationFrame(raf); });
   width: 168px;
   height: 168px;
   z-index: 12;
-  border-radius: 10px;
+  border-radius: var(--ui-radius-lg);
   background: rgba(8, 12, 20, 0.55);
   border: 1px solid rgba(148, 163, 184, 0.22);
   backdrop-filter: blur(2px);
@@ -146,6 +146,6 @@ onBeforeUnmount(() => { cancelAnimationFrame(raf); });
   width: 100%;
   height: 100%;
   display: block;
-  border-radius: 10px;
+  border-radius: var(--ui-radius-lg);
 }
 </style>

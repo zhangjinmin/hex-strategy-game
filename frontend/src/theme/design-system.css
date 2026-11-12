@@ -1,0 +1,322 @@
+/* ================================================================
+   LOGH · 统一界面语言 (Design System)
+   ----------------------------------------------------------------
+   真源：本文件。tokens.css 中的旧变量全部保留为「向后兼容别名」，
+   未改造的组件继续可用；新组件一律只用本文件的 --ui-* / --fs-* 令牌。
+
+   设计读（Design Read）：
+     PC 单机大战略 / 战术指挥，面向熟悉银河英雄传说的硬核玩家，
+     视觉语言 = 太空歌剧式军事指挥体系，参考旧版 OVA 的舰桥仪表 +
+     普鲁士军国仪式 + 共和主义技术官僚制式，而非通用科幻 HUD。
+     ART_VARIANCE 6 / MOTION_FLAIR 4 / INFO_DENSITY 7。
+
+   三条不可破的约定：
+     1. 骨架唯一：间距、栅格、组件结构、交互状态全站一致（= 统一）。
+     2. 皮肤两套：同盟 / 帝国只覆盖「色彩 / 字形 / 字距 / 装饰 / 对齐」
+        五类表面变量，不复制布局（= 区分度）。
+     3. 敌我识别与阵营归属分离：--ui-accent 是玩家阵营，
+        --ui-rival 是对手阵营；危险/伤害语义仍走 --color-error。
+   ================================================================ */
+
+/* 门面锁：挂 .ui-skin-front 的元素在本元素重声明整套中性令牌，覆盖从
+   <html data-faction> 继承来的阵营值。标题界面等「作品门面」因此不随对局阵营变色。
+   与 :root 共用同一份定义，零重复；不要在组件里再抄一份数值。 */
+:root, .ui-skin-front {
+  /* ---------- 字号阶梯（唯一真源）----------
+     基准按 fontScale=100 定标；所有值已含 var(--font-scale)，
+     组件里直接写 font-size: var(--fs-xxx)，不要再造 calc(Npx * ...)。 */
+  --fs-display: calc(48px * var(--font-scale));  /* 战役名 / 结算 / 主标题 */
+  --fs-h1:      calc(32px * var(--font-scale));  /* 阶段横幅 / 一级标题 */
+  --fs-h2:      calc(25px * var(--font-scale));  /* 分区标题 */
+  --fs-h3:      calc(20px * var(--font-scale));  /* 面板标题 / 舰队名 */
+  --fs-body:    calc(16px * var(--font-scale));  /* 正文 / 按钮 / 致辞 */
+  --fs-label:   calc(14px * var(--font-scale));  /* 字段名 / 标签 */
+  --fs-caption: calc(12px * var(--font-scale));  /* 辅助说明（下限，不再更小） */
+  --fs-num:     calc(17px * var(--font-scale));  /* 关键数值，配合 .ui-num */
+
+  /* ---------- 间距（8px 基准，独立命名空间，不覆盖旧 --sp-*） ---------- */
+  --ui-1: 8px;  --ui-2: 12px; --ui-3: 16px; --ui-4: 24px;
+  --ui-5: 32px; --ui-6: 48px; --ui-8: 64px; --ui-10: 80px;
+
+  /* ---------- 形状：全站唯一一套 ---------- */
+  --ui-radius:      2px;   /* 硬朗直角微倒角，军事制式 */
+  --ui-radius-lg:   4px;   /* 大容器 */
+  --ui-radius-pill: 999px; /* 仅徽章 / 状态胶囊 */
+  --ui-frame:       1px solid var(--ui-line);
+  --ui-frame-strong:1px solid var(--ui-line-strong);
+
+  /* ---------- 层级 / 深度 ---------- */
+  --ui-shadow-panel: 0 18px 48px rgba(0, 0, 0, 0.55);
+  --ui-shadow-raised:0 6px 20px rgba(0, 0, 0, 0.38);
+  --ui-glow:         0 0 28px var(--ui-accent-soft);
+  --ui-scrim:        rgba(3, 6, 12, 0.86);
+
+  /* ---------- 动效（动机化、克制） ---------- */
+  --ui-dur-micro:  120ms;
+  --ui-dur-normal: 260ms;
+  --ui-dur-cine:   520ms;
+  --ui-ease:       cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* ---------- 中性骨架（默认 = 费沙 / 未进入阵营时） ---------- */
+  --ui-bg:            #070b12;
+  --ui-surface:       #101722;
+  --ui-surface-2:     #16202e;
+  --ui-surface-3:     #0b111a;
+  --ui-panel:         rgba(12, 18, 29, 0.90);
+  --ui-panel-solid:   #0d1521;
+  --ui-line:          rgba(163, 183, 207, 0.16);
+  --ui-line-strong:   rgba(163, 183, 207, 0.34);
+  --ui-ink:           #e8edf4;
+  --ui-ink-2:         #aab8c9;
+  --ui-ink-3:         #6e7f93;
+
+  --ui-accent:        #d8b26a;                    /* 琥珀金（费沙 / 中立） */
+  --ui-accent-rgb:    216, 178, 106;              /* 供 rgba(var(...), a) 保留原透明度 */
+  --ui-accent-soft:   rgba(216, 178, 106, 0.18);
+  --ui-accent-ink:    #17110a;                    /* 落在强调色上的文字 */
+  --ui-rival:         #6d94c8;
+  --ui-rival-rgb:     109, 148, 200;
+  --ui-rival-soft:    rgba(109, 148, 200, 0.16);
+
+  /* 表面变量：两套皮肤只覆盖这里，不复制布局。
+     展示标题与正文字体**分离**：正文仍由设置项 uiFont 决定（默认得意黑，用户已确认），
+     标题改用正体粗黑，避免斜体字面在大字号下放大倾斜感。 */
+  --ui-display-font:      'DMC_AlibabaHealthFont2_0CN_85B', var(--dmc-font);
+  --ui-display-weight:    800;
+  --ui-display-tracking:  0.14em;
+  --ui-title-align:       center;
+  --ui-frame-decoration:  none;   /* 同盟=切角 / 帝国=双线，由皮肤给值 */
+  --ui-field:             linear-gradient(180deg, rgba(255,255,255,0.018), transparent);
+  --ui-starmap:           radial-gradient(ellipse at 50% 42%, rgba(24, 40, 64, 0.55), transparent 68%);
+}
+
+/* ================================================================
+   皮肤 A · 自由行星同盟
+   共和 / 功能主义 / 技术官僚：冷蓝与牙白、几何无衬线、宽字距、
+   水平扫描线、左对齐编号式排版、切角框、零装饰。
+   原作依据：同盟军制服朴素实用、舰内装饰以实用为主（见设计说明）。
+   ================================================================ */
+:root[data-faction="alliance"],
+[data-side="alliance"] {
+  --ui-bg:            #050b16;
+  --ui-surface:       #0c1727;
+  --ui-surface-2:     #12233a;
+  --ui-surface-3:     #081020;
+  --ui-panel:         rgba(8, 18, 33, 0.90);
+  --ui-panel-solid:   #0a1626;
+  --ui-line:          rgba(120, 172, 236, 0.22);
+  --ui-line-strong:   rgba(120, 172, 236, 0.46);
+  --ui-ink:           #eaf3ff;
+  --ui-ink-2:         #a9c2de;
+  --ui-ink-3:         #6c88a8;
+
+  --ui-accent:        #5b9dff;
+  --ui-accent-rgb:    91, 157, 255;
+  --ui-accent-soft:   rgba(91, 157, 255, 0.20);
+  --ui-accent-ink:    #06132a;
+  --ui-rival:         #d8b26a;
+  --ui-rival-rgb:     216, 178, 106;
+  --ui-rival-soft:    rgba(216, 178, 106, 0.16);
+
+  --ui-display-font:  'DMC_HarmonyOS_Sans_SC_Regular', var(--dmc-font);
+  --ui-display-weight:700;
+  --ui-display-tracking: 0.16em;
+  --ui-title-align:   left;
+  --ui-frame-decoration: alliance;
+  --ui-field:         repeating-linear-gradient(to bottom, rgba(120,172,236,0.022) 0 1px, transparent 1px 10px);
+  --ui-starmap:       radial-gradient(ellipse at 50% 42%, rgba(20, 54, 104, 0.58), transparent 68%);
+}
+
+/* ================================================================
+   皮肤 B · 银河帝国
+   贵族 / 军国 / 仪式：墨黑与金、衬线展示体、对称居中、
+   双线框与金属渐变、放射纹章、装饰性竖线。
+   原作依据：帝国军服为普鲁士式高领深色制服配金色肩章与勋章，
+   舰桥有列柱与抬高指挥席（见设计说明）。
+   ================================================================ */
+:root[data-faction="empire"],
+[data-side="empire"] {
+  --ui-bg:            #080706;
+  --ui-surface:       #14120f;
+  --ui-surface-2:     #1f1a13;
+  --ui-surface-3:     #0c0a08;
+  --ui-panel:         rgba(14, 12, 10, 0.92);
+  --ui-panel-solid:   #12100d;
+  --ui-line:          rgba(216, 178, 106, 0.26);
+  --ui-line-strong:   rgba(216, 178, 106, 0.52);
+  --ui-ink:           #f2eade;
+  --ui-ink-2:         #c6b9a3;
+  --ui-ink-3:         #8b7c64;
+
+  --ui-accent:        #d8b26a;
+  --ui-accent-rgb:    216, 178, 106;
+  --ui-accent-soft:   rgba(216, 178, 106, 0.20);
+  --ui-accent-ink:    #17110a;
+  --ui-rival:         #5b9dff;
+  --ui-rival-rgb:     91, 157, 255;
+  --ui-rival-soft:    rgba(91, 157, 255, 0.16);
+
+  --ui-display-font:  'DMC_ChangBanDianSong-12', 'DMC_NanoDyongWongSong', serif;
+  --ui-display-weight:600;
+  --ui-display-tracking: 0.20em;
+  --ui-title-align:   center;
+  --ui-frame-decoration: empire;
+  --ui-field:         linear-gradient(105deg, transparent 30%, rgba(216,178,106,0.055) 50%, transparent 70%);
+  --ui-starmap:       radial-gradient(ellipse at 50% 42%, rgba(78, 58, 26, 0.42), transparent 68%);
+}
+
+/* ================================================================
+   统一组件基类（骨架）
+   —— 全站面板、按钮、分区标题、数值只有这一份实现。
+   ================================================================ */
+
+.ui-frame {
+  position: relative;
+  background: var(--ui-panel);
+  /* 边框可见度是骨架常量，不随阵营浮动：否则同盟淡线 / 帝国双线
+     会让同层级面板视觉权重失衡（战前军议双方卡实测问题）。 */
+  border: 1px solid var(--ui-line-strong);
+  border-radius: var(--ui-radius);
+  box-shadow: var(--ui-shadow-panel);
+  backdrop-filter: blur(10px);
+}
+/* 同盟：左上 / 右下切角 + 一道冷蓝刻度，读作战术终端的功能性开槽 */
+[data-side="alliance"] .ui-frame,
+.ui-frame[data-side="alliance"],
+:root[data-faction="alliance"] .ui-frame {
+  border-radius: 0;
+  clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px));
+}
+[data-side="alliance"] .ui-frame::before,
+.ui-frame[data-side="alliance"]::before,
+:root[data-faction="alliance"] .ui-frame::before {
+  content: '';
+  position: absolute; top: 0; left: 12px; width: 64px; height: 2px;
+  background: var(--ui-accent);
+  pointer-events: none;
+}
+/* 帝国：内嵌第二道金线，读作勋章 / 舰桥列柱的双线框 */
+[data-side="empire"] .ui-frame,
+.ui-frame[data-side="empire"],
+:root[data-faction="empire"] .ui-frame {
+  border-radius: 0;
+  box-shadow: var(--ui-shadow-panel), inset 0 0 0 3px var(--ui-panel-solid), inset 0 0 0 4px var(--ui-line);
+}
+[data-side="empire"] .ui-frame::after,
+.ui-frame[data-side="empire"]::after,
+:root[data-faction="empire"] .ui-frame::after {
+  content: '';
+  position: absolute; inset: 6px;
+  border: 1px solid var(--ui-line);
+  pointer-events: none;
+}
+
+/* 展示标题：阵营差异最直观的一层 */
+.ui-display {
+  font-family: var(--ui-display-font);
+  font-size: var(--fs-display);
+  font-weight: var(--ui-display-weight);
+  letter-spacing: var(--ui-display-tracking);
+  line-height: 1.18;
+  text-align: var(--ui-title-align);
+  color: var(--ui-ink);
+}
+.ui-h1 { font-family: var(--ui-display-font); font-size: var(--fs-h1); font-weight: var(--ui-display-weight); letter-spacing: var(--ui-display-tracking); line-height: 1.2; color: var(--ui-ink); }
+.ui-h2 { font-family: var(--ui-display-font); font-size: var(--fs-h2); font-weight: var(--ui-display-weight); letter-spacing: 0.08em; line-height: 1.3; color: var(--ui-ink); }
+
+/* 分区标题 / 编号：同盟左对齐编号式，帝国居中对称式 */
+.ui-rule {
+  display: flex; align-items: center; gap: var(--ui-2);
+  font-size: var(--fs-label); font-weight: 800;
+  letter-spacing: 0.18em; color: var(--ui-accent);
+  text-transform: uppercase;
+}
+.ui-rule::before {
+  content: ''; flex: 0 0 auto; width: 3px; height: 1.1em;
+  background: var(--ui-accent);
+}
+.ui-rule::after {
+  content: ''; flex: 1; height: 1px; background: var(--ui-line);
+}
+:root[data-faction="empire"] .ui-rule,
+[data-side="empire"] .ui-rule { justify-content: center; text-align: center; }
+:root[data-faction="empire"] .ui-rule::after,
+[data-side="empire"] .ui-rule::after { background: linear-gradient(to right, var(--ui-line-strong), transparent); }
+
+/* kicker：作战编号 / 分类标签，替代满屏小字 */
+.ui-kicker {
+  font-size: var(--fs-caption); font-weight: 800;
+  letter-spacing: 0.22em; color: var(--ui-ink-3);
+}
+
+/* 数值：表格数字，避免跳动 */
+.ui-num {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+  letter-spacing: 0.02em;
+}
+
+/* 按钮：六态齐全 */
+.ui-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--ui-1);
+  min-height: 40px; padding: 0 var(--ui-3);
+  font-size: var(--fs-body); font-weight: 800; letter-spacing: 0.06em;
+  color: var(--ui-ink-2);
+  background: var(--ui-surface-2);
+  border: var(--ui-frame-strong); border-radius: var(--ui-radius);
+  cursor: pointer; user-select: none;
+  transition: background var(--ui-dur-micro) var(--ui-ease),
+              color var(--ui-dur-micro) var(--ui-ease),
+              border-color var(--ui-dur-micro) var(--ui-ease),
+              transform var(--ui-dur-micro) var(--ui-ease);
+}
+.ui-btn:hover:not(:disabled) { color: var(--ui-ink); border-color: var(--ui-accent); background: var(--ui-accent-soft); }
+.ui-btn:active:not(:disabled) { transform: scale(0.975); }
+.ui-btn:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 2px; }
+.ui-btn:disabled { opacity: 0.38; cursor: not-allowed; }
+.ui-btn.is-active,
+.ui-btn[aria-pressed="true"] { color: var(--ui-accent-ink); background: var(--ui-accent); border-color: var(--ui-accent); }
+.ui-btn--primary {
+  min-height: 52px; padding: 0 var(--ui-6);
+  font-size: var(--fs-h3); letter-spacing: 0.24em;
+  color: var(--ui-accent); background: var(--ui-accent-soft);
+  border: 1px solid var(--ui-accent);
+  box-shadow: 0 0 26px var(--ui-accent-soft);
+}
+.ui-btn--primary:hover:not(:disabled) { color: var(--ui-accent-ink); background: var(--ui-accent); }
+.ui-btn--ghost { background: transparent; border-color: var(--ui-line); }
+
+/* 数据条：不做渐变压条，做「刻度 + 实色填充」的仪表读数 */
+.ui-meter {
+  position: relative; height: 8px; overflow: hidden;
+  background: var(--ui-surface-3); border: 1px solid var(--ui-line);
+  border-radius: 0;
+}
+.ui-meter::after {
+  content: ''; position: absolute; inset: 0; pointer-events: none;
+  background: repeating-linear-gradient(to right, transparent 0 9px, rgba(0,0,0,0.32) 9px 10px);
+}
+.ui-meter > i {
+  display: block; height: 100%; background: var(--ui-accent);
+  transition: width var(--ui-dur-normal) var(--ui-ease);
+}
+
+/* 深空场：尺度感来自大面积留白、稀疏星点与暗角，不是规则坐标网格。
+   密集网格会把界面读成「表格 / 坐标纸」，是通用科幻 HUD 的典型廉价感来源。 */
+.ui-void {
+  background-color: var(--ui-bg);
+  background-image:
+    var(--ui-starmap),
+    radial-gradient(circle at 18% 22%, rgba(255,255,255,0.055) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 72% 68%, rgba(255,255,255,0.042) 0 1px, transparent 1.5px),
+    radial-gradient(circle at 42% 86%, rgba(255,255,255,0.032) 0 1px, transparent 1.5px);
+  background-size: auto, 340px 340px, 460px 460px, 620px 620px;
+}
+
+/* 阵营对照容器：同屏并置时两侧各自生效，不串色 */
+.ui-duel { display: grid; grid-template-columns: 1fr auto 1fr; align-items: start; gap: var(--ui-5); }
+.ui-duel > [data-side] { min-width: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-btn, .ui-meter > i { transition-duration: 0ms; }
+}

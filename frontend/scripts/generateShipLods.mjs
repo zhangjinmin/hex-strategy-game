@@ -26,28 +26,49 @@ await MeshoptDecoder.ready;
 const io = new NodeIO()
   .registerExtensions([EXTMeshoptCompression, KHRMaterialsSpecular, KHRMeshQuantization])
   .registerDependencies({ 'meshopt.decoder': MeshoptDecoder });
-const gltfTransformBin = process.platform === 'win32'
-  ? resolve(here, '../node_modules/.bin/gltf-transform.cmd')
-  : resolve(here, '../node_modules/.bin/gltf-transform');
+// Run the CLI's JS entrypoint with the current Node binary rather than the
+// node_modules/.bin shim. Node >=18.20.2/20.12.2 refuses to spawn a .cmd/.bat with
+// shell:false (CVE-2024-27980) and throws EINVAL on Windows, and the POSIX shim is
+// not executable on a Windows filesystem. This path works identically on both.
+const gltfTransformCli = resolve(here, '../node_modules/@gltf-transform/cli/bin/cli.js');
 
 function lodName(sourceName, level) {
   return sourceName.replace(/\.glb$/i, `.lod${level}.glb`);
 }
 
+/** Component-type maxima used by glTF normalized integer accessors. */
+const NORMALIZED_MAX = { 5120: 127, 5121: 255, 5122: 32767, 5123: 65535 };
+
 function meshMetrics(document) {
   let tris = 0;
   const lo = [Infinity, Infinity, Infinity];
   const hi = [-Infinity, -Infinity, -Infinity];
-  for (const mesh of document.getRoot().listMeshes()) {
+  // Walk nodes rather than meshes: gltf-transform writes quantized LODs whose POSITION is a
+  // normalized integer accessor, with the real extent restored by the owning node's matrix.
+  // Reading the raw array alone yields the quantized integer range (e.g. 65534) instead of a
+  // length in model units, and the runtime divides orig/lod to rescale the mesh — a bogus
+  // number there collapses the LOD to sub-pixel size.
+  for (const node of document.getRoot().listNodes()) {
+    const mesh = node.getMesh();
+    if (!mesh) continue;
+    const m = node.getWorldMatrix();
     for (const primitive of mesh.listPrimitives()) {
       const position = primitive.getAttribute('POSITION');
       if (!position) continue;
       const indices = primitive.getIndices();
       tris += Math.floor((indices ? indices.getCount() : position.getCount()) / 3);
       const array = position.getArray();
-      for (let i = 0; i + 2 < array.length; i += position.getElementSize()) {
-        lo[0] = Math.min(lo[0], array[i]); lo[1] = Math.min(lo[1], array[i + 1]); lo[2] = Math.min(lo[2], array[i + 2]);
-        hi[0] = Math.max(hi[0], array[i]); hi[1] = Math.max(hi[1], array[i + 1]); hi[2] = Math.max(hi[2], array[i + 2]);
+      const stride = position.getElementSize();
+      const k = position.getNormalized() ? 1 / (NORMALIZED_MAX[position.getComponentType()] ?? 1) : 1;
+      for (let i = 0; i + 2 < array.length; i += stride) {
+        const x = array[i] * k;
+        const y = array[i + 1] * k;
+        const z = array[i + 2] * k;
+        const wx = m[0] * x + m[4] * y + m[8] * z + m[12];
+        const wy = m[1] * x + m[5] * y + m[9] * z + m[13];
+        const wz = m[2] * x + m[6] * y + m[10] * z + m[14];
+        lo[0] = Math.min(lo[0], wx); lo[1] = Math.min(lo[1], wy); lo[2] = Math.min(lo[2], wz);
+        hi[0] = Math.max(hi[0], wx); hi[1] = Math.max(hi[1], wy); hi[2] = Math.max(hi[2], wz);
       }
     }
   }
@@ -71,7 +92,7 @@ async function writeLod(sourcePath, outputPath, { ratio, textureSize }) {
   // source material/texture encoding; NodeIO alone would drop unknown extensions on write.
   const tempPath = outputPath.replace(/\.glb$/i, '.tmp.glb');
   await new Promise((resolveRun, rejectRun) => {
-    const child = spawn(gltfTransformBin, [
+    const child = spawn(process.execPath, [gltfTransformCli,
       'optimize', sourcePath, tempPath,
       '--simplify-ratio', String(ratio), '--simplify-error', '0.01',
       // Keep transform nodes/FX anchors intact; only optimize mesh and texture payloads.
@@ -97,6 +118,8 @@ async function main() {
   const files = (await readdir(shipDir))
     .filter((name) => name.toLowerCase().endsWith('.glb'))
     .filter((name) => !/\.lod[12]\.glb$/i.test(name))
+    // Leftover from an interrupted run; never treat it as a source model.
+    .filter((name) => !/\.tmp\.glb$/i.test(name))
     .sort((a, b) => a.localeCompare(b));
   const manifest = await readManifest();
   let generated = 0;

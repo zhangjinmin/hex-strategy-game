@@ -22,7 +22,7 @@ import { commandBridge } from '../../services/CommandBridge';
 // 3D 战场覆盖层特效桥：只推送事件，2D 特效代码零改动（3D 模式下 2D 层被隐藏）
 import { pushFx3d } from '../battle3dFx';
 import { updateSupplyChain, collectAuxShips, moveAuxShips, syncAuxVisual, isSupplyUnit, SUPPLY_SOURCE_RADIUS, SUPPLY_RELAY_RADIUS, SUPPLY_AUX_RADIUS, type SupplyNode, type FleetSupplyInfo, type AuxAsset } from '../SupplyChainSystem';
-import { advanceFormationFacing, headingDistance, leadInterceptPoint, stepShipSlotFollow, UNIT_MOTION_LIMITS, UNIT_VIS_TURN_RATE } from '../fleetKinematics';
+import { advanceFormationFacing, headingDistance, leadInterceptPoint, stepShipSlotFollow, slotTrackingMaxSpeed, UNIT_MOTION_LIMITS, UNIT_VIS_TURN_RATE } from '../fleetKinematics';
 import { pickShip, type ShipTargetCandidate } from '../clusterAI';
 import { buildFocusTable, type FocusEntry } from '../fireCoordinator';
 import { combatUnits, hasCombatUnits, targetableUnits } from '../combatRoster';
@@ -58,7 +58,7 @@ import { useSettingsStore } from '../../store/settingsStore';
 //   **全部走单一真源 import，禁止再在本文件内联 beats 表 / 地形分支 / 舰种装甲表。**
 //   数值真源 = config/balance.ts 的 TACTICAL_V33 / COLUMN_MATRIX / DIRECTION_ARMOR / INTERCEPT /
 //   FORMATION_COLLAPSE / SHIP_BAND，每一项都有独立开关可回退。
-import { formationCounterMul } from '../../config/formations';
+import { formationCounterMul, FORMATIONS } from '../../config/formations';
 import {
     columnProfileCached, columnMatrixMul, nextRangeBand, shipBandMul, type RangeBand,
 } from '../../config/formationColumns';
@@ -434,6 +434,17 @@ function ringCell(i: number): [number, number] {
 /** [#74 · A2] 演习专属战前部署倒计时（秒）。仅演习（!isCampaign）启用。
  *  [W4.1] 到点**默认不再自动开战**（改为仅提示，等待玩家回车/按钮）；仅当 store.deployAutoStart=true 才自动开战。
  *  战役**不适用**（保持无限等待，且不显示倒计时行）。单一数据源 = store.deployCountdownSec。 */
+/* [v108] 转身窗口暴露：舰队正在转向时，侧面/背面防御进一步下降。
+   判据 `facingRate` 单位 = rad/帧（与 `kinOmegaNow` 同量纲）；0.004 rad/帧 ≈ 13.8°/s，
+   即"正在执行一次实质机动"，不是阵型微抖。倍率 1.15 取在"可感但不改变装甲偏序"的量级
+   （既有后部装甲 1.00~2.00、侧舷攻方 1.25）。 */
+/* [v108] 情报观测滞回窗口（ms）：见 `rawObserved` 处的完整理由。
+   取 1200ms ≈ 72 帧 —— 边界抖动（几百毫秒级）被吃掉，"真跑掉"不会被拖住。 */
+const INTEL_OBSERVE_HOLD_MS = 1200;
+
+const TURN_EXPOSURE_RATE = 0.004;
+const TURN_EXPOSURE_MUL = 1.15;
+
 const DEPLOY_COUNTDOWN_SEC = 20;
 
 /** [W3.2] `hold_point` 到位后允许的最长驻守时长（毫秒）。超时 ⇒ 自动转 `search`（巡逻/索敌）
@@ -904,6 +915,22 @@ export class BattleScene extends Phaser.Scene {
                 if (newForm) {
                     this.deployFormation = newForm;
                     (this.store as any).deployFormation = newForm;   // [G4] 同步全屏军议层高亮
+                    // [v101] **选阵即生效**：把阵型写进玩家舰队**并就地重摆**。
+                    //   病灶（多轮"开场阵型错乱"的真根因）：本键此前只改 `this.deployFormation`，
+                    //   玩家舰队的 formation 要拖到 `startBattleAfterDeploy`（回车）才被改写 ——
+                    //   而部署末尾的统一重摆（activateDeployPhase 尾部）早在**倒计时开始前**就跑完了。
+                    //   ⇒ 开战瞬间 sprite 全停在**旧阵型**的几何位置上，随后入场 6.5s 暂停期
+                    //     没有任何逻辑纠正；暂停解除后第一帧 formKey 不匹配触发 3.5s morph，
+                    //     且 morph 期间集结期硬锁（v100b）被 `!morphingNow` 跳过 ⇒ 舰船以
+                    //     限速从旧阵位爬向新阵位 —— 正是"开场错误、过一会儿自己变好"。
+                    //   ⇒ 现在选择的那一刻就写 formation + 重摆，部署末尾重摆用的也是它，
+                    //     开战第一帧 formKey 无变化 ⇒ 无 morph ⇒ 硬锁从第一帧生效。
+                    const _pFac1 = this.store.factions.find((f: any) => f.type === 'player');
+                    const _pFleet1 = this.globalFleets.find((f: any) => f.factionId === _pFac1?.id);
+                    if (_pFleet1) {
+                        _pFleet1.formation = newForm;
+                        this.placeUnitsAtFormationSlots(_pFleet1);
+                    }
                     this.updateDeployText();
                     return;
                 }
@@ -1396,7 +1423,16 @@ export class BattleScene extends Phaser.Scene {
         if (this.deployText) { this.deployText.destroy(); this.deployText = null; }
         const pFac = this.store.factions.find((f: any) => f.type === 'player');
         const pFleet = this.globalFleets.find((f: any) => f.factionId === pFac?.id);
-        if (pFleet) pFleet.formation = this.deployFormation;
+        // [v101] 兜底重摆：正常路径下阵型已在**选阵那一刻**生效并重摆（键盘 1-5 / 军议 UI），
+        //   本行 formation 赋值是幂等重放。但若存在未经选择写点的边缘路径（存档恢复/
+        //   外部 setter 直接改了 deployFormation），这里必须补摆 —— 绝不让"改 formation
+        //   不重摆"的时间差活过本函数：开战第一帧 formKey 必须无变化，集结期硬锁
+        //   （v100b）才能从第一帧生效（用户裁定：开场即正确阵型并固定）。
+        if (pFleet) {
+            const _formChanged = pFleet.formation !== this.deployFormation;
+            pFleet.formation = this.deployFormation;
+            if (_formChanged) this.placeUnitsAtFormationSlots(pFleet);
+        }
         // [#74 · R1] 旗舰开局姿态生效（不写 _userStanceLockUntil：开局初值无需 L1 锁；
         //   1Hz 战略层有 `if (aiFac.type === 'player') continue;` 显式跳过玩家 ⇒ 不会被覆写）
         if (pFleet) pFleet.stance = this.deployTactic;
@@ -1472,6 +1508,18 @@ export class BattleScene extends Phaser.Scene {
         this.entryTimer = null;
         if (!this.entryPhase) return;
         this.entryPhase = false;
+        // [v102] **开场定妆重摆**（用户裁定：「开场即正确阵型并固定下来」）：
+        //   入场暂停窗内 `update()` 全程不跑（isPaused 提前 return）⇒ 逐帧硬锁/追踪都不执行，
+        //   此窗口内看到的阵型 = 最后一次 placeUnitsAtFormationSlots 的产物。真机面板实锤：
+        //   `u0=(-3559,1875)` vs `a=(-1429,1875)` —— y 分毫不差、x 差 2130px
+        //   （slot27 槽位偏移仅 130px）⇒ sprite 停在旧锚点坐标系，锚点已被单独挪走。
+        //   此类"锚-舰脱钩"的写点分散（夹取/分兵/任务牵引/异常隔离吞掉中断帧），逐个堵堵不胜堵。
+        //   ⇒ 在暂停解除前一刻，**无条件按当前锚点重摆全舰队**：不管此前谁把 sprite 写到了哪，
+        //     开场第一帧（update 恢复后由 v100b 集结期硬锁继续钉住）必是完整正确阵型。
+        //   ⚠ 必须在 `isPaused = false` **之前**：解除后的同一 tick 内 update 可能立即推进锚点。
+        for (const _fl of this.globalFleets) {
+            if ((_fl?.units || []).length > 0) this.placeUnitsAtFormationSlots(_fl);
+        }
         this.store.isPaused = false;
         // ⚠ 入场时长(5s) > ASSEMBLE_MAX_MS(4s)：若 `_assemblingSince` 已起算，解除暂停瞬间
         //   `elapsed > 4s` ⇒ 舰队**直接跳进 exploring**（跳过"集结"观感）。故重置到当前时刻
@@ -1948,6 +1996,17 @@ export class BattleScene extends Phaser.Scene {
             // 入场相位（秒，相对 3D 入场事件起点 t0）：按阵位索引线性错开
             u._entryDelay = entryDelayForSlot(slot, n0, spread);
         }
+        // [v104] **摆位即终态：清掉在途 morph**（否则下一帧 morph 插值会覆盖刚摆好的位置）。
+        //   病灶（用户实报「卡片写楔形、舰船是斜带」的机制之一）：`_formMorphA/B` 是
+        //   **运行态叠加**，本函数只写 `_formOffsets/_formLayoutKey` 不清 morph ⇒
+        //   任何在途换阵（战斗层 spindle↔wedge 提交、分兵前后）会在随后 3.5s 内把
+        //   sprite 拉回旧/新表的插值位 —— 摆位结果被静默覆盖，且 hard-lock 因
+        //   `!morphingNow` 被跳过。重摆的语义就是「以本次为准」，必须同时结束 morph。
+        (fleet as any)._formMorphT = undefined as any;
+        (fleet as any)._formMorphDur = undefined as any;
+        (fleet as any)._formMorphA = null as any;
+        (fleet as any)._formMorphB = null as any;
+        (fleet as any)._formMorphStall = 0;
     }
 
     // 保留旧方法供可能的回退（不删除，只从 create 中去掉调用）
@@ -2838,7 +2897,34 @@ export class BattleScene extends Phaser.Scene {
     }
 
     /** [W1] 右键空地 = 直接移动指令（精确世界目的地，不是格子近似）。 */
+    /** [v108] 编队足迹半径（世界 px）：最大格位偏移 × 实际间距。
+     *  与队形转向限速同一口径（`_formOffsets` + `_formSpacing` 都是既有缓存，零额外分配）。
+     *  用途：**交战距离必须扣掉双方半跨** —— 见 isEngaging 处的完整理由。 */
+    private fleetFootprintRadius(fleet: any): number {
+        if (!fleet) return 0;
+        const offs = (fleet as any)._formOffsets as any[] | undefined;
+        const sp = Number((fleet as any)._formSpacing) || 0;
+        if (!offs || offs.length === 0 || sp <= 0) return 0;
+        let he = 0;
+        for (const c of offs) he = Math.max(he, Math.abs(c[0]), Math.abs(c[1]));
+        return he * sp;
+    }
+
     private orderFleetMove(fleet: any, x: number, y: number) {
+        /* [v108 诊断] **一次点击出现两个落点**的排查钩子。
+           症状：某些视角下一次右键会生成两个相距十几~几十 px 的移动令；转动视角后恢复正常。
+           可能来源有三种（两套坐标换算 / 同一事件被两处消费 / 重复实例），光读代码无法判定。
+           ⇒ 这里打印**调用栈第 3 帧**，一眼能看出是哪个调用点在重复下令。
+           关闭方式：控制台 `window.__orderAudit = false`（默认开，只在点击时触发，无逐帧开销）。 */
+        try {
+            const g: any = (typeof window !== 'undefined' ? window : globalThis) as any;
+            if (g && g.__orderAudit !== false) {
+                const st = new Error().stack || '';
+                const caller = st.split('\n')[2]?.trim() ?? '?';
+                // eslint-disable-next-line no-console
+                console.log(`[order-move] fleet=${fleet?.id} to=(${Math.round(x)},${Math.round(y)}) caller=${caller}`);
+            }
+        } catch { /* 诊断失败不影响下令 */ }
         if (!this.canDirectlyControlFleet(fleet)) {
             this.commandNotice(`✕ 该编队不在你可直接指挥的范围内`, x, y, false);
             return;
@@ -3970,6 +4056,15 @@ export class BattleScene extends Phaser.Scene {
             if (typeof value === 'string' && allowed.includes(value)) {
                 this.deployFormation = value;
                 (this.store as any).deployFormation = value;   // UI 回读
+                // [v101] **选阵即生效**（与键盘 1-5 同一条口径）：写 formation + 就地重摆。
+                //   军议 UI 与键盘是玩家选阵的两条等价入口，必须同步修 —— 只修键盘路径的话
+                //   用户从全屏军议层点阵型，开场错乱依旧。见键盘分支的 [v101] 完整注解。
+                const _pFacUi = this.store.factions.find((f: any) => f.type === 'player');
+                const _pFleetUi = this.globalFleets.find((f: any) => f.factionId === _pFacUi?.id);
+                if (_pFleetUi) {
+                    _pFleetUi.formation = value;
+                    this.placeUnitsAtFormationSlots(_pFleetUi);
+                }
                 this.updateDeployText();
             }
             return;
@@ -4167,11 +4262,22 @@ export class BattleScene extends Phaser.Scene {
         }
 
         // 根据总舰数缩放hexRadius
+        /* [v108 大地图] 旧阶梯在 **>16 艘后直接封顶 50** ⇒ 一支 20 舰的分队和一支 400 舰的会战
+           挤在**同一个世界尺寸**里，兵力规模完全不反映到空间上（这是"不够宏大"的直接原因之一）。
+           实体上限 `N_MAX = 1400`，旧阶梯有 88% 的取值区间被压在同一档。
+           ⇒ 阶梯继续往上长（≤16 段逐字保持，既有中小规模战斗的观感零变化）。
+           ⚠ 相对视野会略微收窄：`getVisionRange` 里 `200×scaleFactor` 是线性的，但 `intel×2 / ecm×30`
+             两项是**绝对 px**。实测 hexR=50 时视野 ≈484（=9.68×hexR），hexR=74 时 ≈670（=9.05×hexR）
+             ⇒ 相对视野 −6.6%，在设计容差内；若台架显示 AI 丢目标，优先把这两项也乘 scaleFactor。 */
         if (totalShips <= 4) this.hexRadius = this.baseHexRadius;      // 26
         else if (totalShips <= 8) this.hexRadius = 32;
         else if (totalShips <= 12) this.hexRadius = 38;
         else if (totalShips <= 16) this.hexRadius = 44;
-        else this.hexRadius = 50;
+        else if (totalShips <= 40) this.hexRadius = 50;
+        else if (totalShips <= 120) this.hexRadius = 56;
+        else if (totalShips <= 300) this.hexRadius = 62;
+        else if (totalShips <= 700) this.hexRadius = 68;
+        else this.hexRadius = 74;
 
         console.log(`[BattleScene] 动态扩容: ${totalShips}艘 → hexRadius=${this.hexRadius}`);
     }
@@ -4548,6 +4654,13 @@ export class BattleScene extends Phaser.Scene {
         const hit = this._formMemo.get(key);
         if (hit) return hit;
         const made = formationOffsets(formation as any, n);
+        // [v100] **防篡改冻结**：真机实锤过"共享 memo 数组被单点原地改写"
+        //   （面板 cells[2]=[3,-1]，而 wedge 任何 n 都不产生 gx>0 —— 该值恰是
+        //   circle/square n=89 的 32 号格位）。冻结后任何写入者当场抛 TypeError 带栈，
+        //   不再静默污染其它舰队。Object.freeze 是浅冻结，但 cell 本身是 2 元组，
+        //   元组内无可写字段（[gx,gy] 数字），浅冻结即完整冻结。
+        for (const c of made) Object.freeze(c);
+        Object.freeze(made);
         this._formMemo.set(key, made);
         return made;
     }
@@ -5655,6 +5768,30 @@ export class BattleScene extends Phaser.Scene {
                 _maneuverIntent: spec.intent,
                 _maneuverTargetKind: spec.targetKind,
             };
+            // [v101] **切断运行态遗传**：`{...parent}` 是浅拷贝，母队的一切"进行时"字段
+            //   都被原样带给子队 —— 其中对开场阵型致命的是：
+            //   · `_formMorphT < _formMorphDur`（换阵 morph 未完）⇒ 子队逐帧走 morph 插值
+            //     且被 v100b 集结期硬锁的 `!morphingNow` 排除 ⇒ 舰船从旧队形限速爬向新阵位；
+            //   · `_formMorphA/B`（像素偏移表）沿用母队的旧/新阵型组合，与子队自己的
+            //     formation/阵位表无关 ⇒ 插值目标本身就是错的；
+            //   · `_formLayoutKey`（母队键）让子队首帧错过应有的重建时机（下一帧会自愈，
+            //     但首帧目标位已经错）；
+            //   · `_slotFlip` / `_uturn` / `_compactTurn` / `_uturnJustEnded` ——
+            //     任一为真都会让槽位镜像/横向收拢，开场直接变形。
+            //   子队是**新生的战术单位**，所有机动协议都应从"无"开始。
+            //   （`formFacing` 保留：与摆位同源，删除反而造成摆位与逐帧旋转基准不一致。）
+            child._formMorphT = undefined as any;
+            child._formMorphDur = undefined as any;
+            child._formMorphA = null as any;
+            child._formMorphB = null as any;
+            child._formLayoutKey = undefined as any;
+            child._formMorphStall = 0;
+            child._slotFlip = false;
+            child._uturn = false;
+            child._uturnJustEnded = false;
+            child._compactTurn = 0;
+            child._compactKeep = 0;
+            child._reformFromFacing = undefined as any;
             let fs = 0;
             for (const u of slice) { u.formationSlot = fs++; u.gridX = 0; u.gridY = 0; }
             child.formationCount0 = fs;
@@ -5669,6 +5806,13 @@ export class BattleScene extends Phaser.Scene {
         let fs0 = 0;
         for (const u of parent.units) { u.formationSlot = fs0++; u.gridX = 0; u.gridY = 0; }
         parent.formationCount0 = fs0;
+        // [v100b] **重编后立即按新阵型重摆位**：只改编号不摆位 ⇒ 舰船停留在旧队形的
+        //   几何位置上（对子队而言那是母队阵型的一个"对角切片"），随后整队以限速爬向
+        //   新楔形 —— 爬行途中就是用户实报的"斜线/碎片"形态。重摆 = 就地成为正确阵型。
+        //   placeUnitsAtFormationSlots 内部按各自 formation/formationCount0 取格位，
+        //   母/子两队各归各阵，互不串位。
+        this.placeUnitsAtFormationSlots(parent);
+        for (const kid of created) this.placeUnitsAtFormationSlots(kid);
         return created;
     }
 
@@ -5906,9 +6050,13 @@ export class BattleScene extends Phaser.Scene {
         // 接触质量：敌舰队实时识别 2 / 本团队档案接触 1 / 无 0
         const myFac = this.factionMap.get(fleet.factionId);
         let contactQuality: 0 | 1 | 2 = 0;
+        /* [v108] 判据补一条：**当前正在实时呈现**（`_intelDisplayMode === 'live'`）也算可靠接触。
+           旧实现只认 `_contactMemState === 'identified'` ⇒ 玩家在屏幕上明明看着敌舰（live），
+           分兵却被拒"情报不足，分兵将失去目标"（用户实报）。两者同义：能看到就打得着。 */
         const liveIdentified = this.globalFleets.some((ef: any) => {
             const efFac = this.factionMap.get(ef.factionId);
-            return efFac && myFac && efFac.team !== myFac.team && (ef as any)._contactMemState === 'identified';
+            if (!efFac || !myFac || efFac.team === myFac.team) return false;
+            return (ef as any)._contactMemState === 'identified' || (ef as any)._intelDisplayMode === 'live';
         });
         if (liveIdentified) contactQuality = 2;
         else if (myFac && [...this.intelArchive.records.values()].some((r: any) => r.team === myFac.team)) contactQuality = 1;
@@ -5959,6 +6107,9 @@ export class BattleScene extends Phaser.Scene {
             }
             parent.formationCount0 = fs0;
             this.placeFlagshipAtRear(parent);
+            // [v100b] 归队重排后立即重摆位（与 splitFleet 同口径：就地成为正确阵型，
+            //   不让整队从"母子混编"的旧位置限速爬向新楔形）
+            this.placeUnitsAtFormationSlots(parent);
         }
         kid.units = [];
         kid._detachedFrom = null;
@@ -6037,10 +6188,15 @@ export class BattleScene extends Phaser.Scene {
     }
 
     /** 渲染伤害数字 */
-    private spawnDamageNumber(x: number, y: number, value: number, isCrit: boolean) {
+    private spawnDamageNumber(x: number, y: number, value: number, isCrit: boolean, isBackstab = false) {
+        /* [v108] 背击/侧击的**视觉区分**：此前 `isCrit` 把"暴击"与"绕后命中"混成同一种橙色，
+           玩家看不出"这一下是因为打到了屁股"。现在：
+             · 普通  白
+             · 暴击  琥珀（原口径不变）
+             · 背击  猩红 + 字号更大（绕后是玩家主动创造的战术结果，必须给反馈） */
         const txt = this.add.text(x, y, Math.floor(value).toString(), {
-            fontSize: isCrit ? '14px' : '11px',
-            color: isCrit ? '#f59e0b' : '#ffffff',
+            fontSize: isBackstab ? '15px' : (isCrit ? '14px' : '11px'),
+            color: isBackstab ? '#ef4444' : (isCrit ? '#f59e0b' : '#ffffff'),
             fontFamily: 'monospace', fontStyle: 'bold',
             stroke: '#000000', strokeThickness: 2,
         }).setDepth(45).setAlpha(0.8);
@@ -6597,6 +6753,13 @@ export class BattleScene extends Phaser.Scene {
 
         // 【2D 拾取已删除】选目标/选舰队在指挥制下由 `Battle3DOverlay` 做屏幕空间命中
 
+        /* [v108] **遗留交互下线**：地块购买 / 野战修补站属于早期"建设"玩法，指挥制下已无此决策
+           （用户实报「地块无法购买」这类提示是旧文案，现在没有购买这回事了）。
+           ⇒ 整段左键分支停用。保留代码与常量只为可回滚；选目标/选舰队由 3D 层做屏幕空间命中。
+           ⚠ 不要再往这里加新的左键行为 —— 左键在 3D 层的语义是"选择"。 */
+        const TILE_PURCHASE_ENABLED = false;
+        if (!TILE_PURCHASE_ENABLED) return;
+
         // 左鍵點擊 (button === 0)：擴張補給線或建立野戰修補站
         if (tile.ownerId !== pFac.id) {
             // 【核心重构】补给线防御装甲化：凡是被占领的格子（非中立），一律不准直接购买！
@@ -6709,7 +6872,13 @@ export class BattleScene extends Phaser.Scene {
             rows.push(
                 `[${fac.name || fac.id}] ${label} | type=${fac.type} | #${String(fleet.id).slice(0, 6)} | `
                 + `mission=${fleet.mission?.type ?? '-'} | stance=${fleet.stance ?? '-'} | state=${fleet.state ?? '-'} | `
-                + `target=${tgt ? `${Math.round(tgt.x)},${Math.round(tgt.y)}` : '-'} | 距目标=${d < 0 ? '-' : `${d}px`}`,
+                + `target=${tgt ? `${Math.round(tgt.x)},${Math.round(tgt.y)}` : '-'} | 距目标=${d < 0 ? '-' : `${d}px`} | `
+                /* [v108 诊断] 阵营镜像值与舰队自身 Σ 并列打印：
+                   舰况条恒 0 的排查需要区分"faction.hp 没被写"与"写进去的 Σ 本身就是 0"。 */
+                + `factionHp=${(fac as any).hp}/${(fac as any).maxHp}`
+                + ` fleetΣ=${Math.round((fleet.units || []).reduce((a: number, u: any) => a + (u.hp || 0), 0))}`
+                + `/${Math.round((fleet.units || []).reduce((a: number, u: any) => a + (u.maxHp || 0), 0))}`
+                + ` n=${(fleet.units || []).length} eng=${(fleet as any)._engaging ? 1 : 0}`,
             );
         }
         return rows;
@@ -7090,6 +7259,23 @@ export class BattleScene extends Phaser.Scene {
                 .map((u: any) => ({ range: u.range || 0, atk: u.atk || 0 }));
             // 自卫/拖刀还击半径 = 本舰队最远武器射程（替换 250px 硬编码 ⇒ 敌在 300~880px 不再白嫖）
             const strikeRange = Math.max(250, strikeRangeFrom(shipProfiles));
+            /* [v108 · C0 补口] **射程内即可锁定**。
+               原口径：只有 `clarity === 'full'`（距离 ≤ 35% 视野）才进 `clearEnemies`。
+               实测（用户日志）：两军锚点相距 263px、视野 ≈400~490 ⇒ ratio≈0.6 ⇒ 只能算 partial
+               ⇒ `closestEnemyFleet = null` ⇒ `fireGate` 恒 none ⇒ **贴脸互不开火**，
+               且 AI 状态停在 `exploring`（日志实证）。
+               这在设计上早有登记（"C0 未启动：full 需从 0.35×vision 改 ≤ engageDist"），本轮补上：
+               **已进入武器射程的敌人，观测质量足以开火**（能打到就说明看得见），
+               与迷雾显示层（clarity 仍按 35%/80% 分级）互不影响 —— 那条只管画不画。 */
+            if (!closestEnemyFleet) {
+                const _inRange = visibleEnemies
+                    .filter(v => !(v.ef as any)._electronicDecoy && v.dist <= strikeRange * 1.15)
+                    .sort((a, b) => a.dist - b.dist);
+                if (_inRange.length > 0) {
+                    closestEnemyFleet = _inRange[0].ef;
+                    minFleetDist = _inRange[0].dist;
+                }
+            }
 
             // P4a 一骑讨：双方舰队极近距离接触（<95px）→ 名场面镜头+对决台词（冷却30秒/同一对只触发一次）
             if (closestEnemyFleet && minFleetDist < 95 && this.time.now > this.duelCooldown) {
@@ -7723,7 +7909,16 @@ export class BattleScene extends Phaser.Scene {
                 // R10-A1/D1(b)①：信标转进**允许途中自卫**——途中有敌进入接战距离即置 isEngaging，
                 //   由开火门（:4310）还击；但位移目标仍是信标（不做追击，仅保持航向）。
                 //   速度模式已在 :4165 对 flaring 豁免，故"边打边走"不会被缠斗减速卡住。
-                if (closestEnemyFleet && minFleetDist < strikeRange) isEngaging = true; // [v55] 250→真射程：受击/近敌在武器射程内即还击
+                /* [v108] **交战距离要扣掉双方编队半跨**。
+                   日志实证（用户提供）：两支舰队锚点相距 263px、编队各跨 ~1400px 已经互相穿插，
+                   但 `minFleetDist = 263 > strikeRange` ⇒ `isEngaging=false` ⇒ 双方贴脸却都不开火。
+                   锚点距离衡量的是"两个中心"，不是"两群舰"；编队越大，误差越大
+                   （v108 把每队实体数提到 300 后，这个误差被放大了 2 倍以上）。
+                   口径：有效距离 = max(0, 锚点距离 − 双方足迹半径)。 */
+                const _engEff = closestEnemyFleet
+                    ? Math.max(0, minFleetDist - this.fleetFootprintRadius(fleet) - this.fleetFootprintRadius(closestEnemyFleet))
+                    : minFleetDist;
+                if (closestEnemyFleet && _engEff < strikeRange) isEngaging = true; // [v55] 250→真射程：受击/近敌在武器射程内即还击
                 if (Phaser.Math.Distance.Between(fleet.x, fleet.y, fleetTargetX, fleetTargetY) < 40) {
                     const flareRealY = fleetTargetY;
                     const fQ = Math.round((Math.sqrt(3)/3 * fleetTargetX - 1/3 * flareRealY) / this.hexRadius);
@@ -7841,7 +8036,8 @@ export class BattleScene extends Phaser.Scene {
                 //   开火门/朝向，不改位移目标（重组时目标=自身，不会追击），故重组中"自卫开火但不追击"。
                 // [v55] 250px 硬编码是"被动挨打"主病灶（武器射程 560~880 ⇒ 300~880px 内被白嫖）：
                 //   现还击半径 = 本舰队最远武器射程；攻击者即使 fuzzy 也已在上方注入 closestEnemyFleet。
-                isEngaging = !!(closestEnemyFleet && minFleetDist < strikeRange);
+                isEngaging = !!(closestEnemyFleet
+                    && Math.max(0, minFleetDist - this.fleetFootprintRadius(fleet) - this.fleetFootprintRadius(closestEnemyFleet)) < strikeRange);
             } else if (fleet.state === 'engaging' && closestEnemyFleet) {
                 isEngaging = true;
                 // ===== [v32] **战法优先于姿态**：分舰队的角色决定机动方式 =====
@@ -8629,9 +8825,34 @@ export class BattleScene extends Phaser.Scene {
             //   且满速时再降 45% ⇒ ~25.9s ⇒ 「掉头是一次战术决策」而非随手操作。
             //   ⚠ 与 fleetBaseSpeed 共用同一 kinProfile，避免两次聚合。
             const kinSpeedNow = Math.hypot(fleet.vx || 0, fleet.vy || 0);
-            const kinOmegaNow = effectiveOmegaMax(
+            /* [v108] **队形半径限速**：整队转身的角速度必须受"外层阵位不许飞太快"约束。
+               外层槽位绕中心公转速度 = ω × r_outer；单舰保持队位的带宽有限，
+               超过它就必然滞后 —— 用户实报的"尾巴像一根绳子在飘"就是这个滞后。
+               `_probe_snake.cjs` 反解（accel=0.28 时形变 ≤5%）：ω × r ≤ **4.4 px/帧**。
+               ⇒ 半跨 735px 时上限 0.006 rad/帧（20.6°/s）；战列本体 0.00367 不受影响，
+                 驱逐 0.0236 会被压到 0.006 —— 这正是"大编队不可能像驱逐舰一样甩尾"。
+               ⚠ 转得慢是**特性**：配合 `FORMATIONS[x].turnMul` 与 `flankVulnMul`，
+                 慢转向的代价在"被绕后"时兑现（阵型特性表见 config/formations.ts）。 */
+            const FORM_SLOT_SWEEP_MAX = 4.4;   // px/帧（由 _probe_snake.cjs 反解，勿凭感觉改）
+            const _omegaBase = effectiveOmegaMax(
                 { vMax: kinProfile.vMax, omegaMax: kinProfile.omegaMax } as any, kinSpeedNow,
             );
+            let _omegaCap = Infinity;
+            {
+                const _fo = (fleet as any)._formOffsets as any[] | undefined;
+                const _fsp = Number((fleet as any)._formSpacing) || 0;
+                let _rOuter = 0;
+                if (_fo && _fo.length > 0 && _fsp > 0) {
+                    let _he = 0;
+                    for (const c of _fo) _he = Math.max(_he, Math.abs(c[0]), Math.abs(c[1]));
+                    _rOuter = _he * _fsp;
+                }
+                if (_rOuter > 1) {
+                    const _turnMul = FORMATIONS[(fleet.formation || 'wedge') as FormationType]?.turnMul ?? 1;
+                    _omegaCap = (FORM_SLOT_SWEEP_MAX * _turnMul) / _rOuter;
+                }
+            }
+            const kinOmegaNow = Math.min(_omegaBase, _omegaCap);
             const headingStep = kinOmegaNow * dt;   // 满转率（rad/帧，舰种 + 速度自适应）
             // 角加速度同样按舰种缩放：重舰建立满转率更慢。
             //   τ_turn = omegaMax / alphaMax：战列 0.00367/0.00012 = 30.6 帧(0.51s)，
@@ -9383,7 +9604,19 @@ export class BattleScene extends Phaser.Scene {
                 //   不再需要外部"死区门控"——**贴槽时前馈必须继续生效**（舰队移动中）。
                 //   状态 (u as any)._kin 承载滞回量（vx/vy/上帧槽位）；位置真源仍为 sprite
                 //   （外部瞬移/重生不积累积分误差），速度真源 = _kin.vx/vy。
-                {
+                // [v100b] **集结期硬锁**（用户裁定：开场就是正确阵型并固定下来）：
+                //   集结期（assembling）阵位表与摆位都已是最终口径，此期间不需要"追踪"——
+                //   直接把舰钉在槽位上。收益：① 开场第一帧即完整楔形（此前是"摆好位→
+                //   被追踪限速/入场微机动拉出残差→整队斜线爬回"的彗尾形态）；
+                //   ② 集结结束转入战斗时残差恒为 0，追踪从零误差起步。
+                //   集结期收到移动指令也成立：槽位随锚点走，硬锁 = 刚体阵型平移。
+                //   ⚠ 换阵 morph / 掉头反转（_slotFlip）期间不锁——那两处需要插值动画。
+                if (fleet.state === 'assembling' && !morphingNow && !(fleet as any)._slotFlip) {
+                    const _kl = (u as any)._kin ?? {};
+                    (u as any)._kin = { ..._kl, vx: 0, vy: 0, slotX: targetUnitX, slotY: targetUnitY };
+                    u.sprite.x = targetUnitX;
+                    u.sprite.y = targetUnitY;
+                } else {
                     const _kp = (u as any)._kin ?? {};
                     // ── [v99] **追踪速度上限必须含舰队自身速度** ─────────────────────
                     //   病灶（多轮未定位到）：`UNIT_MOTION_LIMITS.maxSpeed = 0.9 px/帧` 是
@@ -9392,12 +9625,19 @@ export class BattleScene extends Phaser.Scene {
                     //     整支舰队**恒定居后一个固定量**（实测 u0 比锚点偏 (-155,-174)，
                     //     方向与航向相反），阵型与格位网格错开；减速/停船时又"自愈"。
                     //   物理上正确的关系是：编队内舰只**随舰队同速前进**，
-                    //   0.9 那个上限只该约束"阵位内的相对机动"。
+                    //     0.9 那个上限只该约束"阵位内的相对机动"。
                     //   ⇒ 传入的 maxSpeed = 舰队当前速度 + 原相对上限。
+                    // [v100] **停船后的追赶预算**（v99 只修了"巡航追不上"，没修"停船追不上"）：
+                    //   转向期槽位横向摆速 ≈ ω×r（大舰队外缘 ~6px/帧）≫ 0.9 相对上限，
+                    //   巡航期被 `+fleetSpd` 掩盖；舰队一停（vx/vy≈0）叠加项消失，
+                    //   数百 px 的机动残差要以 0.9px/帧爬 —— 正是"排头一艘+空一段+
+                    //   后面一截 / 偶尔自己变好 / 右键移动（恢复巡航叠加）后变好"的真因。
+                    //   预算 = 残差自适应（slotTrackingMaxSpeed）+ 舰队速度；稳态残差
+                    //   ≤ SMALL_GAP 时逐位还原旧行为。uDist 就是本帧算好的槽距，零额外开销。
                     const _fleetSpd = Math.hypot(Number(fleet.vx) || 0, Number(fleet.vy) || 0);
                     const _kinLimits = _fleetSpd > 1e-6
-                        ? { ...UNIT_MOTION_LIMITS, maxSpeed: UNIT_MOTION_LIMITS.maxSpeed + _fleetSpd }
-                        : UNIT_MOTION_LIMITS;
+                        ? { ...UNIT_MOTION_LIMITS, maxSpeed: slotTrackingMaxSpeed(UNIT_MOTION_LIMITS.maxSpeed, uDist) + _fleetSpd }
+                        : { ...UNIT_MOTION_LIMITS, maxSpeed: slotTrackingMaxSpeed(UNIT_MOTION_LIMITS.maxSpeed, uDist) };
                     const _kn = stepShipSlotFollow(
                         {
                             x: u.sprite.x, y: u.sprite.y,
@@ -9646,6 +9886,22 @@ export class BattleScene extends Phaser.Scene {
 
                         const hitSide = hitSideFromAngle(angleDiff);
                         let backstabMulti = dirArmorMul(hitSide, targetShip.classType || '无');
+                        /* [v108] **阵型侧翼特性**：接在既有方向装甲乘区之后（全仓唯一消费点，
+                           不新造第二套方向判定）。语义：同一次绕后，打横阵/楔形侧翼比打圆阵更疼。
+                           `flankVulnMul`：楔 1.30 / 纺锤 1.40（窄列最怕侧击）/ 横 1.15 / 方 0.95 / 圆 0.80。
+                           与"转得慢"配对成立：圆阵最耐侧后、但转身最笨（turnMul 0.80）——
+                           代价是**来不及把正面转过去**，收益是**被绕后也不致命**。 */
+                        {
+                            const _defForm = (fireTargetFleet as any)?.formation || 'wedge';
+                            const _fv = FORMATIONS[_defForm as FormationType]?.flankVulnMul;
+                            if (typeof _fv === 'number' && Number.isFinite(_fv)) backstabMulti *= _fv;
+                            /* [v108] **转身窗口暴露**：正在大角速度转向的舰队，侧面/背面更挡不住。
+                               意义：让"什么时候转"成为决策 —— 转得慢本身不致命，**在敌人面前转**才致命。
+                               只在非正面受击时生效（正面转不影响正面装甲），倍率 1.15 与既有
+                               `DIRECTION_CRIT_MIN` 阈值同量级，不会单独把普通命中变成暴击。 */
+                            const _turnRate = Math.abs(Number((fireTargetFleet as any).facingRate) || 0);
+                            if (hitSide !== 'front' && _turnRate > TURN_EXPOSURE_RATE) backstabMulti *= TURN_EXPOSURE_MUL;
+                        }
                         // [v99] 攻方朝向乘区（与上面的受击方装甲是**两个独立乘区**）：
                         //   前向主炮齐射 1.00 / 侧舷全炮门 1.25 / 尾向不奖励。
                         //   用户要求「侧舷能打，而且伤害增加」—— 若只放宽射界不加这项，
@@ -9807,7 +10063,7 @@ export class BattleScene extends Phaser.Scene {
                             (targetShip as any)._lastAttackerAt = this.time.now;
                             // 伤害数字
                             const isCrit = backstabMulti > 1.2;
-                            this.spawnDamageNumber(targetShip.sprite.x, targetShip.sprite.y, finalDmg, isCrit);
+                            this.spawnDamageNumber(targetShip.sprite.x, targetShip.sprite.y, finalDmg, isCrit, hitSide === 'rear');
                             // [FIX-1 · #73] 删除原「受击后坐力」对 closestEnemyFleet.x/y 的直写（旧 W2）：
                             //   它是「位置瞬移」而非速度/冲量（不乘 dt、无衰减、无上限、逐发线性累加，
                             //   单发 0.08–8px、同帧多舰最坏 ≈24px），且方向取「单舰 u.sprite → 目标质心」
@@ -10043,16 +10299,23 @@ export class BattleScene extends Phaser.Scene {
                         const r = d / Math.max(1, s);
                         if (r < bestRatio) { bestRatio = r; bestDist = d; bestSensor = s; }
                     };
-                    // 判断是否在友军高价值建筑视野内 (雷达半径 300)
+                    /* [v108 探测半径随地图缩放] 三个探测半径原本是**绝对像素**（300/250/450），
+                       而地图尺度由 `hexRadius` 决定。v108 把地图阶梯上限从 50 抬到 74 之后，
+                       同样的 250px 只覆盖战场的 6.8%（原来 10%）⇒ 敌舰"贴脸才出现、像凭空冒出"
+                       （用户实报"明明侦察舰搜过，敌舰突然就在身边出现"）。
+                       口径：以 hexR=50 为基准同比放大，**恢复改动前的相对覆盖率**；
+                       不改变任何相对关系（距离与半径同步缩放，ratio 不变）。 */
+                    const _sensorK = Math.max(0.6, this.hexRadius / 50);
+                    // 判断是否在友军高价值建筑视野内 (雷达半径 300 × k)
                     for (const node of allyVisionNodes) {
-                        considerObs(Phaser.Math.Distance.Between(fx, fy, node.x, node.y), 300);
+                        considerObs(Phaser.Math.Distance.Between(fx, fy, node.x, node.y), 300 * _sensorK);
                     }
-                    // 判断是否在友军舰队视野内 (普通视野 250，索敌姿态视野 450)
+                    // 判断是否在友军舰队视野内 (普通视野 250×k，索敌姿态视野 450×k)
                     for (const pFl of allyFleets) {
                         if (pFl.units.length > 0) {
                             const px = pFl.units[0].sprite.x;
                             const py = pFl.units[0].sprite.y;
-                            const visionRange = pFl.stance === 'search' ? 450 : 250;
+                            const visionRange = (pFl.stance === 'search' ? 450 : 250) * _sensorK;
                             considerObs(Phaser.Math.Distance.Between(fx, fy, px, py), visionRange);
                         }
                     }
@@ -10090,7 +10353,19 @@ export class BattleScene extends Phaser.Scene {
                     if (contact.state !== 'identified' && this.hasPlayerUnitWithin(fl, PHYSICAL_CONTACT_PX)) {
                         contact = { ...contact, state: 'identified' };
                     }
+                    /* [v108] **观测滞回**：传感器判定是**每帧重算**的（`assessContact` 纯距离/传感器比），
+                       舰队在边界上来回时 `identified ↔ 其他` 会逐帧翻转 ⇒ 用户实报"敌人一会出现一会消失"。
+                       处置：识别到来时记一个到期时刻；短暂丢失在到期前**保号**，不掉档。
+                       1200ms ≈ 72 帧：足以吃掉边界抖动与相机/编队微动，又不会让"真的跑掉了"被误认为还在。 */
                     rawObserved = contact.state;
+                    {
+                        const _holdUntil = Number((fl as any)._intelObservedUntil) || 0;
+                        if (rawObserved === 'identified') {
+                            (fl as any)._intelObservedUntil = this.time.now + INTEL_OBSERVE_HOLD_MS;
+                        } else if (_holdUntil > this.time.now) {
+                            rawObserved = 'identified';
+                        }
+                    }
                     // 开火/交战窗口台账（E17 写入）：交战中不可消失
                     const recentlyFired = (fl as any)._revealedByFireAt != null
                         && this.time.now - (fl as any)._revealedByFireAt < EXCHANGE_WINDOW_MS;

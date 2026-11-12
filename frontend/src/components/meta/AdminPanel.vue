@@ -791,7 +791,7 @@ const intelLevels = computed(() => {
   flex-shrink: 0;
 }
 .header-title {
-  font-size: calc(14px * var(--font-scale));
+  font-size: var(--fs-body);
   font-weight: 900;
   letter-spacing: 0.15em;
   color: var(--color-text-primary);
@@ -811,7 +811,7 @@ const intelLevels = computed(() => {
   flex: 1;
   min-width: 60px;
   padding: 6px 8px;
-  font-size: calc(12px * var(--font-scale));
+  font-size: var(--fs-label);
   font-weight: 700;
   text-align: center;
   white-space: nowrap;
@@ -840,7 +840,7 @@ const intelLevels = computed(() => {
 .section-card {
   background: var(--neo-surface);
   border: 1px solid var(--overlay-hover);
-  border-radius: 8px;
+  border-radius: var(--ui-radius-lg);
   padding: 12px;
   display: flex;
   flex-direction: column;
@@ -850,7 +850,7 @@ const intelLevels = computed(() => {
   opacity: 0.6;
 }
 .section-label {
-  font-size: calc(10px * var(--font-scale));
+  font-size: var(--fs-caption);
   text-transform: uppercase;
   color: var(--color-text-disabled);
   letter-spacing: 0.15em;
@@ -859,7 +859,7 @@ const intelLevels = computed(() => {
 
 /* ===== 财政 Tab ===== */
 .treasury-value {
-  font-size: calc(28px * var(--font-scale));
+  font-size: var(--fs-h1);
   font-weight: 900;
   font-family: var(--font-family);
   color: var(--color-warning);
@@ -872,7 +872,7 @@ const intelLevels = computed(() => {
 .finance-cell, .welfare-cell {
   flex: 1;
   background: var(--color-overlay-pressed);
-  border-radius: 6px;
+  border-radius: var(--ui-radius-lg);
   padding: 8px;
   display: flex;
   flex-direction: column;
@@ -880,12 +880,12 @@ const intelLevels = computed(() => {
   align-items: center;
 }
 .cell-label {
-  font-size: calc(10px * var(--font-scale));
+  font-size: var(--fs-caption);
   color: var(--color-text-secondary);
   font-weight: 600;
 }
 .cell-value {
-  font-size: calc(14px * var(--font-scale));
+  font-size: var(--fs-body);
   font-weight: 800;
   font-family: var(--font-family);
 }
@@ -906,7 +906,7 @@ const intelLevels = computed(() => {
   -webkit-appearance: none;
   appearance: none;
   background: var(--neo-surface-raised);
-  border-radius: 3px;
+  border-radius: var(--ui-radius);
   outline: none;
 }
 .tax-slider::-webkit-slider-thumb {
@@ -929,7 +929,7 @@ const intelLevels = computed(() => {
 }
 .tax-slider:disabled { opacity: 0.4; cursor: not-allowed; }
 .tax-value {
-  font-size: calc(16px * var(--font-scale));
+  font-size: var(--fs-body);
   font-weight: 900;
   font-family: var(--font-family);
   color: var(--color-cyan);
@@ -944,7 +944,7 @@ const intelLevels = computed(() => {
   align-items: center;
 }
 .war-tax-status {
-  font-size: calc(13px * var(--font-scale));
+  font-size: var(--fs-label);
   font-weight: 700;
   color: var(--color-text-secondary);
 }
@@ -954,7 +954,7 @@ const intelLevels = computed(() => {
 
 /* 维护费明细 */
 .maint-total {
-  font-size: calc(13px * var(--font-scale));
+  font-size: var(--fs-label);
   font-weight: 800;
   color: var(--color-warning);
   font-family: var(--font-family);
@@ -972,8 +972,8 @@ const intelLevels = computed(() => {
   align-items: center;
   padding: 6px 8px;
   background: var(--color-overlay-pressed);
-  border-radius: 4px;
-  font-size: calc(11px * var(--font-scale));
+  border-radius: var(--ui-radius);
+  font-size: var(--fs-label);
   gap: 8px;
 }
 .maint-name {
@@ -986,7 +986,7 @@ const intelLevels = computed(() => {
 .maint-detail {
   color: var(--color-text-secondary);
   font-family: var(--font-family);
-  font-size: calc(10px * var(--font-scale));
+  font-size: var(--fs-caption);
   flex: 1;
   text-align: center;
 }
@@ -1007,7 +1007,7 @@ const intelLevels = computed(() => {
   flex: 1;
   height: 10px;
   background: var(--neo-surface-raised);
-  border-radius: 5px;
+  border-radius: var(--ui-radius-lg);
   overflow: hidden;
 }
 .loyalty-fill {
@@ -1018,7 +1018,7 @@ const intelLevels = computed(() => {
 .fill-warning { background: var(--color-warning); }
 .fill-good { background: var(--color-green); }
 .loyalty-num {
-  font-size: calc(16px * var(--font-scale));
+  font-size: var(--fs-body);
   font-weight: 900;
   font-family: var(--font-family);
   color: var(--color-text-primary);
@@ -1039,7 +1039,7 @@ const intelLevels = computed(() => {
   gap: 8px;
   padding: 8px 10px;
   background: var(--color-overlay-pressed);
-  border-radius: 6px;
+  border-radius: var(--ui-radius-lg);
   border-left: 3px solid transparent;
 }
 .adm-row.adm-warning {
@@ -1053,12 +1053,12 @@ const intelLevels = computed(() => {
   flex-shrink: 0;
 }
 .adm-name {
-  font-size: calc(12px * var(--font-scale));
+  font-size: var(--fs-label);
   font-weight: 800;
   color: var(--color-text-primary);
 }
 .adm-role {
-  font-size: calc(10px * var(--font-scale));
+  font-size: var(--fs-caption);
   color: var(--color-text-secondary);
 }
 .adm-loyalty {
@@ -1071,7 +1071,7 @@ const intelLevels = computed(() => {
   flex: 1;
   height: 6px;
   background: var(--neo-surface-raised);
-  border-radius: 3px;
+  border-radius: var(--ui-radius);
   overflow: hidden;
   position: relative;
   display: flex;
@@ -1085,13 +1085,13 @@ const intelLevels = computed(() => {
 .mini-label {
   position: absolute;
   left: 4px;
-  font-size: calc(9px * var(--font-scale));
+  font-size: var(--fs-caption);
   font-weight: 700;
   color: var(--color-text-disabled);
   z-index: 1;
 }
 .loyalty-text {
-  font-size: calc(12px * var(--font-scale));
+  font-size: var(--fs-label);
   font-weight: 800;
   font-family: var(--font-family);
   color: var(--color-text-primary);
@@ -1099,12 +1099,12 @@ const intelLevels = computed(() => {
   text-align: right;
 }
 .warn-tag {
-  font-size: calc(9px * var(--font-scale));
+  font-size: var(--fs-caption);
   font-weight: 800;
   color: var(--color-empire);
   padding: 2px 6px;
   background: rgba(239, 68, 68, 0.15);
-  border-radius: 3px;
+  border-radius: var(--ui-radius);
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -1117,9 +1117,9 @@ const intelLevels = computed(() => {
 }
 .btn-reward,
 .btn-promote {
-  font-size: calc(10px * var(--font-scale));
+  font-size: var(--fs-caption);
   padding: 3px 8px;
-  border-radius: 4px;
+  border-radius: var(--ui-radius);
   font-weight: 700;
   transition: all 0.2s;
 }
@@ -1153,7 +1153,7 @@ const intelLevels = computed(() => {
 }
 .tech-item {
   background: var(--color-overlay-pressed);
-  border-radius: 6px;
+  border-radius: var(--ui-radius-lg);
   padding: 10px;
   display: flex;
   flex-direction: column;
@@ -1165,21 +1165,21 @@ const intelLevels = computed(() => {
   align-items: center;
   gap: 6px;
 }
-.tech-icon { font-size: calc(16px * var(--font-scale)); }
+.tech-icon { font-size: var(--fs-body); }
 .tech-name {
-  font-size: calc(12px * var(--font-scale));
+  font-size: var(--fs-label);
   font-weight: 700;
   color: var(--color-text-primary);
   flex: 1;
 }
 .tech-level {
-  font-size: calc(12px * var(--font-scale));
+  font-size: var(--fs-label);
   font-weight: 900;
   font-family: var(--font-family);
   color: var(--color-cyan);
 }
 .tech-tier-name {
-  font-size: calc(10px * var(--font-scale));
+  font-size: var(--fs-caption);
   color: var(--color-text-secondary);
   padding-top: 2px;
   border-top: 1px solid var(--overlay-border);
@@ -1193,7 +1193,7 @@ const intelLevels = computed(() => {
   flex: 1;
   height: 8px;
   background: var(--neo-surface-raised);
-  border-radius: 4px;
+  border-radius: var(--ui-radius);
   overflow: hidden;
 }
 .tech-progress-fill {
@@ -1205,20 +1205,20 @@ const intelLevels = computed(() => {
   background: var(--color-cyan);
 }
 .tech-progress-num {
-  font-size: calc(10px * var(--font-scale));
+  font-size: var(--fs-caption);
   font-family: var(--font-family);
   color: var(--color-text-secondary);
   min-width: 30px;
   text-align: right;
 }
 .focus-badge {
-  font-size: calc(9px * var(--font-scale));
+  font-size: var(--fs-caption);
   font-weight: 800;
   color: var(--color-cyan);
   text-align: center;
   padding: 2px;
-  background: rgba(6, 182, 212, 0.1);
-  border-radius: 3px;
+  background: rgba(var(--ui-accent-rgb), 0.1);
+  border-radius: var(--ui-radius);
 }
 
 .focus-btn-row {
@@ -1246,10 +1246,10 @@ const intelLevels = computed(() => {
   gap: 8px;
 }
 .buff-icon {
-  font-size: calc(18px * var(--font-scale));
+  font-size: var(--fs-h3);
 }
 .buff-text {
-  font-size: calc(12px * var(--font-scale));
+  font-size: var(--fs-label);
   font-weight: 700;
   color: var(--color-green);
 }
@@ -1268,10 +1268,10 @@ const intelLevels = computed(() => {
   gap: 10px;
   padding: 8px 10px;
   background: var(--color-overlay-pressed);
-  border-radius: 6px;
+  border-radius: var(--ui-radius-lg);
 }
 .node-name {
-  font-size: calc(12px * var(--font-scale));
+  font-size: var(--fs-label);
   font-weight: 700;
   color: var(--color-text-primary);
   min-width: 80px;
@@ -1298,11 +1298,11 @@ const intelLevels = computed(() => {
   gap: 16px;
 }
 .placeholder-icon {
-  font-size: calc(48px * var(--font-scale));
+  font-size: var(--fs-display);
   opacity: 0.4;
 }
 .placeholder-text {
-  font-size: calc(14px * var(--font-scale));
+  font-size: var(--fs-body);
   color: var(--color-text-secondary);
   font-weight: 700;
   letter-spacing: 0.1em;
@@ -1310,13 +1310,13 @@ const intelLevels = computed(() => {
 
 /* ===== 通用辅助 ===== */
 .perm-hint {
-  font-size: calc(10px * var(--font-scale));
+  font-size: var(--fs-caption);
   color: var(--color-empire);
   font-weight: 600;
   font-style: italic;
 }
 .empty-hint {
-  font-size: calc(11px * var(--font-scale));
+  font-size: var(--fs-label);
   color: var(--color-text-disabled);
   font-family: var(--font-family);
   text-align: center;
@@ -1351,18 +1351,18 @@ const intelLevels = computed(() => {
   flex: 1;
 }
 .action-name {
-  font-size: calc(13px * var(--font-scale));
+  font-size: var(--fs-label);
   font-weight: 800;
   color: var(--color-text-primary);
 }
 .action-cost {
-  font-size: calc(11px * var(--font-scale));
+  font-size: var(--fs-label);
   font-weight: 700;
   color: var(--color-warning);
   font-family: var(--font-family);
 }
 .action-effect {
-  font-size: calc(10px * var(--font-scale));
+  font-size: var(--fs-caption);
   color: var(--color-text-secondary);
 }
 
@@ -1377,10 +1377,10 @@ const intelLevels = computed(() => {
   gap: 8px;
   padding: 6px 8px;
   background: var(--color-overlay-pressed);
-  border-radius: 6px;
+  border-radius: var(--ui-radius-lg);
 }
 .rel-name, .intel-name {
-  font-size: calc(12px * var(--font-scale));
+  font-size: var(--fs-label);
   font-weight: 700;
   color: var(--color-text-primary);
   min-width: 80px;
@@ -1396,7 +1396,7 @@ const intelLevels = computed(() => {
   flex: 1;
   height: 6px;
   background: var(--neo-surface-raised);
-  border-radius: 3px;
+  border-radius: var(--ui-radius);
   overflow: hidden;
 }
 .rel-fill {
@@ -1404,7 +1404,7 @@ const intelLevels = computed(() => {
   transition: width 0.3s;
 }
 .rel-value, .intel-level-text {
-  font-size: calc(11px * var(--font-scale));
+  font-size: var(--fs-label);
   font-weight: 800;
   font-family: var(--font-family);
   min-width: 35px;
@@ -1413,7 +1413,7 @@ const intelLevels = computed(() => {
 .rel-btn {
   flex-shrink: 0;
   padding: 4px 10px;
-  font-size: calc(11px * var(--font-scale));
+  font-size: var(--fs-label);
 }
 .treaty-row, .revealed-row {
   display: flex;
@@ -1421,16 +1421,16 @@ const intelLevels = computed(() => {
   gap: 8px;
   padding: 6px 8px;
   background: var(--color-overlay-pressed);
-  border-radius: 6px;
-  font-size: calc(11px * var(--font-scale));
+  border-radius: var(--ui-radius-lg);
+  font-size: var(--fs-label);
 }
-.treaty-icon, .revealed-icon { font-size: calc(14px * var(--font-scale)); }
+.treaty-icon, .revealed-icon { font-size: var(--fs-body); }
 .treaty-type { font-weight: 800; color: var(--color-text-primary); }
 .treaty-target { color: var(--color-text-secondary); flex: 1; }
-.treaty-expiry { color: var(--color-text-disabled); font-family: var(--font-family); font-size: calc(10px * var(--font-scale)); }
+.treaty-expiry { color: var(--color-text-disabled); font-family: var(--font-family); font-size: var(--fs-caption); }
 .revealed-text { color: var(--color-text-secondary); }
 .intel-hint {
-  font-size: calc(9px * var(--font-scale));
+  font-size: var(--fs-caption);
   color: var(--color-text-disabled);
   font-family: var(--font-family);
   line-height: 1.4;

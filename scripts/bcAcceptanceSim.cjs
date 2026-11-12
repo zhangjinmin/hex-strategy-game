@@ -720,17 +720,21 @@ if (TACT.__missing || typeof TACT.resolveMissionTargets !== 'function') {
 
 // ── S5-04：未知目标的哨兵基值必须**大于地图对角线** ────────────────────────
 // 语义：未知目标用 `BASE + real` 排序，前提是"任何真实距离都 < BASE"。
-//   · 物理约束：BASE > 对角线（hexRadius ≤ 50 ⇒ 跨度 ≤ 2500 ⇒ 对角线 ≈ 3536）
+//   · 物理约束：BASE > 对角线（[v108] hexRadius 阶梯已扩到 74 ⇒ 跨度 ≤ 3700 ⇒ 对角线 ≈ 5233）
 //   · 治理余量：×4（不是物理常数，只保证"不把仍然安全的较小基值判红"）
 //   ⚠ 若有人把基值调到地图尺度内，"已知恒排在未知之前"会静默失效（不报错、只是顺序变了）。
+//   ⚠ 上限必须与 `BattleScene.scaleMapForFleetCount` 的阶梯**同步**：改阶梯不改这里 =
+//     用一个已经过期的跨度去验证"基值够大"，断言会静默放行。
 check('S5-04 未知哨兵基值 > 4 × 地图对角线（物理约束 + 治理余量）', () => {
   const src = fs.readFileSync(path.join(SRC, 'game', 'scenes', 'BattleScene.ts'), 'utf8');
   const m = src.match(/UNKNOWN_TARGET_DIST_BASE\s*=\s*([0-9_eE+.]+)/);
   assert.ok(m, '未找到具名常量 UNKNOWN_TARGET_DIST_BASE（应先把它提成常量再断言）');
   const base = Number(m[1]);
   assert.ok(Number.isFinite(base), `基值不是有限数: ${m[1]}`);
-  const MAX_SPAN = 50 * 50;              // hexRadius 上限 50 ⇒ 跨度 = hexRadius×50
-  const DIAG = Math.SQRT2 * MAX_SPAN;    // 真实距离上界 ≈ 对角线 ≈ 3536
+  // [v108] 阶梯上限 74（>700 艘档）；跨度 = hexRadius × 50（与 combatPhaseSim 的 SPAN 口径一致）
+  const MAX_HEX_R = 74;
+  const MAX_SPAN = MAX_HEX_R * 50;       // 3700
+  const DIAG = Math.SQRT2 * MAX_SPAN;    // 真实距离上界 ≈ 对角线 ≈ 5233
   assert.ok(base > 4 * DIAG, `基值 ${base} 未超过对角线的 4 倍（${Math.round(4 * DIAG)}）`);
 });
 

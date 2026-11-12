@@ -275,20 +275,20 @@ const exitEditor = () => {
   padding: 2.5vh 1.5vw; z-index: 100; pointer-events: auto; 
   display: flex; flex-direction: column; gap: 2vh; 
 }
-.panel-title-small { margin: 0; font-size: clamp(calc(14px * var(--font-scale)), calc(2vh * var(--font-scale)), calc(18px * var(--font-scale))); font-weight: 900; border-left: 4px solid var(--color-cyan); padding-left: 10px; }
+.panel-title-small { margin: 0; font-size: clamp(var(--fs-body), calc(2vh * var(--font-scale)), var(--fs-h3)); font-weight: 900; border-left: 4px solid var(--color-cyan); padding-left: 10px; }
 
 .brush-panel { display: grid; grid-template-columns: 1fr 1fr; gap: 1vh; }
-.brush-btn { padding: 1.2vh 1vw; font-size: clamp(calc(11px * var(--font-scale)), calc(1.5vh * var(--font-scale)), calc(13px * var(--font-scale))); font-weight: 800; border: 1px solid var(--overlay-border); }
+.brush-btn { padding: 1.2vh 1vw; font-size: clamp(var(--fs-label), calc(1.5vh * var(--font-scale)), var(--fs-label)); font-weight: 800; border: 1px solid var(--overlay-border); }
 .brush-btn.active { background: var(--color-cyan); color: var(--neo-surface); border-color: var(--color-cyan); }
 
 .action-panel { display: flex; flex-direction: column; gap: 2vh; }
 .control-group { display: flex; flex-direction: column; gap: 1vh; }
-.control-group label { font-size: clamp(calc(11px * var(--font-scale)), calc(1.5vh * var(--font-scale)), calc(13px * var(--font-scale))); font-weight: 800; color: var(--color-text-secondary); border-left: 3px solid var(--color-cyan); padding-left: 8px; line-height: 1.2; }
+.control-group label { font-size: clamp(var(--fs-label), calc(1.5vh * var(--font-scale)), var(--fs-label)); font-weight: 800; color: var(--color-text-secondary); border-left: 3px solid var(--color-cyan); padding-left: 8px; line-height: 1.2; }
 
-.neo-input { width: 100%; padding: 1.2vh 1vw; background: rgba(0,0,0,0.4); border: 1px solid rgba(6, 182, 212, 0.4); color: var(--color-text-primary); font-size: clamp(calc(11px * var(--font-scale)), calc(1.5vh * var(--font-scale)), calc(14px * var(--font-scale))); font-weight: 800; border-radius: 6px; outline: none; transition: border 0.2s; }
+.neo-input { width: 100%; padding: 1.2vh 1vw; background: rgba(0,0,0,0.4); border: 1px solid rgba(var(--ui-accent-rgb), 0.4); color: var(--color-text-primary); font-size: clamp(var(--fs-label), calc(1.5vh * var(--font-scale)), var(--fs-body)); font-weight: 800; border-radius: var(--ui-radius-lg); outline: none; transition: border 0.2s; }
 .neo-input:focus { border-color: var(--color-cyan); }
 
-.action-panel button { font-size: clamp(calc(11px * var(--font-scale)), calc(1.5vh * var(--font-scale)), calc(14px * var(--font-scale))); font-weight: 800; padding: 1.2vh 1vw; margin: 0; }
+.action-panel button { font-size: clamp(var(--fs-label), calc(1.5vh * var(--font-scale)), var(--fs-body)); font-weight: 800; padding: 1.2vh 1vw; margin: 0; }
 .flex { display: flex; align-items: stretch; }
 .gap-2 { gap: 1vh; }
 .flex-1 { flex: 1; }
@@ -301,14 +301,14 @@ const exitEditor = () => {
 @media (max-width: 768px) {
   .editor-ui { 
     top: auto; bottom: 0; left: 0; width: 100vw; 
-    border-radius: 16px 16px 0 0; 
+    border-radius: var(--ui-radius-lg) var(--ui-radius-lg) 0 0; 
     padding: 2vh 4vw 3vh 4vw; 
     background: var(--overlay-surface);
     backdrop-filter: blur(10px);
     gap: 1.5vh;
   }
   .brush-panel { grid-template-columns: repeat(4, 1fr); gap: 1vh; }
-  .brush-btn { padding: 1vh 0.5vw; font-size: clamp(calc(10px * var(--font-scale)), calc(1.5vh * var(--font-scale)), calc(12px * var(--font-scale))); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .brush-btn { padding: 1vh 0.5vw; font-size: clamp(var(--fs-caption), calc(1.5vh * var(--font-scale)), var(--fs-label)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .action-panel { gap: 1.5vh; }
   .control-group { gap: 1vh; }
   .action-panel button { padding: 1vh 2vw; }

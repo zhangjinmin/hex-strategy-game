@@ -140,24 +140,24 @@ function buyLobbying() {
 <style scoped>
 .fz-overlay { position: fixed; inset: 0; z-index: 1300; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; }
 .fz-modal { width: min(460px, 85vw); padding: 22px; }
-.modal-title { font-size: calc(15px * var(--font-scale)); font-weight: 800; color: var(--color-gold); margin: 0 0 6px; }
-.fz-desc { font-size: calc(11px * var(--font-scale)); color: var(--color-text-secondary); margin-bottom: 14px; }
-.total-board { padding: 10px; border: 1px solid rgba(245,158,11,0.15); border-radius: 4px; margin-bottom: 14px; }
-.tb-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; font-size: calc(12px * var(--font-scale)); color: var(--color-text-secondary); }
+.modal-title { font-size: var(--fs-body); font-weight: 800; color: var(--color-gold); margin: 0 0 6px; }
+.fz-desc { font-size: var(--fs-label); color: var(--color-text-secondary); margin-bottom: 14px; }
+.total-board { padding: 10px; border: 1px solid rgba(245,158,11,0.15); border-radius: var(--ui-radius); margin-bottom: 14px; }
+.tb-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; font-size: var(--fs-label); color: var(--color-text-secondary); }
 .tb-val { font-weight: 800; }
-.progress-bar { flex: 1; height: 6px; background: rgba(148,163,184,0.2); border-radius: 3px; margin: 0 10px; overflow: hidden; }
-.progress-fill { height: 100%; background: linear-gradient(90deg, #f59e0b, #fbbf24); border-radius: 3px; }
+.progress-bar { flex: 1; height: 6px; background: rgba(148,163,184,0.2); border-radius: var(--ui-radius); margin: 0 10px; overflow: hidden; }
+.progress-fill { height: 100%; background: linear-gradient(90deg, #f59e0b, #fbbf24); border-radius: var(--ui-radius); }
 .default-warn { color: #ef4444; }
 .loan-section { margin-bottom: 14px; }
-.section-title { font-size: calc(11px * var(--font-scale)); font-weight: 700; color: var(--color-text-disabled); margin-bottom: 6px; }
+.section-title { font-size: var(--fs-label); font-weight: 700; color: var(--color-text-disabled); margin-bottom: 6px; }
 .loan-amount { display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 8px; }
-.btn-qty { width: 26px; height: 26px; border: 1px solid var(--color-border); background: transparent; color: var(--color-text-primary); border-radius: 3px; cursor: pointer; }
-.loan-num { font-size: calc(15px * var(--font-scale)); font-weight: 800; color: var(--color-gold); min-width: 110px; text-align: center; }
+.btn-qty { width: 26px; height: 26px; border: 1px solid var(--color-border); background: transparent; color: var(--color-text-primary); border-radius: var(--ui-radius); cursor: pointer; }
+.loan-num { font-size: var(--fs-body); font-weight: 800; color: var(--color-gold); min-width: 110px; text-align: center; }
 .term-row { display: flex; gap: 6px; margin-bottom: 10px; }
-.term-btn { flex: 1; padding: 5px; border: 1px solid var(--color-border); background: transparent; color: var(--color-text-secondary); font-size: calc(11px * var(--font-scale)); border-radius: 3px; cursor: pointer; }
+.term-btn { flex: 1; padding: 5px; border: 1px solid var(--color-border); background: transparent; color: var(--color-text-secondary); font-size: var(--fs-label); border-radius: var(--ui-radius); cursor: pointer; }
 .term-btn.active { border-color: var(--color-gold); color: var(--color-gold); background: rgba(245,158,11,0.1); }
-.loan-tip { font-size: calc(10px * var(--font-scale)); color: var(--color-text-disabled); margin-top: 6px; text-align: center; }
+.loan-tip { font-size: var(--fs-caption); color: var(--color-text-disabled); margin-top: 6px; text-align: center; }
 .w-100 { width: 100%; }
-.fz-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid rgba(245,158,11,0.08); font-size: calc(12px * var(--font-scale)); }
+.fz-row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid rgba(245,158,11,0.08); font-size: var(--fs-label); }
 .fz-row:last-child { border-bottom: none; }
 </style>

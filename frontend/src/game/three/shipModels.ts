@@ -284,10 +284,35 @@ export const SHIP_MODEL_DEFAULT_YAW = 180;
 /** 兼容保留（旧接口）：无需翻转 = YAW_FIX 0。两者同时存在时 SHIP_MODEL_YAW_FIX 优先。 */
 export const SHIP_MODEL_NO_FLIP: Record<string, true> = {};
 
+/** [hd 包] 高精度舰船模型（STL→GLB 转换产物，文件名统一 `hd_` 前缀）。
+ *  · 转换脚本已把模型摆成**舰首朝 glTF -Z**（Blender 里舰首 +Y，导出时 Y-up 转换），
+ *    因此这批文件**不需要**默认的 180° 翻转 —— 见 `getShipModelYawFix`。
+ *  · 尺寸统一：最长轴 = 100 单位、bbox 居中、30° 自动平滑；尾喷口以 Empty（FX_ENGINE_*）
+ *    写进 GLB，加载时由 shipModels 采集、battleFx 直接当喷口真源。 */
+export const HD_SHIP_MODEL: Record<string, string> = {
+  empire_cruiser: 'hd_imp_cruiser.glb',
+  alliance_cruiser: 'hd_fpa_cruiser.glb',
+  alliance_battleship: 'hd_fpa_battle_2.glb',
+};
+
+/** hd 包总开关（默认开）。关掉即回到原 GLB 舰船 —— 用于 A/B 对比观感。 */
+let hdShipPackOn = true;
+export function setHdShipPack(on: boolean): void { hdShipPackOn = on; }
+export function isHdShipPackOn(): boolean { return hdShipPackOn; }
+
+/** 取某 阵营×舰种 的 hd 模型文件名（无对应文件返回 null）。
+ *  旗舰不走此表：旗舰专属模型优先，避免"提督旗舰被换成通用巡洋舰"。 */
+export function getHdShipModel(factionKey: 'empire' | 'alliance', cls: string, flagshipKey?: string): string | null {
+  if (!hdShipPackOn || flagshipKey) return null;
+  return HD_SHIP_MODEL[`${factionKey}_${cls}`] || null;
+}
+
 /** 解析某文件的最终朝向修正（度）——加载器与巡览标签共用，保证显示与生效一致 */
 export function getShipModelYawFix(fileName: string): number {
   const v = SHIP_MODEL_YAW_FIX[fileName];
   if (v !== undefined) return v;
+  // [hd 包] 转换时已把舰首摆到 glTF -Z ⇒ 不能再套默认 180°
+  if (/^hd_/i.test(fileName)) return 0;
   return SHIP_MODEL_NO_FLIP[fileName] ? 0 : SHIP_MODEL_DEFAULT_YAW;
 }
 
@@ -452,6 +477,23 @@ function runShipModelLoad(url: string, reg: ShipModelReg, done: () => void): voi
           for (const name of Object.keys(g.attributes)) {
             if (name !== 'position' && name !== 'normal') g.deleteAttribute(name);
           }
+          // [量化LOD] KHR_mesh_quantization 必须先反量化再乘矩阵。量化 LOD 的 POSITION/NORMAL
+          //   是 normalized 整型数组，BufferAttribute.applyMatrix4 走的是 setXYZ —— 写回前会再乘
+          //   一次 32767，node 缩放 >1 时当场溢出饱和，整艘船被压平成 2×2×2 的盒子
+          //   （表现：巡览/战场里该模型只剩一个立方体框）。CPU 端先转 float，口径才与 GPU 一致。
+          //   注：缩放 ≤1 的量化模型（如 alliance_battleship 的 0.59）不会溢出，所以此 bug 只在
+          //   部分模型上显现，容易误判成"导出问题"。
+          for (const name of ['position', 'normal']) {
+            const attr = g.getAttribute(name) as THREE.BufferAttribute | undefined;
+            if (!attr || !attr.normalized) continue;
+            const out = new Float32Array(attr.count * 3);
+            for (let i = 0; i < attr.count; i++) {
+              out[i * 3] = attr.getX(i);
+              out[i * 3 + 1] = attr.getY(i);
+              out[i * 3 + 2] = attr.getZ(i);
+            }
+            g.setAttribute(name, new THREE.BufferAttribute(out, 3, false));
+          }
           g.applyMatrix4(mesh.matrixWorld);
           parts.push(g);
         });
@@ -506,6 +548,10 @@ function runShipModelLoad(url: string, reg: ShipModelReg, done: () => void): voi
           const M = new THREE.Matrix4();
           for (const op of ops) M.premultiply(op);              // 应用顺序 = 记录顺序
           const anchors: FxAnchor[] = [];
+          /** [hd 包修复] radiusRel 的口径是"占舰长比例"，**不能再 ÷ mLen**；
+           *  `radius` / 缩放 X 是"模型原始单位"，必须 ÷ mLen。旧代码对两者一视同仁，
+           *  于是 radiusRel 被多除一次 ⇒ 落到 SCAN_R_SANE 之外 ⇒ 静默回落 3% 默认值。 */
+          const relFlags: boolean[] = [];
           for (const a of rawAnchors) {
             const w = M.clone().multiply(a.m);
             const p0 = new THREE.Vector3().setFromMatrixPosition(w);
@@ -531,11 +577,16 @@ function runShipModelLoad(url: string, reg: ShipModelReg, done: () => void): voi
               mode: md,
               autoOrient,
             });
+            relFlags.push(typeof a.ud.radiusRel === 'number');
           }
           const sizeF = new THREE.Vector3();
           merged.boundingBox!.getSize(sizeF);
           const mLen = Math.max(sizeF.x, sizeF.y, sizeF.z) || 1;
-          for (const a of anchors) { a.x /= mLen; a.y /= mLen; a.z /= mLen; a.rN = Math.max(1e-4, a.rN / mLen); }
+          for (let i = 0; i < anchors.length; i++) {
+            const a = anchors[i];
+            a.x /= mLen; a.y /= mLen; a.z /= mLen;
+            a.rN = Math.max(1e-4, relFlags[i] ? a.rN : a.rN / mLen);
+          }
           reg.fxAnchors = anchors;
           fxAnchorCache.set(reg.baseName, anchors);
           // 同型舰（其它档位 / 另一处实例）若已在册且还没有锚点 ⇒ 一并补上并 bump version 触发换装

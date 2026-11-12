@@ -33,7 +33,7 @@
         <span><i style="background:#f43f5e"></i>帝国</span>
         <span><i style="background:#38bdf8"></i>同盟</span>
         <span><i style="background:#4ade80"></i>3D 建筑</span>
-        <span><i style="background:#22d3ee"></i>动作模型 / 未分类</span>
+        <span><i style="background:var(--ui-accent)"></i>动作模型 / 未分类</span>
       </div>
       <div class="gh-tip">左键旋转 · 滚轮缩放 · 右键平移 · <b>单击舰船 / 建筑可选中，调朝向 · 姿态 · 动画</b></div>
       <div class="gh-yaw">
@@ -437,7 +437,7 @@ function computeLayout(infos: Omit<ShipInfo, 'x' | 'z'>[]): { width: number; dep
 function addGroupHeader(title: string, faction: Faction, x: number, z: number) {
   const el = document.createElement('div');
   el.className = 'group-header';
-  const c = faction === 'empire' ? '#f43f5e' : faction === 'alliance' ? '#38bdf8' : faction === 'building' ? '#4ade80' : '#22d3ee';
+  const c = faction === 'empire' ? '#f43f5e' : faction === 'alliance' ? '#38bdf8' : faction === 'building' ? '#4ade80' : 'var(--ui-accent)';
   el.innerHTML = `<span style="color:${c}">▮</span> ${title}`;
   labelHost.value!.appendChild(el);
   labels.push({ el, anchor: new THREE.Vector3(x, 6, z) });
@@ -914,7 +914,7 @@ function placeAnimModel(reg: AnimModelReg) {
     <div class="sl-text">
       <b>${info.title}</b>
       <em>${info.sub}</em>
-      <span style="color:#22d3ee">动作 ${nClip} 段 · ${dur} · 骨骼 ${reg.bones}</span>
+      <span style="color:var(--ui-accent)">动作 ${nClip} 段 · ${dur} · 骨骼 ${reg.bones}</span>
       <span style="color:${trisColor}">${tris.toLocaleString()} tris · 身高 ${inst.height.toFixed(1)}</span>
     </div>`;
   labelHost.value!.appendChild(el);
@@ -1146,56 +1146,56 @@ onBeforeUnmount(() => {
 
 .gallery-labels :deep(.group-header) {
   position: absolute; top: 0; left: 0; white-space: nowrap;
-  font-size: calc(15px * var(--font-scale)); font-weight: 900; letter-spacing: 1px; color: #e6fff4;
-  padding: 4px 12px; border-radius: 6px;
+  font-size: var(--fs-body); font-weight: 900; letter-spacing: 1px; color: #e6fff4;
+  padding: 4px 12px; border-radius: var(--ui-radius-lg);
   background: rgba(8, 14, 24, 0.72); border: 1px solid rgba(31, 210, 143, 0.25);
 }
 
 .gallery-labels :deep(.ship-label) {
   position: absolute; top: 0; left: 0; white-space: nowrap;
   display: flex; align-items: center; gap: 6px;
-  padding: 3px 8px; border-radius: 5px;
+  padding: 3px 8px; border-radius: var(--ui-radius-lg);
   background: rgba(8, 14, 24, 0.62); border: 1px solid rgba(31, 210, 143, 0.18);
-  font-size: calc(11px * var(--font-scale)); line-height: 1.25; text-align: left;
+  font-size: var(--fs-label); line-height: 1.25; text-align: left;
 }
 .gallery-labels :deep(.sl-portrait) {
-  width: 26px; height: 30px; object-fit: cover; border-radius: 3px;
+  width: 26px; height: 30px; object-fit: cover; border-radius: var(--ui-radius);
   border: 1px solid rgba(148, 163, 184, 0.4); background: #0b1220; flex-shrink: 0;
 }
 .gallery-labels :deep(.sl-text) { display: flex; flex-direction: column; }
 .gallery-labels :deep(.ship-label b) { color: #e6fff4; font-weight: 800; }
-.gallery-labels :deep(.ship-label em) { color: #94a3b8; font-size: calc(10px * var(--font-scale)); font-style: normal; }
-.gallery-labels :deep(.ship-label span) { font-size: calc(10px * var(--font-scale)); }
+.gallery-labels :deep(.ship-label em) { color: #94a3b8; font-size: var(--fs-caption); font-style: normal; }
+.gallery-labels :deep(.ship-label span) { font-size: var(--fs-caption); }
 
 .gallery-hud { position: absolute; top: 14px; left: 16px; pointer-events: none; display: flex; flex-direction: column; gap: 4px; }
-.gh-title { font-size: calc(15px * var(--font-scale)); font-weight: 900; color: #1fd28f; letter-spacing: 1px; }
-.gh-stat { font-size: calc(12px * var(--font-scale)); color: #94a3b8; }
+.gh-title { font-size: var(--fs-body); font-weight: 900; color: #1fd28f; letter-spacing: 1px; }
+.gh-stat { font-size: var(--fs-label); color: #94a3b8; }
 .gh-fail { color: #f87171; }
 .gh-loading { color: #fbbf24; }
-.gh-legend { display: flex; gap: 12px; font-size: calc(11px * var(--font-scale)); color: #cbd5e1; }
-.gh-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
-.gh-tip { font-size: calc(10px * var(--font-scale)); color: #475569; }
+.gh-legend { display: flex; gap: 12px; font-size: var(--fs-label); color: #cbd5e1; }
+.gh-legend i { display: inline-block; width: 9px; height: 9px; border-radius: var(--ui-radius); margin-right: 4px; vertical-align: middle; }
+.gh-tip { font-size: var(--fs-caption); color: #475569; }
 
 .gh-fx { display: flex; align-items: center; gap: 6px; pointer-events: auto; margin-top: 2px; }
-.gh-fx-label { font-size: calc(10px * var(--font-scale)); color: #64748b; }
+.gh-fx-label { font-size: var(--fs-caption); color: #64748b; }
 .gh-fx button {
-  padding: 4px 10px; font-size: calc(11px * var(--font-scale)); font-weight: 700;
+  padding: 4px 10px; font-size: var(--fs-label); font-weight: 700;
   color: #cbd5e1; background: rgba(15, 23, 42, 0.85);
-  border: 1px solid rgba(31, 210, 143, 0.35); border-radius: 5px; cursor: pointer;
+  border: 1px solid rgba(31, 210, 143, 0.35); border-radius: var(--ui-radius-lg); cursor: pointer;
 }
 .gh-fx button:hover { border-color: #1fd28f; color: #1fd28f; }
 .gh-fx button:active { background: rgba(31, 210, 143, 0.15); }
 
 /* 朝向修正预览行 */
 .gh-yaw { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; pointer-events: auto; margin-top: 2px; }
-.gh-yaw-name { font-size: calc(11px * var(--font-scale)); color: #1fd28f; }
+.gh-yaw-name { font-size: var(--fs-label); color: #1fd28f; }
 .gh-yaw-gap { margin-left: 10px; }
-.gh-yaw-val { font-size: calc(11px * var(--font-scale)); color: #cbd5e1; }
-.gh-yaw-hint { font-size: calc(10px * var(--font-scale)); color: #475569; }
+.gh-yaw-val { font-size: var(--fs-label); color: #cbd5e1; }
+.gh-yaw-hint { font-size: var(--fs-caption); color: #475569; }
 .gh-yaw button {
-  padding: 3px 9px; font-size: calc(11px * var(--font-scale)); font-weight: 700;
+  padding: 3px 9px; font-size: var(--fs-label); font-weight: 700;
   color: #cbd5e1; background: rgba(15, 23, 42, 0.85);
-  border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 5px; cursor: pointer;
+  border: 1px solid rgba(56, 189, 248, 0.35); border-radius: var(--ui-radius-lg); cursor: pointer;
 }
 .gh-yaw button:hover { border-color: #38bdf8; color: #38bdf8; }
 .gh-yaw button.active { border-color: #1fd28f; color: #1fd28f; background: rgba(31, 210, 143, 0.12); }
@@ -1204,9 +1204,9 @@ onBeforeUnmount(() => {
 
 .gallery-close {
   position: absolute; top: 14px; right: 16px;
-  padding: 7px 16px; font-size: calc(12px * var(--font-scale)); font-weight: 700;
+  padding: 7px 16px; font-size: var(--fs-label); font-weight: 700;
   color: #e2e8f0; background: rgba(15, 23, 42, 0.8);
-  border: 1px solid rgba(31, 210, 143, 0.4); border-radius: 6px; cursor: pointer;
+  border: 1px solid rgba(31, 210, 143, 0.4); border-radius: var(--ui-radius-lg); cursor: pointer;
 }
 .gallery-close:hover { border-color: #1fd28f; color: #1fd28f; }
 </style>

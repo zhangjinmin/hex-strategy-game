@@ -26,12 +26,22 @@ const store = useGameStore();
 </script>
 
 <style scoped>
-.modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: var(--overlay-scrim); z-index: 999; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
-.modal-content { width: 400px; padding: 30px; text-align: center; border: 1px solid var(--overlay-border); }
-h2 { margin: 0 0 10px 0; font-size: calc(28px * var(--font-scale)); font-weight: 900; }
-.status-text { color: var(--color-text-secondary); font-size: calc(14px * var(--font-scale)); margin-bottom: 20px; font-weight: 600; }
-/* [v99] 损失为主、经费为次：损失用主字号，经费降到次级行，避免两条数字抢注意力 */
-.loss-sub { color: var(--color-text-secondary); font-size: calc(12px * var(--font-scale)); margin-top: 6px; font-weight: 700; }
-.reward-box { padding: 15px; border-radius: 8px; margin: 15px 0; }
-.reward-box p { margin: 5px 0; font-size: calc(14px * var(--font-scale)); font-weight: 800; color: var(--color-text-primary); }
+.modal-overlay {
+  position: fixed; inset: 0; background: var(--ui-scrim); z-index: 999;
+  display: flex; align-items: center; justify-content: center; backdrop-filter: blur(8px);
+}
+.modal-content {
+  width: 560px; max-width: 92vw; padding: var(--ui-6) var(--ui-5); text-align: center;
+  border: var(--ui-frame-strong); border-radius: var(--ui-radius);
+  background: var(--ui-panel-solid); box-shadow: var(--ui-shadow-panel);
+}
+h2 {
+  margin: 0 0 var(--ui-2) 0; font-family: var(--ui-display-font);
+  font-size: var(--fs-display); font-weight: var(--ui-display-weight);
+  letter-spacing: var(--ui-display-tracking);
+}
+.status-text { color: var(--ui-ink-2); font-size: var(--fs-body); margin-bottom: var(--ui-4); font-weight: 600; line-height: 1.6; }
+.loss-sub { color: var(--ui-ink-2); font-size: var(--fs-label); margin-top: 6px; font-weight: 700; }
+.reward-box { padding: var(--ui-3); border-radius: var(--ui-radius); margin: var(--ui-3) 0 var(--ui-4); }
+.reward-box p { margin: 0; font-size: var(--fs-body); font-weight: 800; color: var(--ui-ink); line-height: 1.6; }
 </style>

@@ -45,6 +45,7 @@
 node frontend/_fbx_gallery.cjs   # 真实入口进巡览 → 12 项断言（含"动画真的在动"）
 node frontend/_fbx_bind.cjs      # 定位用：mixer/骨骼绑定诊断（含上面的坑 2 证据）
 node frontend/_fbx_anim.cjs      # 素材结构报告（clip 数/时长/骨骼数/单位）
+node _probe_anim_holo.mjs        # 彩透材质 13 项断言 + 运行时"改回白模"变异测试 + 对比截图
 node frontend/_run_vuetsc.cjs    # 类型检查（看 EXIT=0）
 ```
 
@@ -57,4 +58,10 @@ node frontend/_run_vuetsc.cjs    # 类型检查（看 EXIT=0）
 - **只在巡览里展示**，不参与战场（战场没有"人物/动作单位"的概念）。
 - 动模**不参与点选调姿态**（朝向/竖起/自旋是舰船与建筑的 UI；动模每型只有一段动作，无切换需求）。
   调朝向请用 `ANIM_MODEL_YAW`。
-- 一个 fbx 5 万面级别，纯色材质直接沿用 FBX 自带的（未做 CRT 线框处理）。
+- 一个 fbx 5 万面级别。加载时把 FBX 自带的白模材质换成「半透明彩透 + Fresnel 轮廓 + CRT 屏幕扫描线」，
+  参数集中在 `animModels.ts` 的 `ANIM_HOLO_STYLE`（真机调档只改这一处），观感与巡览舰船/建筑的透明层统一。
+- ⚠ **不做**舰船那种 `EdgesGeometry` 硬边线框：那是静态几何，骨骼一动线框就留在原地脱壳。
+  动模的轮廓改由片元着色器按法线实时计算 ⇒ 随蒙皮变形、零额外 draw call；扫描线是屏幕空间栅格。
+  顶点着色器完全不改，skinning 链路保持原样。
+- 材质替换在 `fillReg` 完成，实例经 `SkeletonUtils.clone` 共享同一批材质；
+  透明 + 双面在 three 0.160 默认拆 Back/Front 两遍并每帧 `needsUpdate` ⇒ 已用 `forceSinglePass: true` 关掉。

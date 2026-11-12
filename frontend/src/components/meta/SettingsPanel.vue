@@ -194,6 +194,7 @@
         <div class="setting-hint" v-if="currentCoverage && !currentCoverage.cjk">⚠ 当前字体不含中文字形：中文会回落到「系统字体」，只有英文/数字变化。</div>
         <div class="setting-hint" v-if="currentCoverage && currentCoverage.cjk && !currentCoverage.latin">当前字体不含拉丁字形：英文/数字会回落。</div>
         <div class="setting-hint">字号：只放大文字（100%~140%），不动按钮/面板/间距，与「全局缩放」互相独立、可叠加。</div>
+        <div class="setting-hint">生效范围：标题界面与全站正文跟随此选择；进入对局后，军议 / 横幅 / 结算等仪式性标题按阵营制式使用专用字形（同盟正体黑 · 帝国点宋）。</div>
       </div>
     </div>
 
@@ -397,28 +398,28 @@ function onTrackSelect(e: Event) {
 .settings-col { display: flex; flex-direction: column; min-width: 0; }
 .settings-section { display: flex; flex-direction: column; gap: 9px; min-width: 0; margin-bottom: 18px; }
 .settings-col > .settings-section:last-child { margin-bottom: 0; }
-.section-title { font-size: calc(13px * var(--font-scale)); font-weight: 800; color: var(--color-cyan); border-bottom: 1px solid rgba(6,182,212,0.2); padding-bottom: 6px; display: flex; align-items: center; }
+.section-title { font-size: var(--fs-label); font-weight: 800; color: var(--color-cyan); border-bottom: 1px solid rgba(var(--ui-accent-rgb), 0.2); padding-bottom: 6px; display: flex; align-items: center; }
 
 .setting-row { display: flex; align-items: center; gap: 10px; padding: 2px 0; }
-.setting-label { flex: 0 0 96px; font-size: calc(13px * var(--font-scale)); font-weight: 700; color: var(--color-text-primary); white-space: nowrap; }
-.setting-value { font-size: calc(12px * var(--font-scale)); font-weight: 700; color: var(--color-text-disabled); min-width: 50px; text-align: right; }
+.setting-label { flex: 0 0 96px; font-size: var(--fs-label); font-weight: 700; color: var(--color-text-primary); white-space: nowrap; }
+.setting-value { font-size: var(--fs-label); font-weight: 700; color: var(--color-text-disabled); min-width: 50px; text-align: right; }
 .setting-hints { display: flex; flex-direction: column; gap: 3px; }
-.setting-hint { font-size: calc(11px * var(--font-scale)); color: var(--color-text-disabled); padding: 0; line-height: 1.45; }
-.setting-hint code { font-size: calc(10px * var(--font-scale)); color: var(--color-cyan); background: rgba(6,182,212,0.08); padding: 0 4px; border-radius: 3px; font-family: var(--dmc-font-mono); }
+.setting-hint { font-size: var(--fs-label); color: var(--color-text-disabled); padding: 0; line-height: 1.45; }
+.setting-hint code { font-size: var(--fs-caption); color: var(--color-cyan); background: rgba(var(--ui-accent-rgb), 0.08); padding: 0 4px; border-radius: var(--ui-radius); font-family: var(--dmc-font-mono); }
 
 /* [v66] 字体预览：用当前生效字体渲染，选中即变（所见即所得）。min-height 而非 height，字号放大时不裁切。 */
 .font-preview {
-  border: 1px dashed rgba(6,182,212,0.25); border-radius: 6px;
+  border: 1px dashed rgba(var(--ui-accent-rgb), 0.25); border-radius: var(--ui-radius-lg);
   padding: 8px 10px; background: rgba(0,0,0,0.25);
   display: flex; flex-direction: column; gap: 4px; min-width: 0;
 }
-.font-preview-line { font-size: calc(16px * var(--font-scale)); font-weight: 700; color: var(--color-text-primary); line-height: 1.35; word-break: break-all; }
-.font-preview-sub { font-size: calc(11px * var(--font-scale)); color: var(--color-text-disabled); line-height: 1.35; }
+.font-preview-line { font-size: var(--fs-body); font-weight: 700; color: var(--color-text-primary); line-height: 1.35; word-break: break-all; }
+.font-preview-sub { font-size: var(--fs-label); color: var(--color-text-disabled); line-height: 1.35; }
 
 .setting-slider {
   flex: 1; min-width: 0; height: 6px;
   -webkit-appearance: none; appearance: none;
-  background: var(--overlay-hover); border-radius: 3px; outline: none;
+  background: var(--overlay-hover); border-radius: var(--ui-radius); outline: none;
   cursor: pointer;
 }
 .setting-slider::-webkit-slider-thumb {
@@ -430,7 +431,7 @@ function onTrackSelect(e: Event) {
 .toggle-switch input { opacity: 0; width: 0; height: 0; }
 .toggle-slider {
   position: absolute; cursor: pointer; inset: 0;
-  background: var(--overlay-hover); border-radius: 12px; transition: 0.2s;
+  background: var(--overlay-hover); border-radius: var(--ui-radius-lg); transition: 0.2s;
 }
 .toggle-slider::before {
   content: ''; position: absolute; height: 18px; width: 18px;
@@ -442,28 +443,28 @@ function onTrackSelect(e: Event) {
 
 .neo-select {
   flex: 1; min-width: 0; padding: 8px 12px;
-  background: rgba(0,0,0,0.4); border: 1px solid rgba(6,182,212,0.25);
-  color: var(--color-text-primary); font-size: calc(13px * var(--font-scale)); font-weight: 600;
-  border-radius: 6px; outline: none; cursor: pointer;
+  background: rgba(0,0,0,0.4); border: 1px solid rgba(var(--ui-accent-rgb), 0.25);
+  color: var(--color-text-primary); font-size: var(--fs-label); font-weight: 600;
+  border-radius: var(--ui-radius-lg); outline: none; cursor: pointer;
 }
 .neo-input {
   flex: 1; min-width: 0; padding: 8px 12px;
-  background: rgba(0,0,0,0.4); border: 1px solid rgba(6,182,212,0.25);
-  color: var(--color-text-primary); font-size: calc(13px * var(--font-scale)); font-weight: 600;
-  border-radius: 6px; outline: none; transition: border 0.2s;
+  background: rgba(0,0,0,0.4); border: 1px solid rgba(var(--ui-accent-rgb), 0.25);
+  color: var(--color-text-primary); font-size: var(--fs-label); font-weight: 600;
+  border-radius: var(--ui-radius-lg); outline: none; transition: border 0.2s;
 }
 .neo-input:focus { border-color: var(--color-cyan); }
 
 .track-name {
   flex: 1; min-width: 0; padding: 6px 10px;
-  background: rgba(0,0,0,0.3); border: 1px solid rgba(6,182,212,0.12);
-  border-radius: 5px; font-size: calc(11px * var(--font-scale)); font-weight: 600;
+  background: rgba(0,0,0,0.3); border: 1px solid rgba(var(--ui-accent-rgb), 0.12);
+  border-radius: var(--ui-radius-lg); font-size: var(--fs-label); font-weight: 600;
   color: var(--color-text-disabled);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .skip-btn {
   flex: 0 0 30px; height: 30px; display: flex; align-items: center; justify-content: center;
-  background: transparent; border: 1px solid rgba(6,182,212,0.2); border-radius: 5px;
+  background: transparent; border: 1px solid rgba(var(--ui-accent-rgb), 0.2); border-radius: var(--ui-radius-lg);
   color: var(--color-text-secondary); cursor: pointer; transition: all 0.15s;
 }
 .skip-btn:hover { border-color: var(--color-cyan); color: var(--color-cyan); }
@@ -473,26 +474,26 @@ function onTrackSelect(e: Event) {
 .mode-btn {
   flex: 1; padding: 12px; display: flex; flex-direction: column; align-items: center; gap: 4px;
   background: var(--overlay-surface); border: 2px solid var(--overlay-hover);
-  border-radius: 8px; cursor: pointer; transition: all 0.2s; text-align: center;
+  border-radius: var(--ui-radius-lg); cursor: pointer; transition: all 0.2s; text-align: center;
 }
-.mode-btn:hover { border-color: rgba(6,182,212,0.3); }
-.mode-btn.active { border-color: var(--color-cyan); background: rgba(6,182,212,0.08); }
+.mode-btn:hover { border-color: rgba(var(--ui-accent-rgb), 0.3); }
+.mode-btn.active { border-color: var(--color-cyan); background: rgba(var(--ui-accent-rgb), 0.08); }
 .mode-icon { display: flex; align-items: center; color: var(--color-text-secondary); }
-.mode-label { font-size: calc(13px * var(--font-scale)); font-weight: 800; color: var(--color-text-primary); }
-.mode-desc { font-size: calc(10px * var(--font-scale)); color: var(--color-text-disabled); }
+.mode-label { font-size: var(--fs-label); font-weight: 800; color: var(--color-text-primary); }
+.mode-desc { font-size: var(--fs-caption); color: var(--color-text-disabled); }
 
 /* 配色预览（下拉框下方色块预览） */
 .scheme-preview { display: flex; align-items: center; gap: 8px; padding: 4px 2px; flex-wrap: wrap; }
-.scheme-preview-label { font-size: calc(11px * var(--font-scale)); color: var(--color-text-disabled); font-family: var(--font-family); }
-.swatch { width: 16px; height: 16px; border-radius: 3px; display: inline-block; box-shadow: 0 0 6px rgba(0,0,0,0.4); }
+.scheme-preview-label { font-size: var(--fs-label); color: var(--color-text-disabled); font-family: var(--font-family); }
+.swatch { width: 16px; height: 16px; border-radius: var(--ui-radius); display: inline-block; box-shadow: 0 0 6px rgba(0,0,0,0.4); }
 .swatch.ally { border: 1px solid rgba(255,255,255,0.3); }
 .swatch.empire { border: 1px solid rgba(255,255,255,0.3); }
 
 /* 恢复默认（面板外、贴底，不参与三列流） */
 .settings-footer { display: flex; justify-content: flex-end; padding-top: 10px; border-top: 1px solid var(--overlay-hover); flex-shrink: 0; }
 .reset-btn {
-  padding: 8px 18px; font-size: calc(12px * var(--font-scale)); font-weight: 700; color: var(--color-text-disabled);
-  background: transparent; border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; cursor: pointer; transition: all 0.15s;
+  padding: 8px 18px; font-size: var(--fs-label); font-weight: 700; color: var(--color-text-disabled);
+  background: transparent; border: 1px solid rgba(255,255,255,0.15); border-radius: var(--ui-radius-lg); cursor: pointer; transition: all 0.15s;
 }
 .reset-btn:hover { color: var(--color-warning); border-color: var(--color-warning); }
 

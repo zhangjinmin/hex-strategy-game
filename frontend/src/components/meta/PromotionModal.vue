@@ -57,16 +57,16 @@ const statChanges = computed(() => {
 <style scoped>
 .promo-overlay { position: fixed; inset: 0; z-index: 1100; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; }
 .promo-modal { width: min(380px, 85vw); padding: 28px; text-align: center; }
-.promo-rank-icon { font-size: calc(40px * var(--font-scale)); margin-bottom: 8px; }
-.promo-title { font-size: calc(16px * var(--font-scale)); font-weight: 800; margin-bottom: 6px; }
-.promo-admiral { font-size: calc(18px * var(--font-scale)); font-weight: 800; color: var(--color-text-primary); margin-bottom: 10px; }
+.promo-rank-icon { font-size: var(--fs-display); margin-bottom: 8px; }
+.promo-title { font-size: var(--fs-body); font-weight: 800; margin-bottom: 6px; }
+.promo-admiral { font-size: var(--fs-h3); font-weight: 800; color: var(--color-text-primary); margin-bottom: 10px; }
 .promo-rank-change { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 14px; }
-.old-rank { font-size: calc(15px * var(--font-scale)); color: var(--color-text-disabled); }
-.promo-arrow { font-size: calc(18px * var(--font-scale)); color: var(--color-gold); }
-.new-rank { font-size: calc(18px * var(--font-scale)); font-weight: 800; }
+.old-rank { font-size: var(--fs-body); color: var(--color-text-disabled); }
+.promo-arrow { font-size: var(--fs-h3); color: var(--color-gold); }
+.new-rank { font-size: var(--fs-h3); font-weight: 800; }
 .promo-stats { display: flex; justify-content: center; gap: 16px; margin-bottom: 14px; }
-.promo-stat { font-size: calc(13px * var(--font-scale)); color: var(--color-text-secondary); display: flex; flex-direction: column; align-items: center; gap: 2px; }
-.promo-permissions { font-size: calc(12px * var(--font-scale)); color: var(--color-text-secondary); text-align: left; margin: 0 auto; max-width: 250px; }
+.promo-stat { font-size: var(--fs-label); color: var(--color-text-secondary); display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.promo-permissions { font-size: var(--fs-label); color: var(--color-text-secondary); text-align: left; margin: 0 auto; max-width: 250px; }
 .promo-perm { padding: 1px 0; }
 .text-green { color: #10b981; font-weight: 700; }
 </style>

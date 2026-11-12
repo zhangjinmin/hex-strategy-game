@@ -1,4 +1,9 @@
 {
+  "scripts": {
+    "sim": "node --import ./_ts_resolve.mjs scripts/runAllSims.cjs",
+    "sim:wedge": "node --import ./_ts_resolve.mjs scripts/wedgeReadabilitySim.cjs",
+    "typecheck": "node frontend/node_modules/vue-tsc/bin/vue-tsc.js --noEmit -p frontend/tsconfig.json"
+  },
   "dependencies": {
     "pinia": "^3.0.4",
     "typescript": "^6.0.3",

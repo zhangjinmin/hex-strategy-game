@@ -1,21 +1,33 @@
 <template>
-  <div v-if="visible" class="io-overlay">
-    <!-- 背景纹理：仪式感来自"老式战术显示器开机"，而非全屏大图 -->
+  <div v-if="visible" class="io-overlay ui-void">
+    <!-- 深空场 + 极弱扫描线：尺度感来自留白与暗角，不是贴图 -->
     <div class="io-scan"></div>
     <div class="io-vignette"></div>
+    <div class="io-rail io-rail--top"></div>
+    <div class="io-rail io-rail--bottom"></div>
 
     <div class="io-shell">
-      <!-- 顶栏：标题 / 模式 / 开战倒计时 -->
+      <!-- 顶栏：我方阵营 / 模式 / 倒计时 / 敌方阵营 -->
       <div class="io-topbar">
-        <span class="io-title">◤ 战 前 军 议 ◢</span>
+        <span class="io-faction-tag" :data-side="mine.faction">我方 · {{ mine.traitLabel }}</span>
         <span class="io-mode">{{ modeLabel }}</span>
         <span class="io-flex"></span>
         <span class="io-cd">{{ cdLine }}</span>
+        <span class="io-faction-tag" :data-side="foe.faction">敌方 · {{ foe.traitLabel }}</span>
+      </div>
+
+      <!-- 主标题：全屏唯一的 display 级文字，承担「宏大」的第一印象 -->
+      <div class="io-headline">
+        <h1 class="io-title ui-display">战 前 军 议</h1>
+        <!-- kicker 置于主标题下方：顶部中央留给旗舰提示气泡（FloatBubble），避免压字 -->
+        <div class="io-kicker ui-kicker">PRE-BATTLE COUNCIL · 舰队决战部署</div>
+        <div class="io-subrule"><span></span><i>◆</i><span></span></div>
       </div>
 
       <!-- 对阵：双方提督立绘 -->
-      <div class="io-matchup">
-        <div class="io-side">
+      <div class="io-matchup ui-duel">
+        <div class="io-side ui-frame" :data-side="mine.faction">
+          <div class="io-side-tag ui-kicker">{{ mine.faction === 'empire' ? 'GALACTIC EMPIRE' : 'FREE PLANETS ALLIANCE' }}</div>
           <div class="io-portrait-wrap">
             <img v-if="mine.portrait" :src="mine.portrait" class="io-portrait" alt="" />
             <div v-else class="io-portrait io-portrait-empty">?</div>
@@ -36,7 +48,8 @@
 
         <div class="io-vs">VS</div>
 
-        <div class="io-side foe">
+        <div class="io-side foe ui-frame" :data-side="foe.faction">
+          <div class="io-side-tag ui-kicker">{{ foe.faction === 'empire' ? 'GALACTIC EMPIRE' : 'FREE PLANETS ALLIANCE' }}</div>
           <div class="io-portrait-wrap">
             <img v-if="foe.portrait" :src="foe.portrait" class="io-portrait io-portrait-foe" alt="" />
             <div v-else class="io-portrait io-portrait-empty">?</div>
@@ -63,30 +76,37 @@
 
       <!-- 布置区：舰队编成与任务。内嵌 CouncilWarRoom（embedded）⇒ 任务指派实现只有一份 -->
       <div class="io-deploy">
-        <div class="io-sec">舰队编成 · 任务下达</div>
+        <div class="io-sec ui-rule">舰队编成 · 任务下达</div>
         <CouncilWarRoom embedded />
       </div>
 
-      <!-- 操作区：阵型 / 姿态 / 开战 -->
-      <div class="io-actions">
-        <div class="io-picks">
-          <div class="io-group">
-            <span class="io-group-label">初始阵型</span>
-            <button v-for="f in FORMATIONS" :key="f.value" class="io-opt"
-                    :class="{ on: formation === f.value }" @click="pickFormation(f.value)">
-              {{ f.label }}<i>{{ f.key }}</i>
-            </button>
+      <!-- 阵型 / 姿态：与部署区并置于左列，避免左列留白、右列满载 -->
+      <div class="io-picks">
+        <div class="io-group">
+          <span class="io-group-label">初始阵型</span>
+          <button v-for="f in FORMATIONS" :key="f.value" class="io-opt"
+                  :class="{ on: formation === f.value }" @click="pickFormation(f.value)">
+            {{ f.label }}<i>{{ f.key }}</i>
+          </button>
+          <!-- [v108] 所选阵型的数值特性：这三个数本轮起真实生效（转向限速 / 受击乘区 / 互克） -->
+          <div class="io-traits">
+            <span class="t-item">转向 <b>{{ turnText }}</b></span>
+            <span class="t-item">侧后受伤 <b>{{ flankText }}</b></span>
+            <span class="t-item">克制 <b>{{ counteredName }}</b></span>
           </div>
-          <div class="io-group">
-            <span class="io-group-label">旗舰姿态</span>
-            <button v-for="t in TACTICS" :key="t.value" class="io-opt"
-                    :class="{ on: tactic === t.value }" @click="pickTactic(t.value)">
-              {{ t.label }}
-            </button>
-          </div>
+          <div class="io-trait-desc">{{ formCfg?.description }}</div>
         </div>
-        <button class="io-go" @click="startBattle">⚔ 开 始 战 斗</button>
+        <div class="io-group">
+          <span class="io-group-label">旗舰姿态</span>
+          <button v-for="t in TACTICS" :key="t.value" class="io-opt"
+                  :class="{ on: tactic === t.value }" @click="pickTactic(t.value)">
+            {{ t.label }}
+          </button>
+        </div>
       </div>
+
+      <!-- 开战：独立居中一行，承担仪式性收束 -->
+      <button class="io-go ui-btn ui-btn--primary" @click="startBattle">⚔ 开 始 战 斗</button>
 
       <div class="io-hint">
         布置完成后点上方按钮开战（或按回车） · 快捷键 1-5 选阵型（仅部署期）/ T 换姿态 · Esc 收起本界面
@@ -118,6 +138,10 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useGameStore, getPortrait } from '../../store/gameStore';
 import { admiralQuotes, generalQuotes, spawnBriefTemplates, standingOrders } from '../../config/dialoguesData';
 import { resolveAdmiralDoctrine } from '../../game/retreatDoctrine';
+// [v108] 阵型特性的**唯一真源**（转向倍率 / 侧后受伤倍率 / 互克）。
+//   ⚠ 本文件下方另有一个同名局部常量 `FORMATIONS`（只含 value/label/key 的按钮文案），
+//     两者含义不同：那个是"按钮列表"，这个是"数值表"。为避免误用，导入侧改名。
+import { FORMATIONS as FORMATION_CFG } from '../../config/formations';
 import CouncilWarRoom from './CouncilWarRoom.vue';
 
 const store = useGameStore();
@@ -139,6 +163,28 @@ const TACTICS = [
 ] as const;
 
 const closed = ref(false);
+/** [v108] 当前所选阵型的数值特性（转向 / 侧后受伤 / 互克）。
+ *  「特性不被看见就等于不存在」—— 这些数值自本轮起真实影响转向速率与受击伤害，
+ *   但玩家只有在选阵时看得到差异，才会拿它做决策。 */
+const formCfg = computed(() => {
+  const v = String(unwrap<any>(formation) ?? 'wedge');
+  return (FORMATION_CFG as any)[v] ?? (FORMATION_CFG as any).wedge;
+});
+/** 阵型互克的对手中文名（用于特性行里"克制 xx"） */
+const counteredName = computed(() => {
+  const t = formCfg.value?.counters;
+  return t ? ((FORMATION_CFG as any)[t]?.name ?? String(t)) : '—';
+});
+/** 与 AI 无关的纯读数文案：转向快/慢由 turnMul 直接映射（1 = 基准） */
+const turnText = computed(() => {
+  const m = Number(formCfg.value?.turnMul ?? 1);
+  const pct = Math.round((m - 1) * 100);
+  return `${pct >= 0 ? '+' : ''}${pct}%`;
+});
+const flankText = computed(() => {
+  const m = Number(formCfg.value?.flankVulnMul ?? 1);
+  return `×${m.toFixed(2)}`;
+});
 const deployPhase = computed<boolean>(() => !!unwrap<boolean>(store.battleDeployPhase));
 const gameState = computed<string>(() => String(unwrap<string>(store.gameState) ?? ''));
 const mode = computed<string>(() => String((unwrap<any>(store.tacticalState) || {}).mode ?? ''));
@@ -189,21 +235,33 @@ const compTextOf = (c: any): string => {
 interface Side {
   name: string; portrait: string; rank: number; traitLabel: string; cssColor: string; fleetCount: number;
   formationCn: string; compText: string;
+  /** [统一界面语言] 阵营归属：驱动 data-side 局部皮肤（同屏并置时互不串色） */
+  faction: 'alliance' | 'empire' | 'neutral';
 }
 const factions = computed<any[]>(() => (unwrap<any[]>(store.factions) || []).filter((f: any) => f && f.active));
 
-const buildSide = (f: any, fleetCount: number): Side => ({
-  name: String(f?.name ?? '未知舰队').replace(/舰队$/, ''),
-  portrait: getPortrait(f?.imageId ?? ''),
-  rank: Number(f?.rank ?? 0),
-  traitLabel: TRAIT_LABEL[String(f?.trait ?? '')] ?? '—',
-  cssColor: String(f?.cssColor ?? '#22d3ee'),
-  fleetCount,
-  formationCn: formationCnOf(f),
-  compText: compTextOf(f?.composition),
-});
+const buildSide = (f: any, fleetCount: number): Side => {
+  const trait = String(f?.trait ?? '');
+  const faction: Side['faction'] = trait === 'empire' ? 'empire' : trait === 'alliance' ? 'alliance' : 'neutral';
+  // 阵营归属色恒定，不取 store.cssColor（那是旧敌我队伍色，会让帝国侧显示成同盟蓝）。
+  // 这里只用于 CSS 的 color / borderColor，用 var() 是合法的。
+  const cssColor = faction === 'empire' ? 'var(--color-faction-empire)'
+    : faction === 'alliance' ? 'var(--color-faction-alliance)'
+    : 'var(--ui-ink-3)';
+  return {
+    name: String(f?.name ?? '未知舰队').replace(/舰队$/, ''),
+    portrait: getPortrait(f?.imageId ?? ''),
+    rank: Number(f?.rank ?? 0),
+    traitLabel: TRAIT_LABEL[trait] ?? '—',
+    cssColor,
+    fleetCount,
+    formationCn: formationCnOf(f),
+    compText: compTextOf(f?.composition),
+    faction,
+  };
+};
 
-const empty: Side = { name: '——', portrait: '', rank: 0, traitLabel: '—', cssColor: '#64748b', fleetCount: 0, formationCn: '', compText: '' };
+const empty: Side = { name: '——', portrait: '', rank: 0, traitLabel: '—', cssColor: 'var(--ui-ink-3)', fleetCount: 0, formationCn: '', compText: '', faction: 'neutral' };
 
 /** 按 team 取"主队"（优先 player 类型）并统计该方舰队数。
  *  ⚠ 不写回 store 对象（曾用 `f._fleetCount = …` 污染 store，已改成本地计算）。 */
@@ -314,105 +372,196 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
+/* ==================================================================
+   战前军议 · 统一界面语言
+   尺度：容器 min(1480px, 94vw)；主标题 --fs-display；双方卡等分栅格。
+   纵向预算：六行栅格，致辞与部署并置，保证 1080p 下「开始战斗」在首屏内。
+   阵营差异全部来自 data-side 局部令牌，本文件不写阵营色字面量。
+   ================================================================== */
 .io-overlay {
   position: absolute; inset: 0; z-index: 60; pointer-events: auto;
   display: flex; align-items: center; justify-content: center;
-  background: radial-gradient(ellipse at 50% 45%, rgba(8, 18, 34, 0.94) 0%, rgba(3, 7, 16, 0.985) 70%);
-  color: #e2e8f0; font-family: inherit; overflow: hidden;
+  color: var(--ui-ink); font-family: inherit; overflow: hidden;
+  background-color: var(--ui-bg);
 }
-.io-scan {
-  position: absolute; inset: 0; pointer-events: none; opacity: 0.2;
-  background: repeating-linear-gradient(to bottom, rgba(34, 211, 238, 0.16) 0 1px, transparent 1px 3px);
-}
+.io-scan { position: absolute; inset: 0; pointer-events: none; opacity: 0.16; background: var(--ui-field); }
 .io-vignette {
   position: absolute; inset: 0; pointer-events: none;
-  background: radial-gradient(ellipse at center, transparent 48%, rgba(0, 0, 0, 0.66) 100%);
+  background: radial-gradient(ellipse at 50% 44%, transparent 34%, var(--ui-scrim) 100%);
 }
-/* 内容容器：小屏（高度不足）时整层可滚动，避免"开始战斗"被挤出视口 */
+.io-rail {
+  position: absolute; left: 0; right: 0; height: 2px; pointer-events: none; opacity: 0.75;
+  background: linear-gradient(to right, transparent, var(--ui-line-strong) 14%, var(--ui-accent) 50%, var(--ui-line-strong) 86%, transparent);
+}
+.io-rail--top { top: 0; }
+.io-rail--bottom { bottom: 0; }
+
 .io-shell {
-  position: relative; width: min(1180px, 96vw); max-height: 96vh; overflow-y: auto;
-  padding: 14px 26px 16px; text-align: center;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+  grid-template-areas:
+    "top     top"
+    "head    head"
+    "duel    duel"
+    "speech  deploy"
+    "picks   deploy"
+    "go      go"
+    "hint    hint";
+  column-gap: var(--ui-5); row-gap: var(--ui-2);
+  align-content: center;
+  width: min(1480px, 94vw); max-height: 96vh; overflow-y: auto;
+  padding: var(--ui-3) var(--ui-6); text-align: center;
 }
-/* [v66] 上面 96vh 的兜底：父级 #game-container 带 zoom(--ui-scale) 时，vh 不参与 zoom 折算
-   ⇒ 140% 下 96vh 实际渲染成 134vh，军议整层会被顶出屏幕（实测 top=-155）。
-   这里改用百分比：百分比相对「已被 zoom 缩放过的父级高度」解析，放大后依然贴合容器。 */
+/* zoom(--ui-scale) 不折算 vh ⇒ 百分比相对已缩放父级（沿用既有修复，勿删） */
 .io-overlay > .io-shell { max-height: 100%; }
 
 .io-topbar {
-  display: flex; align-items: baseline; gap: 12px;
-  border-bottom: 1px solid rgba(34, 211, 238, 0.25); padding-bottom: 7px;
+  grid-area: top; display: flex; align-items: center; gap: var(--ui-3);
+  border-bottom: 1px solid var(--ui-line); padding-bottom: var(--ui-1);
 }
-.io-title { font-size: calc(17px * var(--font-scale)); font-weight: 900; letter-spacing: 5px; color: #22d3ee; text-shadow: 0 0 12px rgba(34, 211, 238, 0.5); }
-.io-mode { font-size: calc(11px * var(--font-scale)); letter-spacing: 2px; color: #64748b; }
+.io-faction-tag {
+  font-family: var(--ui-display-font); font-size: var(--fs-label); font-weight: 800;
+  letter-spacing: 0.14em; color: var(--ui-accent); white-space: nowrap;
+  padding: 4px var(--ui-2); background: var(--ui-accent-soft);
+  border: 1px solid var(--ui-line-strong); border-radius: var(--ui-radius);
+}
+.io-mode { font-size: var(--fs-label); letter-spacing: 0.18em; color: var(--ui-ink-3); }
 .io-flex { flex: 1; }
-.io-cd { font-size: calc(11px * var(--font-scale)); font-weight: 800; color: #f59e0b; letter-spacing: 1px; }
+.io-cd { font-size: var(--fs-label); font-weight: 800; color: var(--dmc-warning); letter-spacing: 0.06em; }
 
-.io-matchup { display: flex; align-items: flex-start; justify-content: center; gap: 44px; margin: 12px 0 8px; }
-.io-side { width: 210px; }
+.io-headline { grid-area: head; margin: 0; }
+.io-kicker { color: var(--ui-ink-3); margin-bottom: 6px; }
+.io-title {
+  margin: 4px 0 6px; text-align: center; color: var(--ui-ink);
+  text-shadow: 0 0 40px rgba(var(--ui-accent-rgb), 0.28);
+}
+.io-subrule { display: flex; align-items: center; justify-content: center; gap: var(--ui-2); }
+.io-subrule span { width: min(220px, 18vw); height: 1px; background: linear-gradient(to right, transparent, var(--ui-line-strong)); }
+.io-subrule span:last-child { transform: scaleX(-1); }
+.io-subrule i { font-style: normal; font-size: var(--fs-caption); color: var(--ui-accent); }
+
+.io-matchup {
+  grid-area: duel; display: grid; grid-template-columns: 1fr auto 1fr; align-items: start;
+  gap: var(--ui-6); margin: var(--ui-1) 0;
+}
+.io-side { padding: var(--ui-2) var(--ui-3) var(--ui-3); min-width: 0; text-align: center; }
+.io-side-tag { display: block; margin-bottom: var(--ui-2); color: var(--ui-accent); }
+
 .io-portrait-wrap { position: relative; width: 160px; height: 200px; margin: 0 auto; }
+.io-portrait-wrap::before {
+  content: ''; position: absolute; inset: -10px;
+  border: 1px solid var(--ui-line); pointer-events: none;
+}
 .io-portrait {
-  width: 160px; height: 200px; object-fit: cover; border-radius: 5px;
-  border: 1px solid rgba(148, 163, 184, 0.45);
-  /* 原图 160×200 ⇒ 1:1 展示、不放大、不糊；仪式感交给扫描线/暗角/光晕 */
+  width: 160px; height: 200px; object-fit: cover; border-radius: 0;
+  border: 1px solid var(--ui-line-strong);
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.6);
   filter: saturate(1.06) contrast(1.04);
 }
-.io-portrait-foe { filter: saturate(0.8) contrast(1.02) brightness(0.9); }
+.io-portrait-foe { filter: saturate(0.82) contrast(1.02) brightness(0.9); }
 .io-portrait-empty {
   display: flex; align-items: center; justify-content: center;
-  font-size: calc(32px * var(--font-scale)); color: #475569; background: rgba(15, 23, 42, 0.8);
+  font-size: var(--fs-h1); color: var(--ui-ink-3); background: var(--ui-surface-3);
 }
 .io-portrait-glow {
-  position: absolute; inset: -5px; border: 1px solid; border-radius: 8px; pointer-events: none;
-  box-shadow: 0 0 16px rgba(34, 211, 238, 0.2), inset 0 0 22px rgba(0, 0, 0, 0.55); opacity: 0.85;
+  position: absolute; inset: -10px; border: 1px solid; border-radius: 0; pointer-events: none;
+  box-shadow: 0 0 26px rgba(var(--ui-accent-rgb), 0.22), inset 0 0 26px rgba(0, 0, 0, 0.5);
+  opacity: 0.85;
 }
-.io-name { margin-top: 7px; font-size: calc(15px * var(--font-scale)); font-weight: 900; letter-spacing: 1px; }
-.io-meta { margin-top: 3px; font-size: calc(10px * var(--font-scale)); display: flex; gap: 8px; justify-content: center; align-items: center; }
+.io-name {
+  margin-top: var(--ui-2); font-family: var(--ui-display-font);
+  font-size: var(--fs-h3); font-weight: var(--ui-display-weight); letter-spacing: 0.1em;
+}
+.io-meta { margin-top: var(--ui-1); font-size: var(--fs-label); display: flex; gap: var(--ui-2); justify-content: center; align-items: center; }
 .io-flag { font-weight: 800; }
-.io-rank { color: #94a3b8; font-weight: 800; }
-.io-fleets { color: #64748b; }
-/* [W2.2] 教范阵型 + 编成明细 */
-.io-doctrine { margin-top: 4px; display: flex; flex-direction: column; align-items: center; gap: 1px; }
-.io-form { font-size: calc(11px * var(--font-scale)); font-weight: 900; color: #22d3ee; letter-spacing: 1px; }
-.io-comp { font-size: calc(9px * var(--font-scale)); color: #64748b; font-family: var(--font-family); max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.io-vs { align-self: center; margin-top: 76px; font-size: calc(14px * var(--font-scale)); font-weight: 900; color: #f59e0b; letter-spacing: 2px; }
+.io-rank { color: var(--ui-ink-2); font-weight: 800; font-variant-numeric: tabular-nums; }
+.io-fleets { color: var(--ui-ink-3); font-variant-numeric: tabular-nums; }
+.io-doctrine { margin-top: var(--ui-1); display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.io-form { font-size: var(--fs-label); font-weight: 800; color: var(--ui-accent); letter-spacing: 0.08em; }
+.io-comp { font-size: var(--fs-caption); color: var(--ui-ink-3); max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.io-vs {
+  align-self: center; margin-top: 76px; width: 76px; height: 76px;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--ui-display-font); font-size: var(--fs-h2); font-weight: 800;
+  letter-spacing: 0.04em; color: var(--ui-accent);
+  border: 1px solid var(--ui-line-strong); border-radius: 50%;
+  background: var(--ui-panel); box-shadow: var(--ui-shadow-raised);
+}
 
 .io-speech {
-  max-width: 720px; margin: 0 auto; text-align: left; min-height: 60px;
-  border-left: 2px solid rgba(34, 211, 238, 0.55); padding: 6px 12px;
-  background: rgba(15, 23, 42, 0.5); border-radius: 0 5px 5px 0;
+  grid-area: speech; align-self: start; width: 100%; max-width: none; margin: 0;
+  text-align: left; min-height: 64px;
+  border-left: 3px solid var(--ui-accent); padding: var(--ui-1) var(--ui-3);
+  background: var(--ui-panel); border-radius: 0 var(--ui-radius) var(--ui-radius) 0;
 }
-.io-speaker { font-size: calc(11px * var(--font-scale)); font-weight: 900; color: #22d3ee; letter-spacing: 1px; margin-bottom: 3px; }
-.io-line { font-size: calc(12.5px * var(--font-scale)); line-height: 1.65; white-space: pre-wrap; color: #cbd5e1; }
-.io-caret { color: #22d3ee; animation: io-blink 1s steps(2) infinite; }
+.io-speaker { font-size: var(--fs-label); font-weight: 800; color: var(--ui-accent); letter-spacing: 0.12em; margin-bottom: 4px; }
+.io-line { font-size: var(--fs-body); line-height: 1.55; white-space: pre-wrap; color: var(--ui-ink-2); }
+.io-caret { color: var(--ui-accent); animation: io-blink 1s steps(2) infinite; }
 @keyframes io-blink { 50% { opacity: 0; } }
 
-.io-deploy { margin-top: 12px; text-align: left; }
-.io-sec {
-  font-size: calc(11px * var(--font-scale)); font-weight: 900; letter-spacing: 2px; color: #22d3ee;
-  border-left: 2px solid rgba(34, 211, 238, 0.5); padding-left: 6px; margin-bottom: 6px;
-}
+.io-deploy { grid-area: deploy; align-self: start; width: 100%; margin: 0; text-align: left; }
+.io-sec { margin-bottom: var(--ui-1); }
 
-.io-actions { margin-top: 12px; }
-.io-picks { display: flex; gap: 20px; justify-content: center; flex-wrap: wrap; }
-.io-group { display: flex; align-items: center; gap: 4px; }
-.io-group-label { font-size: calc(10px * var(--font-scale)); color: #94a3b8; letter-spacing: 1px; margin-right: 2px; }
+/* 阵型 / 姿态独占左列第二行：与右侧部署区并置，两列内容量接近 */
+.io-picks {
+  grid-area: picks; align-self: start; width: 100%;
+  display: flex; flex-direction: column; gap: var(--ui-1);
+  padding: var(--ui-1) 0 0; text-align: left;
+}
+.io-group { display: flex; align-items: center; gap: var(--ui-1); flex-wrap: wrap; justify-content: flex-start; }
+/* 标签独占一行：窄列里让「标签 → 选项 → 数值说明」形成清晰的三段式 */
+.io-group-label { flex: 0 0 100%; font-size: var(--fs-label); color: var(--ui-ink-3); letter-spacing: 0.12em; margin-bottom: 2px; }
 .io-opt {
-  background: rgba(15, 23, 42, 0.85); color: #cbd5e1; font-weight: 800;
-  border: 1px solid rgba(148, 163, 184, 0.35); border-radius: 4px;
-  font-size: calc(11px * var(--font-scale)); padding: 4px 10px; cursor: pointer; font-family: inherit;
+  min-height: 38px; padding: 0 var(--ui-2);
+  background: var(--ui-surface-2); color: var(--ui-ink-2); font-weight: 800;
+  border: 1px solid var(--ui-line-strong); border-radius: var(--ui-radius);
+  font-size: var(--fs-label); cursor: pointer; font-family: inherit;
+  transition: background var(--ui-dur-micro) var(--ui-ease), color var(--ui-dur-micro) var(--ui-ease), transform var(--ui-dur-micro) var(--ui-ease);
 }
-.io-opt i { font-style: normal; color: #64748b; font-size: calc(9px * var(--font-scale)); margin-left: 4px; }
-.io-opt:hover { border-color: #22d3ee; color: #22d3ee; }
-.io-opt.on { background: #22d3ee; color: #06121f; border-color: #22d3ee; }
-.io-opt.on i { color: rgba(6, 18, 31, 0.6); }
+.io-opt i { font-style: normal; color: var(--ui-ink-3); font-size: var(--fs-caption); margin-left: 6px; }
+.io-opt:hover { border-color: var(--ui-accent); color: var(--ui-accent); }
+.io-opt:active { transform: scale(0.97); }
+.io-opt.on { background: var(--ui-accent); color: var(--ui-accent-ink); border-color: var(--ui-accent); }
+.io-opt.on i { color: var(--ui-accent-ink); opacity: 0.7; }
 
-.io-go {
-  display: block; margin: 12px auto 0;
-  background: rgba(245, 158, 11, 0.18); color: #f59e0b; font-weight: 900; letter-spacing: 4px;
-  border: 1px solid rgba(245, 158, 11, 0.7); border-radius: 5px; padding: 9px 44px;
-  font-size: calc(14px * var(--font-scale)); cursor: pointer; font-family: inherit;
-  box-shadow: 0 0 18px rgba(245, 158, 11, 0.16);
+.io-traits { flex: 0 0 100%; display: flex; flex-wrap: wrap; gap: 4px var(--ui-2); margin-top: 4px; font-size: var(--fs-caption); color: var(--ui-ink-3); }
+.io-traits .t-item b { color: var(--ui-ink); font-weight: 800; }
+.io-trait-desc { flex: 0 0 100%; margin-top: 2px; font-size: var(--fs-caption); color: var(--ui-ink-3); line-height: 1.4; max-width: 100%; }
+
+.io-go { grid-area: go; justify-self: center; display: inline-flex; margin: var(--ui-2) auto 0; letter-spacing: 0.28em; }
+.io-hint { grid-area: hint; margin: 0; font-size: var(--fs-caption); color: var(--ui-ink-3); letter-spacing: 0.08em; }
+
+/* 1080p 及以下：压缩纵向预算，但保留 --fs-display 主标题（宏大感的核心） */
+@media (max-height: 1150px) {
+  .io-shell { padding: var(--ui-2) var(--ui-5); row-gap: var(--ui-1); }
+  .io-headline { margin: 0; }
+  .io-subrule span { width: min(180px, 14vw); }
+  .io-matchup { gap: var(--ui-4); margin: 0; }
+  .io-side { padding-top: var(--ui-1); padding-bottom: var(--ui-2); }
+  .io-side-tag { margin-bottom: var(--ui-1); }
+  .io-name { margin-top: var(--ui-1); }
+  .io-meta { margin-top: 2px; }
+  .io-vs { margin-top: 56px; width: 60px; height: 60px; font-size: var(--fs-h3); }
+  .io-speech { min-height: 0; padding: var(--ui-1) var(--ui-2); }
+  .io-picks { padding-top: 0; gap: 2px; }
+  .io-trait-desc { max-width: 100%; }
+  .io-go { margin-top: var(--ui-1); }
 }
-.io-go:hover { background: #f59e0b; color: #1a1204; }
-.io-hint { margin-top: 8px; font-size: calc(10px * var(--font-scale)); color: #64748b; letter-spacing: 1px; }
+/* 更矮的窗口才降级标题，避免 900px 以下出现纵向滚动 */
+@media (max-height: 900px) {
+  .io-title { font-size: var(--fs-h1); }
+  .io-portrait-wrap, .io-portrait { height: 160px; }
+  .io-trait-desc { display: none; }
+}
+@media (max-width: 900px) {
+  .io-shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "top" "head" "duel" "deploy" "speech" "picks" "go" "hint";
+  }
+  .io-matchup { gap: var(--ui-2); }
+  .io-side { padding: var(--ui-1); }
+  .io-vs { display: none; }
+}
 </style>

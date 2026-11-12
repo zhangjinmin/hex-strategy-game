@@ -59,8 +59,8 @@
         <!-- [2026-09-20] 原「战场制图」下拉（星域棋盘 / 全息战术投影 / 3D 战场 / 指挥制）已删除：
              后续玩法只有指挥制。舰艇巡览入口保留。 -->
         <div class="control-group" v-if="isSimMode">
-          <button @click="showShipGallery = true" class="neo-btn btn-sm w-full mt-1" style="margin-top:6px;color:#1fd28f;border-color:rgba(31,210,143,0.4)">
-            ⬡ 舰艇模型巡览（一次性查看全部已导入战舰）
+          <button @click="showShipGallery = true" class="neo-btn btn-sm w-full mt-1 gallery-btn" title="一次性查看全部已导入战舰模型" style="margin-top:6px;color:#1fd28f;border-color:rgba(31,210,143,0.4)">
+            ⬡ 舰艇模型巡览
           </button>
         </div>
         
@@ -73,9 +73,9 @@
       </div>
 
       <div class="dispatch-board neo-card">
-        <div style="display: flex; justify-content: space-between; align-items: center;">
+        <div class="board-head">
             <h3 class="panel-title-small">前线出战序列 (最大5支舰队)</h3>
-            <div style="display: flex; gap: 4px; margin-right: 15px;">
+            <div class="board-actions">
               <button @click="autoDispatch('alliance')" class="neo-btn text-cyan px-2 py-1 text-xs">同盟</button>
               <button @click="autoDispatch('empire')" class="neo-btn text-red px-2 py-1 text-xs">帝国</button>
               <button @click="autoDispatch('all')" class="neo-btn text-cyan px-2 py-1 text-xs">全势力</button>
@@ -83,7 +83,9 @@
         </div>
         
         <div class="dispatch-grid">
-          <div v-for="i in 5" :key="'dispatch-'+i" class="dispatch-slot neo-inset" @click="openDispatchSelect(i - 1)">
+          <div v-for="i in 5" :key="'dispatch-'+i" class="dispatch-slot neo-inset"
+               :class="{ 'slot-empty': dispatchAdmiralsList[i - 1] === undefined }"
+               :data-slot="'0' + i" @click="openDispatchSelect(i - 1)">
             <template v-if="dispatchAdmiralsList[i - 1] !== undefined">
               <img :src="getPortrait(getAdmiralInfo(dispatchAdmiralsList[i - 1])?.imageId)" class="slot-portrait" @error="handleImgError" />
               <div class="slot-info">
@@ -115,7 +117,44 @@
               </div>
               <span class="slot-remove" @click.stop="removeDispatch(i - 1)">×</span>
             </template>
-            <span v-else class="empty-mark">+ 指派提督</span>
+            <div v-else class="empty-body">
+              <span class="empty-mark">+ 指派提督</span>
+              <span class="empty-hint">点击槽位 · 从现役将领中编入舰队</span>
+            </div>
+          </div>
+        </div>
+        <div class="board-intel">
+          <div class="intel-head">
+            <span class="intel-title">会战态势预估</span>
+            <span class="intel-rule"></span>
+            <span class="intel-code">DISPOSITION · 001</span>
+          </div>
+          <div class="intel-metrics">
+            <div class="intel-metric">
+              <span class="metric-label">已编成舰队</span>
+              <span class="metric-value">{{ boardSummary.count }}<i>/ 5</i></span>
+              <span class="metric-note">点击空槽位，从现役将领中编入</span>
+            </div>
+            <div class="intel-metric">
+              <span class="metric-label">我方总编制</span>
+              <span class="metric-value">{{ boardSummary.total }}</span>
+              <span class="metric-note">战略层兵力总量，非屏幕可见舰数</span>
+            </div>
+            <div class="intel-metric">
+              <span class="metric-label">敌方舰队</span>
+              <span class="metric-value">{{ boardSummary.enemyFleets }}<i>支</i></span>
+              <span class="metric-note">敌军将领由电脑随机抽调并满编</span>
+            </div>
+            <div class="intel-metric">
+              <span class="metric-label">交战难度</span>
+              <span class="metric-value">{{ boardSummary.diffName }}</span>
+              <span class="metric-note">按所选难度调整敌军规模与补给</span>
+            </div>
+          </div>
+          <div class="intel-foot">
+            <span>会战宙域 · {{ boardSummary.mapName }}</span>
+            <span>敌军来源 · {{ boardSummary.enemyFaction }}</span>
+            <span class="intel-hint">编成指引 · 点击槽位指派提督，或使用右上角快捷编成 · 最多 5 支舰队</span>
           </div>
         </div>
       </div>
@@ -348,6 +387,26 @@ const getShipCount = (id: number) => {
   return adm.deck ? adm.deck.filter(Boolean).length : 0;
 };
 
+/** 编成区「会战态势」摘要：全部取自现有 store / 配置真源，不是占位装饰文字。
+ *  口径与模板一致：编制走 getShipCount（演习= P2 真源 simShipTotalFor），
+ *  难度走 diffConfig.level，宙域走 safeMapsPool。 */
+const boardSummary = computed(() => {
+  const ids = dispatchAdmiralsList.value;
+  const total = ids.reduce((s, id) => s + (Number(getShipCount(id)) || 0), 0);
+  const map = safeMapsPool.value.find((m: any) => String(m.id) === String(selectedMapId.value));
+  const diff = (diffConfig as any[]).find((d: any) => String(d.level) === String(selectedDiff.value));
+  const enemyFaction = selectedFactionId.value === 'empire' ? '银河帝国'
+    : selectedFactionId.value === 'alliance' ? '自由行星同盟' : '全阵营混编';
+  return {
+    count: ids.length,
+    total,
+    mapName: map?.name || '未指定',
+    diffName: diff?.name || '会战',
+    enemyFaction,
+    enemyFleets: Number(activeFactionCount.value) || 1,
+  };
+});
+
 const editCustomMap = () => {
   if (typeof (store as any).openMapForEdit === 'function') (store as any).openMapForEdit(selectedMapId.value);
 };
@@ -494,48 +553,91 @@ const launchBattle = () => {
 
 <style scoped>
 .battle-setup-container { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
-.setup-layout { display: flex; gap: 15px; flex: 1; overflow: hidden; padding: 5px; min-height: 0; }
+.setup-layout { display: flex; gap: var(--ui-4); flex: 1; overflow: hidden; min-height: 0; }
 
-.env-settings { width: clamp(260px, 25vw, 360px); display: flex; flex-direction: column; padding: clamp(12px, 2vh, 25px); gap: clamp(10px, 1.5vh, 15px); flex-shrink: 0; overflow: hidden; }
-.dispatch-board { flex: 1; padding: clamp(12px, 2vh, 25px); display: flex; flex-direction: column; overflow: hidden; min-height: 0; gap: clamp(10px, 2vh, 20px); }
+.env-settings { width: clamp(320px, 21vw, 380px); display: flex; flex-direction: column; padding: var(--ui-4); gap: var(--ui-3); flex-shrink: 0; overflow: hidden; }
+/* 编成区三段式：标题 / 网格 / 会战态势。第三段用 1fr 吸收剩余高度，
+   不再用伪元素造一个「只有一行字」的空大框。 */
+.dispatch-board {
+  flex: 1; min-width: 0; min-height: 0; overflow: hidden;
+  padding: var(--ui-4) var(--ui-5);
+  display: grid; grid-template-rows: auto auto minmax(180px, 1fr); gap: var(--ui-4);
+  background-image: var(--ui-starmap);
+}
+.board-head { display: flex; justify-content: space-between; align-items: center; gap: var(--ui-3); }
+.board-head .panel-title-small { flex-shrink: 0; }
+.board-actions { display: flex; gap: var(--ui-1); flex-shrink: 0; }
+.board-actions .neo-btn { font-size: var(--fs-label); padding: var(--ui-1) var(--ui-2); letter-spacing: 0.04em; }
 
-.panel-title-small { font-size: clamp(calc(13px * var(--font-scale)), calc(1.8vh * var(--font-scale)), calc(15px * var(--font-scale))); font-weight: 800; border-left: 4px solid var(--color-cyan); padding-left: 10px; margin: 0; flex-shrink: 0; }
-.control-group { display: flex; flex-direction: column; gap: clamp(4px, 1vh, 8px); flex-shrink: 0; }
-.control-group label { font-size: clamp(calc(11px * var(--font-scale)), calc(1.5vh * var(--font-scale)), calc(13px * var(--font-scale))); font-weight: 800; color: var(--color-text-secondary); }
-.note-text { font-size: clamp(calc(10px * var(--font-scale)), calc(1.2vh * var(--font-scale)), calc(12px * var(--font-scale))); margin: 0; }
+.panel-title-small { font-family: var(--ui-display-font); font-size: var(--fs-h3); font-weight: var(--ui-display-weight); letter-spacing: 0.08em; color: var(--ui-ink); border-left: 3px solid var(--ui-accent); padding-left: var(--ui-2); margin: 0; flex-shrink: 0; }
+.control-group { display: flex; flex-direction: column; gap: var(--ui-2); flex-shrink: 0; }
+.control-group label { font-size: var(--fs-label); font-weight: 800; color: var(--color-text-secondary); }
+.note-text { font-size: var(--fs-label); margin: 0; line-height: 1.4; }
 
 .flex { display: flex; align-items: center; }
 .gap-2 { gap: 8px; }
 .flex-1 { flex: 1; }
-.btn-icon { display: flex; align-items: center; justify-content: center; width: clamp(32px, 4vh, 40px); height: clamp(32px, 4vh, 40px); font-size: calc(14px * var(--font-scale)); flex-shrink: 0; padding: 0; border: 1px solid var(--overlay-border); }
+.btn-icon { display: flex; align-items: center; justify-content: center; width: clamp(36px, 4vh, 44px); height: clamp(36px, 4vh, 44px); font-size: var(--fs-body); flex-shrink: 0; padding: 0; border: 1px solid var(--overlay-border); }
 
 .select-wrapper { position: relative; display: flex; align-items: center; padding: 0; }
-.select-wrapper::after { content: '▼'; position: absolute; right: 10px; color: var(--color-cyan); pointer-events: none; font-size: calc(12px * var(--font-scale)); }
-.neo-select { width: 100%; appearance: none; background: transparent; border: none; color: var(--color-text-primary); padding: clamp(6px, 1.2vh, 12px) clamp(8px, 1vw, 12px); font-size: clamp(calc(11px * var(--font-scale)), calc(1.5vh * var(--font-scale)), calc(14px * var(--font-scale))); font-weight: 800; outline: none; cursor: pointer; }
+.select-wrapper::after { content: '▼'; position: absolute; right: 10px; color: var(--color-cyan); pointer-events: none; font-size: var(--fs-label); }
+.neo-select { width: 100%; appearance: none; background: transparent; border: none; color: var(--color-text-primary); padding: var(--ui-2) var(--ui-3); font-size: var(--fs-body); font-weight: 800; outline: none; cursor: pointer; }
 .neo-select option { background: var(--neo-surface); color: var(--color-text-secondary); }
 
+.gallery-btn { min-height: var(--ui-5); padding: var(--ui-1) var(--ui-2); white-space: normal; line-height: 1.4; }
 .launch-action { margin-top: auto; flex-shrink: 0; display: flex; flex-direction: column; }
-.btn-launch-game { padding: clamp(10px, 1.8vh, 16px) 10px; font-size: clamp(calc(13px * var(--font-scale)), calc(2vh * var(--font-scale)), calc(16px * var(--font-scale))); letter-spacing: 2px; }
+.btn-launch-game { padding: var(--ui-3) 10px; font-size: var(--fs-h3); letter-spacing: 0.16em; }
 
-.dispatch-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; overflow-y: auto; flex: 1; min-height: 0; align-content: start; padding-right: 2px; }
-.dispatch-slot { display: flex; flex-direction: row; align-items: flex-start; padding: 10px; position: relative; cursor: pointer; border: 1px solid transparent; transition: border 0.2s; gap: 10px; overflow: hidden; min-height: 70px; }
-.dispatch-slot:hover { border-color: var(--color-cyan); }
-.slot-portrait { width: 44px; height: 55px; object-fit: cover; border-radius: 4px; background: var(--neo-surface); border: 1px solid rgba(6,182,212,0.4); flex-shrink: 0; }
-.slot-info { display: flex; flex-direction: column; justify-content: center; overflow: hidden; flex: 1; min-width: 0; gap: 4px; }
-.slot-name-row { display: flex; justify-content: space-between; align-items: baseline; gap: 4px; }
-.adm-slot-name { font-size: calc(13px * var(--font-scale)); font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.slot-rank { font-size: calc(10px * var(--font-scale)); color: var(--color-text-disabled); white-space: nowrap; flex-shrink: 0; }
-.slot-stats { display: flex; flex-wrap: wrap; gap: 2px 6px; }
-.slot-stats span { font-size: calc(10px * var(--font-scale)); font-family: var(--font-family); font-weight: 700; color: var(--color-text-secondary); white-space: nowrap; }
-.slot-bottom { display: flex; align-items: center; gap: 4px; flex-wrap: nowrap; }
-.slot-ships { font-size: calc(10px * var(--font-scale)); color: var(--color-warning); font-weight: 800; white-space: nowrap; }
-/* [W2.2] 教范阵型 + 编成明细（P2 成果可见） */
-.slot-doctrine { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; margin-top: 2px; }
-.doctrine-form { font-size: calc(10px * var(--font-scale)); font-weight: 800; color: #22d3ee; white-space: nowrap; }
-.doctrine-comp { font-size: calc(9px * var(--font-scale)); color: var(--color-text-secondary); font-family: var(--font-family); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.empty-mark { color: var(--color-border-emphasized); font-weight: 800; font-size: clamp(calc(12px * var(--font-scale)), calc(1.6vh * var(--font-scale)), calc(14px * var(--font-scale))); margin: auto; }
-.slot-remove { position: absolute; top: 2px; right: 4px; color: var(--color-empire); font-weight: 800; font-size: calc(16px * var(--font-scale)); display: none; }
+/* 网格：列数由响应式决定，行数交给 grid-auto-rows 自动生成，
+   这样 3 列×2 行与 2 列×3 行共用一套行高定义，不会互相覆盖。 */
+.dispatch-grid {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-auto-rows: clamp(200px, 23vh, 300px);
+  gap: var(--ui-3); min-height: 0; align-content: start;
+}
+.dispatch-slot { display: flex; flex-direction: row; align-items: center; padding: var(--ui-3) var(--ui-4); position: relative; cursor: pointer; border: 1px solid var(--ui-line-strong); border-radius: var(--ui-radius); background: var(--ui-surface-2); transition: border-color var(--ui-dur-micro) var(--ui-ease), background var(--ui-dur-micro) var(--ui-ease); gap: var(--ui-4); overflow: hidden; min-height: 0; }
+.dispatch-slot:hover { border-color: var(--ui-accent); background: var(--ui-surface-3); }
+/* 立绘原图 160×200：上限保持 1:1，放大即糊。
+   宽度按「卡片内容宽的百分比」自适应，不能按 vh 固定 —— 窄视口卡片只有 190px，
+   按 vh 放到 160px 高会把右侧文字挤到不足 10px。 */
+.slot-portrait { flex: 0 0 clamp(52px, 30%, 128px); width: clamp(52px, 30%, 128px); height: auto; max-height: calc(100% - 12px); aspect-ratio: 4 / 5; object-fit: cover; border-radius: var(--ui-radius); background: var(--neo-surface); border: 2px solid var(--ui-line-strong); box-shadow: var(--ui-shadow-raised); flex-shrink: 0; }
+.slot-info { display: flex; flex-direction: column; justify-content: center; overflow: hidden; flex: 1; min-width: 0; gap: clamp(4px, 0.8vh, 10px); }
+.slot-name-row { display: flex; justify-content: space-between; align-items: baseline; gap: var(--ui-2); }
+.adm-slot-name { font-size: var(--fs-h2); font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slot-rank { font-size: var(--fs-label); color: var(--color-text-secondary); white-space: nowrap; flex-shrink: 0; }
+.slot-stats { display: flex; flex-wrap: wrap; gap: 4px var(--ui-2); }
+.slot-stats span { font-size: var(--fs-label); font-family: var(--font-family); font-weight: 700; color: var(--color-text-secondary); white-space: nowrap; }
+.slot-bottom { display: flex; align-items: center; gap: var(--ui-1); flex-wrap: nowrap; }
+.slot-ships { font-size: var(--fs-label); color: var(--color-warning); font-weight: 800; white-space: nowrap; }
+.slot-doctrine { display: flex; align-items: baseline; gap: var(--ui-2); flex-wrap: wrap; margin-top: 2px; }
+.doctrine-form { font-size: var(--fs-label); font-weight: 800; color: var(--ui-accent); white-space: nowrap; }
+.doctrine-comp { font-size: var(--fs-label); color: var(--color-text-secondary); font-family: var(--font-family); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.empty-body { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--ui-2); margin: auto; }
+.empty-mark { font-family: var(--ui-display-font); color: var(--ui-ink-2); font-weight: 800; font-size: var(--fs-h2); letter-spacing: 0.08em; }
+.empty-hint { font-size: var(--fs-label); color: var(--ui-ink-3); letter-spacing: 0.06em; }
+.slot-remove { position: absolute; top: 2px; right: 6px; color: var(--color-empire); font-weight: 800; font-size: var(--fs-h3); display: none; }
 .dispatch-slot:hover .slot-remove { display: block; }
+
+/* 会战态势：真实数据，不是占位横幅 */
+.board-intel { min-height: 0; display: flex; flex-direction: column; gap: var(--ui-3); padding: var(--ui-4); border: 1px solid var(--ui-line-strong); border-radius: var(--ui-radius); background: var(--ui-panel); }
+.intel-head { display: flex; align-items: center; gap: var(--ui-3); flex-shrink: 0; }
+.intel-title { font-family: var(--ui-display-font); font-size: var(--fs-h3); font-weight: var(--ui-display-weight); letter-spacing: 0.1em; color: var(--ui-ink); white-space: nowrap; }
+.intel-rule { flex: 1; height: 1px; background: linear-gradient(to right, var(--ui-line-strong), transparent); }
+.intel-code { font-size: var(--fs-caption); color: var(--ui-ink-3); letter-spacing: 0.18em; white-space: nowrap; }
+.intel-metrics { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--ui-3); }
+.intel-metric { display: flex; flex-direction: column; justify-content: center; gap: var(--ui-2); padding: var(--ui-3) var(--ui-4); border-left: 2px solid var(--ui-accent); border-radius: var(--ui-radius); background: var(--ui-surface-2); min-width: 0; }
+.metric-label { font-size: var(--fs-label); font-weight: 800; letter-spacing: 0.08em; color: var(--ui-ink-2); }
+.metric-value { font-family: var(--font-family); font-size: var(--fs-h1); font-weight: 900; line-height: 1; color: var(--ui-ink); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 第 4 格是「诸神之黄昏」这类文字，不是数字：同字号会过重，
+   且在窄列会被 ellipsis 吃掉。降一档并允许折行，其余三格保持大数字。 */
+.intel-metric:last-child .metric-value {
+  font-size: var(--fs-h2); white-space: normal; line-height: 1.2;
+  overflow: visible; text-overflow: clip; word-break: break-all;
+}
+.metric-value i { font-size: var(--fs-label); font-style: normal; font-weight: 700; color: var(--ui-ink-3); margin-left: 6px; }
+.metric-note { font-size: var(--fs-caption); color: var(--ui-ink-3); line-height: 1.4; }
+.intel-foot { display: flex; align-items: center; gap: var(--ui-5); flex-shrink: 0; padding-top: var(--ui-2); border-top: 1px solid var(--ui-line); font-size: var(--fs-label); color: var(--ui-ink-3); white-space: nowrap; }
+.intel-hint { margin-left: auto; overflow: hidden; text-overflow: ellipsis; }
 
 .selection-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: var(--overlay-scrim); z-index: 1000; display: flex; align-items: center; justify-content: center; backdrop-filter: blur(4px); }
 /* [v66] 80% 而非 80vh：vh 不参与 #game-container 的 zoom(--ui-scale) 折算（同 SaveManagerModal 注释） */
@@ -564,39 +666,90 @@ const launchBattle = () => {
 }
 .roster-hdr span {
   display: flex; justify-content: center; align-items: center;
-  font-size: calc(11px * var(--font-scale)); font-weight: 800; color: var(--color-text-disabled);
+  font-size: var(--fs-label); font-weight: 800; color: var(--color-text-disabled);
 }
 .roster-row {
-  cursor: pointer; padding: 4px; min-height: 34px; font-size: calc(13px * var(--font-scale));
+  cursor: pointer; padding: 4px; min-height: 34px; font-size: var(--fs-label);
 }
 .roster-row > * { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .roster-row .cell-name { text-align: left; padding-left: 4px; }
 .roster-row .cell-portrait { text-align: left; }
 .cell-name { font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 8px; }
-.cell-rank { font-size: calc(12px * var(--font-scale)); color: var(--color-text-secondary); }
+.cell-rank { font-size: var(--fs-label); color: var(--color-text-secondary); }
 .cell-stat { font-family: var(--font-family); font-weight: 800; }
 .trait-cell { display: flex; flex-wrap: nowrap; gap: 3px; align-items: center; justify-content: center; overflow: hidden; }
-.trait-tag { display: inline-block; padding: 0 4px; font-size: calc(9px * var(--font-scale)); color: #a78bfa; background: rgba(139,92,246,0.12); border-radius: 2px; white-space: nowrap; }
-.trait-more { font-size: calc(8px * var(--font-scale)); color: var(--color-text-disabled); }
+.trait-tag { display: inline-block; padding: 0 4px; font-size: var(--fs-caption); color: #a78bfa; background: rgba(139,92,246,0.12); border-radius: var(--ui-radius); white-space: nowrap; }
+.trait-more { font-size: var(--fs-caption); color: var(--color-text-disabled); }
 .stat-s { color: #fbbf24 !important; }
 .stat-a { color: #34d399 !important; }
 .stat-b { color: #94a3b8 !important; }
 .stat-c { color: #64748b !important; }
-.text-xs { font-size: calc(10px * var(--font-scale)); }
+.text-xs { font-size: var(--fs-caption); }
 .text-muted { color: var(--color-text-disabled); }
-.mini-portrait { width: 32px; height: 40px; border-radius: 4px; object-fit: cover; border: 1px solid var(--overlay-border); background-color: var(--neo-surface-raised); }
+.mini-portrait { width: 32px; height: 40px; border-radius: var(--ui-radius); object-fit: cover; border: 1px solid var(--overlay-border); background-color: var(--neo-surface-raised); }
 
-@media (max-width: 768px) {
-  .setup-layout { flex-direction: column; gap: 10px; padding: 0; overflow: hidden; min-height: 0; }
-  .env-settings { width: 100%; flex: 0 0 auto; padding: 15px; gap: 8px; }
-  .dispatch-board { padding: 10px 15px; flex: 1; min-height: 0; overflow: hidden; gap: 10px; }
-  .dispatch-grid { grid-template-columns: repeat(2, 1fr); gap: 6px; }
-  .dispatch-slot { min-height: 50px; padding: 6px; }
-  .launch-action { margin-top: 10px; }
-  
+/* 中等宽度：改用 2 列×3 行。1050px 视口下 3 列每卡只有约 190px，
+   放不下「立绘 + 姓名 + 七项数值」；2 列每卡约 290px，内容才有呼吸空间。 */
+@media (max-width: 1150px) {
+  .env-settings { width: clamp(280px, 28vw, 320px); padding: var(--ui-3); }
+  .dispatch-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* 指标维持单行 4 列：改 2×2 会把每个指标压到约 50px，数值直接看不见。
+     窄列放不下的长文案由 .intel-metric:last-child 单独降档折行解决。 */
+  .intel-code { display: none; }
+  .metric-note { display: none; }
+  .intel-foot { flex-wrap: wrap; gap: var(--ui-2) var(--ui-4); white-space: normal; }
+}
+/* 窄屏 / 矮屏共用压缩：字号降一档、隐藏次要特质标签、行高统一 180px。
+   1050×1033 是宽 1050 而非矮屏，只写 max-height 会漏掉这个视口。 */
+@media (max-width: 1150px), (max-height: 900px) {
+  .setup-layout { gap: var(--ui-2); }
+  .dispatch-board { padding: var(--ui-3); gap: var(--ui-2); }
+  .dispatch-grid { grid-auto-rows: minmax(0, 180px); gap: var(--ui-2); }
+  .board-intel { padding: var(--ui-3); gap: var(--ui-2); }
+  .intel-metrics { gap: var(--ui-2); }
+  .intel-metric { padding: var(--ui-2); gap: 4px; }
+  .metric-value { font-size: var(--fs-h2); }
+  .metric-note { display: none; }
+  .adm-slot-name, .empty-mark { font-size: var(--fs-h3); }
+  .slot-rank, .slot-stats span, .slot-ships, .doctrine-form, .doctrine-comp { font-size: var(--fs-caption); }
+  .slot-info { gap: 4px; }
+  /* 窄卡里「编制 + 特质标签」并排会撑破 slot-info；特质属次要信息，此处收起 */
+  .slot-bottom .trait-tag { display: none; }
+  .intel-metric:last-child .metric-value { font-size: var(--fs-h3); }
+  .slot-portrait { max-height: calc(100% - 8px); }
+  .intel-foot { padding-top: 0; border-top: none; font-size: var(--fs-caption); }
   .modal-content { width: 95vw; padding: 15px; }
-  .roster-hdr, .roster-row { font-size: calc(11px * var(--font-scale)); padding: 4px; }
-  .roster-hdr span { font-size: calc(9px * var(--font-scale)); }
+  .roster-hdr, .roster-row { font-size: var(--fs-label); padding: 4px; }
+  .roster-hdr span { font-size: var(--fs-caption); }
   .mini-portrait { width: 24px; height: 30px; }
+}
+@media (max-width: 768px) {
+  .setup-layout { flex-direction: column; gap: 10px; overflow: hidden; min-height: 0; }
+  .env-settings { width: 100%; flex: 0 0 auto; padding: var(--ui-3); gap: var(--ui-2); }
+  .dispatch-board { padding: 10px 15px; flex: 1; min-height: 0; overflow: hidden; gap: 10px; }
+  .dispatch-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: minmax(0, 160px); }
+  .dispatch-slot { min-height: 0; padding: var(--ui-2); }
+  .launch-action { margin-top: 10px; }
+}
+/* 空位卡槽：明确轮廓 + 席位编号 */
+.dispatch-slot.slot-empty {
+  border: 1px dashed var(--ui-line-strong);
+  background: var(--ui-surface-3);
+  justify-content: center;
+}
+.dispatch-slot.slot-empty::before {
+  content: 'SLOT ' attr(data-slot);
+  position: absolute; top: var(--ui-2); left: var(--ui-3);
+  font-size: var(--fs-caption); font-weight: 800; letter-spacing: 0.18em;
+  color: var(--ui-ink-3);
+}
+.dispatch-slot.slot-empty:hover { border-color: var(--ui-accent); background: rgba(var(--ui-accent-rgb), 0.08); }
+/* 第六格：预备席位，让两行三列网格读起来是完整编制 */
+.dispatch-grid::after {
+  content: '预 备 席 位';
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--ui-line); border-radius: var(--ui-radius);
+  color: var(--ui-ink-3); font-size: var(--fs-label); letter-spacing: 0.2em;
+  background: repeating-linear-gradient(135deg, transparent 0 10px, rgba(255,255,255,0.012) 10px 20px);
 }
 </style>

@@ -78,15 +78,20 @@ const tacticCn = computed(() => TACTIC_CN[rawDeployTactic.value] || rawDeployTac
 </script>
 
 <style scoped>
-.ui-footer { 
-  position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
-  padding: 10px 24px; border-radius: 99px; font-size: calc(12px * var(--font-scale)); color: var(--color-text-secondary); z-index: 10; font-weight: 800;
+.ui-footer {
+  position: absolute; bottom: var(--ui-3); left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; justify-content: center;
+  min-height: 44px; padding: var(--ui-1) var(--ui-4);
+  background: var(--ui-panel); border: var(--ui-frame); border-radius: var(--ui-radius);
+  box-shadow: var(--ui-shadow-raised); backdrop-filter: blur(8px);
+  font-size: var(--fs-label); letter-spacing: 0.06em;
+  color: var(--ui-ink-2); z-index: 10; font-weight: 800; white-space: nowrap;
 }
-.text-pause-blink { color: var(--color-warning); animation: blink 1s infinite; }
-.text-deploy { color: #00ff88; font-weight: 900; letter-spacing: 0.5px; }
+.text-pause-blink { color: var(--dmc-warning); animation: blink 1s infinite; }
+.text-deploy { color: var(--dmc-success); font-weight: 900; letter-spacing: 0.08em; }
 @keyframes blink { 50% { opacity: 0.5; } }
 
 @media (max-width: 768px) {
-  .ui-footer { bottom: 5px; padding: 8px 12px; font-size: calc(10px * var(--font-scale)); width: 95%; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ui-footer { bottom: 5px; padding: 8px 12px; font-size: var(--fs-caption); width: 95%; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 }
 </style>

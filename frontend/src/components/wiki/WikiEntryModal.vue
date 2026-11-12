@@ -101,17 +101,17 @@ const close = () => emit('close');
 .we-back {
   background: transparent;
   border: 1px solid var(--color-border);
-  border-radius: 3px;
+  border-radius: var(--ui-radius);
   color: var(--color-cyan);
-  font-size: calc(11px * var(--font-scale));
+  font-size: var(--fs-label);
   padding: 2px 8px;
   cursor: pointer;
   flex-shrink: 0;
   transition: all var(--duration-fast) var(--ease-out);
 }
-.we-back:hover { background: rgba(52, 152, 219, 0.12); }
+.we-back:hover { background: rgba(var(--ui-accent-rgb), 0.12); }
 .we-crumb-text {
-  font-size: calc(13px * var(--font-scale));
+  font-size: var(--fs-label);
   font-weight: 800;
   color: var(--color-text-primary);
   white-space: nowrap;
@@ -133,7 +133,7 @@ const close = () => emit('close');
   align-items: center;
   gap: 4px;
   flex-wrap: wrap;
-  font-size: calc(10px * var(--font-scale));
+  font-size: var(--fs-caption);
 }
 .we-trail-label {
   color: var(--color-text-disabled);

@@ -93,7 +93,7 @@ const nodes = computed(() => {
     list.push({
       ...center, shortName: center.name?.charAt(0) || '?',
       x: 0, y: 0,
-      color: props.faction === 'empire' ? '#ef4444' : '#06b6d4',
+      color: props.faction === 'empire' ? '#ef4444' : 'var(--ui-accent)',
       isPlayer: true,
     });
   }
@@ -199,11 +199,11 @@ const cycleDialogue = () => {
   overflow-y: auto;
 }
 .flex-header { display: flex; justify-content: space-between; align-items: center; }
-.m-0 { margin: 0; font-size: calc(18px * var(--font-scale)); font-weight: 900; }
+.m-0 { margin: 0; font-size: var(--fs-h3); font-weight: 900; }
 .px-3 { padding: 6px 12px; }
 
 .network-canvas {
-  background: rgba(0,0,0,0.3); border-radius: 8px;
+  background: rgba(0,0,0,0.3); border-radius: var(--ui-radius-lg);
   border: 1px solid var(--overlay-hover);
   overflow: hidden;
 }
@@ -215,16 +215,16 @@ const cycleDialogue = () => {
 
 .detail-panel {
   background: var(--overlay-surface); border: 1px solid var(--overlay-hover);
-  border-radius: 8px; padding: 12px; min-height: 60px;
+  border-radius: var(--ui-radius-lg); padding: 12px; min-height: 60px;
 }
 .detail-header { display: flex; gap: 10px; align-items: center; }
-.detail-portrait { width: 40px; height: 48px; object-fit: cover; border-radius: 4px; border: 1px solid var(--color-border); }
-.detail-name { font-size: calc(14px * var(--font-scale)); font-weight: 800; }
-.detail-relation { font-size: calc(11px * var(--font-scale)); color: var(--color-text-secondary); margin-top: 2px; }
+.detail-portrait { width: 40px; height: 48px; object-fit: cover; border-radius: var(--ui-radius); border: 1px solid var(--color-border); }
+.detail-name { font-size: var(--fs-body); font-weight: 800; }
+.detail-relation { font-size: var(--fs-label); color: var(--color-text-secondary); margin-top: 2px; }
 .dialogue-box {
   margin-top: 8px; padding: 10px 12px;
   background: rgba(0,0,0,0.3); border-left: 3px solid var(--color-cyan);
-  border-radius: 4px; font-size: calc(13px * var(--font-scale)); color: var(--color-text-secondary);
+  border-radius: var(--ui-radius); font-size: var(--fs-label); color: var(--color-text-secondary);
   font-style: italic; line-height: 1.5;
 }
 .dialogue-actions { margin-top: 6px; display: flex; gap: 6px; }
@@ -235,7 +235,7 @@ const cycleDialogue = () => {
 .text-red { color: var(--color-empire) !important; }
 .text-cyan { color: var(--color-cyan) !important; }
 .text-gold { color: var(--color-warning); }
-.text-muted { color: var(--color-text-disabled); font-size: calc(12px * var(--font-scale)); text-align: center; }
-.text-xs { font-size: calc(11px * var(--font-scale)); }
+.text-muted { color: var(--color-text-disabled); font-size: var(--fs-label); text-align: center; }
+.text-xs { font-size: var(--fs-label); }
 .text-emerald { color: var(--color-green) !important; }
 </style>

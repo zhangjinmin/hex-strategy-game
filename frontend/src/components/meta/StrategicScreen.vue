@@ -613,7 +613,7 @@ const phaseLabel = computed(() => {
   width: 200px;
   padding: 12px 13px;
   color: var(--color-text-secondary);
-  font-size: calc(12px * var(--font-scale));
+  font-size: var(--fs-label);
   display: flex; flex-direction: column; gap: 6px;
   background:
     linear-gradient(160deg, rgba(8,16,28,0.86), rgba(5,10,20,0.78)),
@@ -645,7 +645,7 @@ const phaseLabel = computed(() => {
 
 /* 头部标题 */
 .hb-head {
-  font-size: calc(12px * var(--font-scale)); font-weight: 800; color: var(--color-cyan);
+  font-size: var(--fs-label); font-weight: 800; color: var(--color-cyan);
   border-bottom: 1px solid rgba(45,212,191,0.2);
   padding-bottom: 6px;
   display: flex; align-items: center; gap: 5px;
@@ -653,9 +653,9 @@ const phaseLabel = computed(() => {
 }
 /* 数据行 */
 .hb-row { display: flex; justify-content: space-between; align-items: center; }
-.hb-k { color: var(--color-text-disabled); font-size: calc(11px * var(--font-scale)); }
-.hb-v { font-weight: 700; color: var(--color-text-primary); font-size: calc(11px * var(--font-scale)); }
-.hb-log { font-size: calc(10px * var(--font-scale)); color: var(--color-text-disabled); }
+.hb-k { color: var(--color-text-disabled); font-size: var(--fs-label); }
+.hb-v { font-weight: 700; color: var(--color-text-primary); font-size: var(--fs-label); }
+.hb-log { font-size: var(--fs-caption); color: var(--color-text-disabled); }
 .hb-div { height: 1px; background: rgba(45,212,191,0.12); margin: 2px 0; }
 .text-green { color: #22c55e; }
 .text-red { color: #ef4444; }
@@ -663,40 +663,40 @@ const phaseLabel = computed(() => {
 
 /* 迷你战力条 */
 .hb-mini { display: flex; flex-direction: column; gap: 4px; }
-.hb-mini-track { height: 8px; background: rgba(255,255,255,0.08); border-radius: 4px; overflow: hidden; }
-.hb-mini-mine { height: 100%; background: linear-gradient(90deg, rgba(45,212,191,0.85), rgba(45,212,191,0.4)); border-radius: 4px; transition: width 0.4s; }
-.hb-mini-label { font-size: calc(10px * var(--font-scale)); color: var(--color-text-disabled); }
+.hb-mini-track { height: 8px; background: rgba(255,255,255,0.08); border-radius: var(--ui-radius); overflow: hidden; }
+.hb-mini-mine { height: 100%; background: linear-gradient(90deg, rgba(45,212,191,0.85), rgba(45,212,191,0.4)); border-radius: var(--ui-radius); transition: width 0.4s; }
+.hb-mini-label { font-size: var(--fs-caption); color: var(--color-text-disabled); }
 
 /* 指挥官面板（左下） */
 .hb-player { display: flex; align-items: center; gap: 9px; }
-.hb-avatar { width: 34px; height: 34px; border-radius: 4px; border: 1px solid var(--color-border-emphasized); object-fit: cover; }
+.hb-avatar { width: 34px; height: 34px; border-radius: var(--ui-radius); border: 1px solid var(--color-border-emphasized); object-fit: cover; }
 .hb-player-detail { display: flex; flex-direction: column; line-height: 1.15; flex: 1; min-width: 0; }
-.hb-rank { font-size: calc(10px * var(--font-scale)); font-weight: 800; }
-.hb-name { font-size: calc(13px * var(--font-scale)); font-weight: 900; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.hb-gold { font-size: calc(12px * var(--font-scale)); font-weight: 900; font-family: var(--font-family); white-space: nowrap; }
+.hb-rank { font-size: var(--fs-caption); font-weight: 800; }
+.hb-name { font-size: var(--fs-label); font-weight: 900; color: var(--color-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hb-gold { font-size: var(--fs-label); font-weight: 900; font-family: var(--font-family); white-space: nowrap; }
 .hb-time-row { display: flex; align-items: center; gap: 6px; }
 .hb-speed { display: flex; gap: 2px; flex: 1; }
 
 /* 全息按钮 */
 .holo-btn {
-  flex: 1; padding: 4px 8px; font-size: calc(11px * var(--font-scale)); font-weight: 800;
-  background: rgba(6,182,212,0.08); border: 1px solid rgba(6,182,212,0.25);
-  color: var(--color-text-secondary); border-radius: 4px; cursor: pointer;
+  flex: 1; padding: 4px 8px; font-size: var(--fs-label); font-weight: 800;
+  background: rgba(var(--ui-accent-rgb), 0.08); border: 1px solid rgba(var(--ui-accent-rgb), 0.25);
+  color: var(--color-text-secondary); border-radius: var(--ui-radius); cursor: pointer;
   display: inline-flex; align-items: center; justify-content: center; gap: 4px;
   white-space: nowrap; transition: all 0.15s;
 }
-.holo-btn:hover { border-color: var(--color-cyan); color: var(--color-cyan); background: rgba(6,182,212,0.16); }
+.holo-btn:hover { border-color: var(--color-cyan); color: var(--color-cyan); background: rgba(var(--ui-accent-rgb), 0.16); }
 .holo-btn.text-gold { color: #f59e0b; }
-.holo-btn.text-cyan { color: #22d3ee; }
-.holo-btn.active-speed { background: rgba(6,182,212,0.22); color: var(--color-cyan); border-color: var(--color-cyan); }
-.holo-btn-xs { padding: 3px 5px; font-size: calc(10px * var(--font-scale)); flex: 0 0 auto; }
+.holo-btn.text-cyan { color: var(--ui-accent); }
+.holo-btn.active-speed { background: rgba(var(--ui-accent-rgb), 0.22); color: var(--color-cyan); border-color: var(--color-cyan); }
+.holo-btn-xs { padding: 3px 5px; font-size: var(--fs-caption); flex: 0 0 auto; }
 .hb-actions { display: flex; gap: 5px; }
 .holo-icon {
   flex: 1; height: 26px; display: inline-flex; align-items: center; justify-content: center;
-  background: transparent; border: 1px solid rgba(6,182,212,0.2); border-radius: 4px;
+  background: transparent; border: 1px solid rgba(var(--ui-accent-rgb), 0.2); border-radius: var(--ui-radius);
   color: var(--color-text-secondary); cursor: pointer; transition: all 0.15s;
 }
-.holo-icon:hover { border-color: var(--color-cyan); color: var(--color-cyan); background: rgba(6,182,212,0.08); }
+.holo-icon:hover { border-color: var(--color-cyan); color: var(--color-cyan); background: rgba(var(--ui-accent-rgb), 0.08); }
 
 /* 顶部导航条：屏幕固定顶部中央，两种显示模式都常驻、可点击 */
 .nav-bar {
@@ -727,7 +727,7 @@ const phaseLabel = computed(() => {
 }
 .universe-topbar.faction-empire .ut-tools,
 .universe-topbar.faction-empire .holo-nav-group { border-color: rgba(248,113,113,0.3); }
-.universe-topbar.faction-alliance .holo-nav-group { border-color: rgba(34,211,238,0.3); }
+.universe-topbar.faction-alliance .holo-nav-group { border-color: rgba(var(--ui-accent-rgb), 0.3); }
 
 /* 两行共用面板底（全息斜切边框 + 内发光 + 扫描线，与 .holo-board 一致） */
 .ut-row {
@@ -767,10 +767,10 @@ const phaseLabel = computed(() => {
 
 /* 军官信息（头像/军衔/姓名） */
 .ut-officer { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
-.ut-avatar { width: 30px; height: 30px; border-radius: 4px; border: 1px solid var(--color-border-emphasized); object-fit: cover; }
+.ut-avatar { width: 30px; height: 30px; border-radius: var(--ui-radius); border: 1px solid var(--color-border-emphasized); object-fit: cover; }
 .ut-officer-detail { display: flex; flex-direction: column; line-height: 1.1; }
-.ut-rank { font-size: calc(10px * var(--font-scale)); font-weight: 800; }
-.ut-name { font-size: calc(13px * var(--font-scale)); font-weight: 900; color: var(--color-text-primary); white-space: nowrap; }
+.ut-rank { font-size: var(--fs-caption); font-weight: 800; }
+.ut-name { font-size: var(--fs-label); font-weight: 900; color: var(--color-text-primary); white-space: nowrap; }
 
 /* 暂停/推进 + 倍速 */
 .ut-time { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
@@ -783,16 +783,16 @@ const phaseLabel = computed(() => {
 /* 第2行数值项：键+值紧凑排布 */
 .ut-stat {
   display: inline-flex; align-items: baseline; gap: 5px;
-  white-space: nowrap; font-size: calc(12px * var(--font-scale));
+  white-space: nowrap; font-size: var(--fs-label);
 }
-.ut-k { color: var(--color-text-disabled); font-size: calc(11px * var(--font-scale)); font-weight: 600; }
-.ut-v { font-weight: 800; color: var(--color-text-primary); font-size: calc(12px * var(--font-scale)); font-family: var(--font-family); }
+.ut-k { color: var(--color-text-disabled); font-size: var(--fs-label); font-weight: 600; }
+.ut-v { font-weight: 800; color: var(--color-text-primary); font-size: var(--fs-label); font-family: var(--font-family); }
 .nav-bar.faction-empire .holo-nav-group { border-color: rgba(248,113,113,0.3); }
 .nav-bar.faction-empire .holo-nav-group::before {
   content: ''; position: absolute; left: 10px; right: 0; top: 0; height: 2px;
   background: linear-gradient(90deg, rgba(248,113,113,0), rgba(248,113,113,0.65), rgba(248,113,113,0));
 }
-.nav-bar.faction-alliance .holo-nav-group { border-color: rgba(34,211,238,0.3); }
+.nav-bar.faction-alliance .holo-nav-group { border-color: rgba(var(--ui-accent-rgb), 0.3); }
 .holo-nav-group {
   display: flex; gap: 5px; padding: 5px 8px;
   background: linear-gradient(160deg, rgba(8,16,28,0.82), rgba(5,10,20,0.72));
@@ -803,23 +803,23 @@ const phaseLabel = computed(() => {
   pointer-events: auto;
 }
 .holo-tab {
-  padding: 5px 12px; font-size: calc(12px * var(--font-scale)); font-weight: 800;
-  background: transparent; border: 1px solid transparent; border-radius: 4px;
+  padding: 5px 12px; font-size: var(--fs-label); font-weight: 800;
+  background: transparent; border: 1px solid transparent; border-radius: var(--ui-radius);
   color: var(--color-text-secondary); cursor: pointer;
   display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
   transition: all 0.15s; position: relative;
 }
 .holo-tab:hover { color: var(--color-cyan); background: rgba(45,212,191,0.08); }
-.holo-tab.active { color: var(--color-cyan); background: rgba(6,182,212,0.16); border-color: rgba(6,182,212,0.35); }
-.holo-tab .tab-icon { font-size: calc(13px * var(--font-scale)); }
-.holo-tab .tab-text { font-size: calc(12px * var(--font-scale)); }
+.holo-tab.active { color: var(--color-cyan); background: rgba(var(--ui-accent-rgb), 0.16); border-color: rgba(var(--ui-accent-rgb), 0.35); }
+.holo-tab .tab-icon { font-size: var(--fs-label); }
+.holo-tab .tab-text { font-size: var(--fs-label); }
 
 /* 阵营色点缀（同盟青蓝 / 帝国深红） */
 .badge-dot {
   position: absolute; top: -5px; right: -5px;
   min-width: 15px; height: 15px; padding: 0 3px;
-  background: var(--color-empire); color: white; font-size: calc(10px * var(--font-scale)); font-weight: 700;
-  border-radius: 8px; display: inline-flex; align-items: center; justify-content: center;
+  background: var(--color-empire); color: white; font-size: var(--fs-caption); font-weight: 700;
+  border-radius: var(--ui-radius-lg); display: inline-flex; align-items: center; justify-content: center;
   margin-left: -2px;
 }
 
@@ -836,8 +836,8 @@ const phaseLabel = computed(() => {
 .strategic-minimap canvas { width: 100%; height: 100%; display: block; }
 .strategic-minimap .mm-corner {
   position: absolute; width: 16px; height: 16px; line-height: 16px; text-align: center;
-  font-size: calc(11px * var(--font-scale)); color: rgba(45,212,191,0.9); cursor: pointer; z-index: 21;
-  font-family: var(--font-family); user-select: none; border-radius: 2px;
+  font-size: var(--fs-label); color: rgba(45,212,191,0.9); cursor: pointer; z-index: 21;
+  font-family: var(--font-family); user-select: none; border-radius: var(--ui-radius);
 }
 .strategic-minimap .mm-corner:hover { background: rgba(45,212,191,0.2); }
 .strategic-minimap .mm-corner.tl { top: 2px; left: 2px; }
@@ -846,31 +846,31 @@ const phaseLabel = computed(() => {
 .node-context-menu {
   position: fixed; z-index: 300; width: 240px; border: 1px solid rgba(45, 212, 191, 0.5);
   background: rgba(4, 10, 18, 0.96); box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), 0 0 20px rgba(45, 212, 191, 0.15);
-  border-radius: 8px; padding: 10px 0; font-family: inherit; cursor: default;
+  border-radius: var(--ui-radius-lg); padding: 10px 0; font-family: inherit; cursor: default;
 }
 .node-context-menu .ncm-header {
-  padding: 4px 14px 6px; font-size: calc(15px * var(--font-scale)); font-weight: 900; color: #2dd4bf;
+  padding: 4px 14px 6px; font-size: var(--fs-body); font-weight: 900; color: #2dd4bf;
   border-left: 3px solid #2dd4bf; margin-left: 10px;
 }
-.node-context-menu .ncm-sub { padding: 0 14px 8px; font-size: calc(12px * var(--font-scale)); color: #94a3b8; }
+.node-context-menu .ncm-sub { padding: 0 14px 8px; font-size: var(--fs-label); color: #94a3b8; }
 .node-context-menu .ncm-divider { height: 1px; background: rgba(45, 212, 191, 0.15); margin: 6px 10px; }
-.node-context-menu .ncm-label { padding: 2px 14px 6px; font-size: calc(11px * var(--font-scale)); color: #64748b; letter-spacing: 1px; }
-.node-context-menu .ncm-empty { padding: 6px 14px; font-size: calc(12px * var(--font-scale)); color: #64748b; font-style: italic; }
+.node-context-menu .ncm-label { padding: 2px 14px 6px; font-size: var(--fs-label); color: #64748b; letter-spacing: 1px; }
+.node-context-menu .ncm-empty { padding: 6px 14px; font-size: var(--fs-label); color: #64748b; font-style: italic; }
 .node-context-menu .ncm-item {
-  padding: 8px 14px; font-size: calc(13px * var(--font-scale)); color: #e2e8f0; display: flex; justify-content: space-between;
+  padding: 8px 14px; font-size: var(--fs-label); color: #e2e8f0; display: flex; justify-content: space-between;
   cursor: pointer; transition: background 0.15s;
 }
 .node-context-menu .ncm-item:hover { background: rgba(45, 212, 191, 0.12); color: #2dd4bf; }
 .node-context-menu .ncm-item-name { font-weight: 700; }
-.node-context-menu .ncm-item-sub { font-size: calc(11px * var(--font-scale)); color: #64748b; }
+.node-context-menu .ncm-item-sub { font-size: var(--fs-label); color: #64748b; }
 .node-context-menu .ncm-close { color: #64748b; text-align: center; justify-content: center; font-weight: 600; }
 .node-context-menu .ncm-close:hover { color: #f87171; background: rgba(248, 113, 113, 0.08); }
 
 .left-panel {
   position: absolute; top: 20px; left: 15px; width: 220px; padding: 15px; pointer-events: auto;
 }
-.panel-title-small { font-size: calc(14px * var(--font-scale)); font-weight: 900; border-left: 4px solid var(--color-cyan); padding-left: 8px; margin-bottom: 10px; }
-.adm-item { padding: 8px 12px; margin-bottom: 8px; text-align: left; font-size: calc(13px * var(--font-scale)); font-weight: 800; display: block; width: 100%; }
+.panel-title-small { font-size: var(--fs-body); font-weight: 900; border-left: 4px solid var(--color-cyan); padding-left: 8px; margin-bottom: 10px; }
+.adm-item { padding: 8px 12px; margin-bottom: 8px; text-align: left; font-size: var(--fs-label); font-weight: 800; display: block; width: 100%; }
 
 .bottom-controls {
   position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
@@ -892,12 +892,12 @@ const phaseLabel = computed(() => {
   left: 20px;
   z-index: 50;
   padding: 10px 20px;
-  font-size: calc(13px * var(--font-scale));
+  font-size: var(--fs-label);
   font-weight: 800;
   color: var(--color-purple, #a855f7);
   border: 1px solid rgba(168, 85, 247, 0.4);
   background: rgba(168, 85, 247, 0.1);
-  border-radius: 8px;
+  border-radius: var(--ui-radius-lg);
   pointer-events: auto;
   backdrop-filter: blur(8px);
   transition: all 0.2s;
@@ -929,7 +929,7 @@ const phaseLabel = computed(() => {
   flex-shrink: 0;
 }
 .sim-overlay-title {
-  font-size: calc(14px * var(--font-scale));
+  font-size: var(--fs-body);
   font-weight: 800;
   color: var(--color-purple, #a855f7);
   letter-spacing: 1px;

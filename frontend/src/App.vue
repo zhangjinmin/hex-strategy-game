@@ -22,9 +22,9 @@
                 <div class="fleet-name" :class="fleet.team === 1 ? 'text-cyan' : 'text-red'">{{ fleet.name }}</div>
                 <!-- [迷雾·末次位置] ghost 卡片只是档案坐标的"图钉"，不得显示兵力/血条：
                      它是"曾经见过"，不是"现在还是这样"。 -->
-                <div v-if="fleet.ghost" style="font-size: calc(11px * var(--font-scale)); color: var(--color-text-secondary); font-weight: 800;">已丢失</div>
-                <div v-else-if="!fleet.contactState || fleet.contactState === 'identified'" style="font-size: calc(11px * var(--font-scale)); color: var(--color-text-secondary); font-weight: 800;">{{ fleet.unitCount }} 艘</div>
-                <div v-else style="font-size: calc(11px * var(--font-scale)); color: var(--color-warning); font-weight: 800;">{{ fleet.contactState === 'anomaly' ? '◌' : '◇' }}</div>
+                <div v-if="fleet.ghost" style="font-size: var(--fs-label); color: var(--color-text-secondary); font-weight: 800;">已丢失</div>
+                <div v-else-if="!fleet.contactState || fleet.contactState === 'identified'" style="font-size: var(--fs-label); color: var(--color-text-secondary); font-weight: 800;">{{ fleet.unitCount }} 艘</div>
+                <div v-else style="font-size: var(--fs-label); color: var(--color-warning); font-weight: 800;">{{ fleet.contactState === 'anomaly' ? '◌' : '◇' }}</div>
             </div>
             <template v-if="!fleet.ghost && (!fleet.contactState || fleet.contactState === 'identified')">
             <div class="fleet-hp-bar">
@@ -35,7 +35,7 @@
               <div class="hp-fill" :style="{ width: fleet.supply + '%', background: fleet.supply > 30 ? 'var(--color-green)' : 'var(--color-warning)' }"></div>
             </div>
             <!-- 士气：补给告急会先动摇士气，归零后才可能在交火中快速崩溃。 -->
-            <div title="士气" style="font-size: calc(11px * var(--font-scale)); color: var(--color-text-secondary); margin-top: 2px; line-height: 1.25;">士气 {{ Math.round(fleet.morale ?? 100) }}%</div>
+            <div title="士气" style="font-size: var(--fs-label); color: var(--color-text-secondary); margin-top: 2px; line-height: 1.25;">士气 {{ Math.round(fleet.morale ?? 100) }}%</div>
             <div class="fleet-hp-bar" style="height: 2px; margin-top: 1px; background: var(--neo-surface-raised);">
               <div class="hp-fill" :style="{ width: Math.max(0, fleet.morale ?? 100) + '%', background: (fleet.morale ?? 100) > 40 ? '#a78bfa' : 'var(--color-warning)' }"></div>
             </div>
@@ -142,7 +142,7 @@
     </Transition>
   </div>
   
-  <div v-else class="loading-screen" style="display: flex; justify-content: center; align-items: center; height: 100vh; color: var(--color-cyan); font-size: calc(14px * var(--font-scale)); font-weight: 800;">
+  <div v-else class="loading-screen" style="display: flex; justify-content: center; align-items: center; height: 100vh; color: var(--color-cyan); font-size: var(--fs-body); font-weight: 800;">
     接入战术网络中...
   </div>
 </template>
@@ -455,11 +455,11 @@ const handleKeyDown = (e: KeyboardEvent) => {
       (store as any).isCastingBomb = !store.isCastingBomb;
     }
   }
-  else if (e.code === 'Escape') {
-    // [2a] 命令面板/选目标态下，Esc 归命令系统处理（取消/退选），**不退出战斗**
-    if (commandBridge.visible) return;
-    store.returnToMetaMenu();
-  }
+  // [v102] **战斗中 Esc 不再退出战术模式**（用户实报：一按就掉回主菜单，整场战斗丢失）。
+  //   Esc 在战斗里的唯一语义是「取消」：退选目标态 / 取消选中 / 关面板 ——
+  //   分别由 CommandPanel、BattleScene 的 keydown-ESC、BattleIntroOverlay 各自处理。
+  //   退出战斗必须走 GameControls 的「撤退」按钮（显式点击 + 二次确认）。
+  //   ⇒ 此处**故意不监听 Esc**；不要再把 returnToMetaMenu 挂回来。
   else if (['Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5'].includes(e.code)) {
     // [W5.1 补 · lead 裁决] 部署期 1-5 归「阵型」（由 BattleScene 的部署期分支负责），
     //   此处不得顺带改速度档 —— 否则键位表「部署期=阵型 / 战中=速度档」与实现不符，
@@ -556,6 +556,34 @@ ensureFontFacesInjected();
 applyFontFamily((settings as any).uiFont ?? '');
 watch(() => (settings as any).uiFont, (v: string) => applyFontFamily(v ?? ''));
 
+// ===== [统一界面语言] 阵营皮肤 =====
+// 只写 <html data-faction>，纯表现层、零业务副作用；同一屏内双方对照由组件自己挂
+// data-side="alliance|empire"（CSS 变量在元素上局部覆盖，互不串色）。
+//
+// 生效边界（修复「主界面变来变去」）：**只有已进入对局**才加载阵营皮肤。
+//   title / sim / editor = 作品门面，出现在玩家选定阵营之前或独立于任何对局，恒定中立；
+//   menu / strategy / game = 对局内，才按阵营分皮，提供同盟 / 帝国区分度。
+// 原实现只看存档里最后选过的提督，导致标题页与门面弹窗跟着换色换字形。
+// 真源优先级：战术层「玩家舰队 trait」→「玩家提督 faction」→ 未开局/中立 = 费沙琥珀金。
+const FACTION_SKIN_STATES = new Set(['menu', 'strategy', 'game']);
+const unwrapUi = <T,>(x: any): T => (x && typeof x === 'object' && 'value' in x ? x.value : x) as T;
+const uiFaction = computed<'alliance' | 'empire' | 'neutral'>(() => {
+  if (!FACTION_SKIN_STATES.has(gameState.value)) return 'neutral';
+  const rawF = unwrapUi<any>((store as any).factions);
+  const list: any[] = Array.isArray(rawF) ? rawF : [];
+  const lead = list.find((f: any) => f?.type === 'player') ?? list.find((f: any) => f?.team === 1);
+  const trait = String(lead?.trait ?? '');
+  if (trait === 'alliance' || trait === 'empire') return trait;
+  const admId = Number(unwrapUi<any>((store as any).playerAdmiralId) ?? 0);
+  const rawAdms = unwrapUi<any>((store as any).allAdmirals);
+  const adms: any[] = Array.isArray(rawAdms) ? rawAdms : [];
+  const faction = String(adms.find((a: any) => Number(a?.id) === admId)?.faction ?? '');
+  return faction === 'alliance' || faction === 'empire' ? faction : 'neutral';
+});
+const applyFactionSkin = (v: string) => { document.documentElement.dataset.faction = v; };
+applyFactionSkin(uiFaction.value);
+watch(uiFaction, applyFactionSkin);
+
 watch(gameState, (newState, oldState) => {
     console.log(`[App.vue] gameState change: ${oldState} -> ${newState}`);
     if (newState === 'game') {
@@ -610,37 +638,37 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
 
 /* neo-* 样式由 theme/tokens.css 统一定义 */
 
-.icon-btn { padding: 8px 12px; font-weight: 800; font-size: calc(13px * var(--font-scale)); flex-shrink: 0; }
+.icon-btn { min-height: 38px; padding: 0 var(--ui-2); font-weight: 800; font-size: var(--fs-label); flex-shrink: 0; }
 
 /* Toast 动画 */
 .toast-enter-active { animation: toastIn 0.3s var(--ease-out); }
 .toast-leave-active { animation: toastOut 0.2s var(--ease-out); }
 @keyframes toastIn  { from { opacity: 0; transform: translate(-50%, -20px); } to { opacity: 1; transform: translate(-50%, 0); } }
-@keyframes toastOut { to { opacity: 0; transform: translate(-50%, -20px); } }
+@keyframes toastOut { to { opacity: 0; transform: translateX(18px); } }
 
 /* 通用动画 */
 .animate-fade { animation: fadeIn 0.3s var(--ease-out); }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
-/* Toast 动画 */
-.toast-fade-enter-active { animation: slideDown 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
-.toast-fade-leave-active { transition: all 0.3s ease; }
-.toast-fade-leave-to { opacity: 0; transform: translateX(-50%) translateY(-20px); }
+/* Toast 动画：右上角锚定，进出都只做右向位移，避免覆盖居中标题 */
+.toast-fade-enter-active { animation: toast-in 0.32s var(--ui-ease); }
+.toast-fade-leave-active { transition: opacity 0.3s ease, transform 0.3s ease; }
+.toast-fade-leave-to { opacity: 0; transform: translateX(18px); }
 
 .menu-screen { display: flex; width: 100%; height: 100vh; overflow: hidden; text-align: center; }
 .menu-sidebar { 
-  width: 200px; padding: 30px 15px; display: flex; flex-direction: column; gap: 24px; position: fixed;
+  width: 240px; padding: var(--ui-5) var(--ui-3); display: flex; flex-direction: column; gap: 24px; position: fixed;
   height: 100vh; left: 0; top: 0; z-index: 100; background: var(--neo-body); border-right: 2px solid var(--neo-surface);
   transition: width 0.3s cubic-bezier(0.16, 1, 0.3, 1); 
 }
-.menu-sidebar.is-collapsed { width: 80px; padding: 30px 10px; }
-.menu-sidebar-spacer { width: 200px; flex-shrink: 0; transition: width 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
-.menu-sidebar-spacer.is-collapsed { width: 80px; }
+.menu-sidebar.is-collapsed { width: 88px; padding: var(--ui-5) var(--ui-1); }
+.menu-sidebar-spacer { width: 240px; flex-shrink: 0; transition: width 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+.menu-sidebar-spacer.is-collapsed { width: 88px; }
 
 .sidebar-header { display: flex; align-items: center; justify-content: space-between; height: 40px; padding: 0 10px; }
 .logo-box { display: flex; align-items: center; gap: 8px; }
-.game-logo { font-size: calc(16px * var(--font-scale)); font-weight: 800; color: var(--color-text-primary); white-space: nowrap; }
-.version-tag { font-size: calc(10px * var(--font-scale)); background: rgba(0,0,0,0.3); padding: 3px 6px; border-radius: 99px; margin-left: 6px; color: var(--color-text-secondary); }
+.game-logo { font-size: var(--fs-body); font-weight: 800; color: var(--color-text-primary); white-space: nowrap; }
+.version-tag { font-size: var(--fs-caption); background: rgba(0,0,0,0.3); padding: 3px 6px; border-radius: var(--ui-radius-pill); margin-left: 6px; color: var(--color-text-secondary); }
 
 .btn-toggle-sidebar { background: transparent; border: none; color: var(--color-text-secondary); cursor: pointer; transition: color 0.2s; font-family: var(--font-family); }
 .btn-toggle-sidebar:hover { color: var(--color-text-primary); }
@@ -651,29 +679,29 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
 .menu-main-content { 
   flex: 1; height: 100vh; overflow-y: hidden; padding: 20px; display: flex; justify-content: center;
 }
-.content-wrapper { max-width: 800px; width: 100%; display: flex; flex-direction: column; gap: 20px; }
+.content-wrapper { max-width: 1080px; width: 100%; display: flex; flex-direction: column; gap: 20px; }
 
 .global-resource-bar { 
   display: flex; justify-content: space-between; align-items: center; 
   padding: 16px 24px; flex-shrink: 0; margin-bottom: 5px;
 }
 .res-group { display: flex; gap: 20px; }
-.res-item { font-size: calc(14px * var(--font-scale)); font-weight: 600; display: flex; align-items: center; gap: 6px; }
-.btn-fortune { padding: 8px 20px; font-weight: 800; font-size: calc(13px * var(--font-scale)); color: var(--color-cyan); }
+.res-item { font-size: var(--fs-body); font-weight: 600; display: flex; align-items: center; gap: var(--ui-1); }
+.btn-fortune { padding: 8px 20px; font-weight: 800; font-size: var(--fs-label); color: var(--color-cyan); }
 
 .tab-panel { flex: 1; display: flex; flex-direction: column; gap: 20px; overflow-y: auto; padding: 5px; }
 
 .battle-setup-container { justify-content: flex-start; }
 .setup-controls-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
 .control-group { display: flex; flex-direction: column; gap: 10px; }
-.control-group label { font-size: calc(14px * var(--font-scale)); font-weight: 800; color: var(--color-text-primary); padding-left: 6px; border-left: 4px solid var(--color-cyan); line-height: 1; }
+.control-group label { font-size: var(--fs-body); font-weight: 800; color: var(--color-text-primary); padding-left: 6px; border-left: 4px solid var(--color-cyan); line-height: 1; }
 .map-select-group { display: flex; gap: 10px; align-items: stretch; }
 
 .select-wrapper { position: relative; display: flex; align-items: center; padding: 0; }
-.select-wrapper::after { content: '▼'; position: absolute; right: 15px; color: var(--color-cyan); pointer-events: none; font-size: calc(12px * var(--font-scale)); }
+.select-wrapper::after { content: '▼'; position: absolute; right: 15px; color: var(--color-cyan); pointer-events: none; font-size: var(--fs-label); }
 .neo-select { 
   width: 100%; appearance: none; background: transparent; border: none; 
-  color: var(--color-text-primary); padding: 14px 16px; font-size: calc(14px * var(--font-scale)); font-weight: 800; outline: none; cursor: pointer;
+  color: var(--color-text-primary); padding: 14px 16px; font-size: var(--fs-body); font-weight: 800; outline: none; cursor: pointer;
 }
 .neo-select option { background: var(--neo-surface); color: var(--color-text-secondary); }
 
@@ -681,35 +709,35 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
   flex: none; display: flex; flex-direction: column; padding: 24px; gap: 20px; justify-content: flex-start;
 }
 .preview-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--overlay-hover); padding-bottom: 12px; }
-.preview-header h3 { font-size: calc(20px * var(--font-scale)); font-weight: 900; margin: 0; }
-.vs-badge { background: var(--color-empire); color: var(--color-text-primary); padding: 4px 10px; border-radius: 6px; font-size: calc(12px * var(--font-scale)); font-weight: 800; }
+.preview-header h3 { font-size: var(--fs-h2); font-weight: 900; margin: 0; }
+.vs-badge { background: var(--color-empire); color: var(--color-text-primary); padding: 4px 10px; border-radius: var(--ui-radius-lg); font-size: var(--fs-label); font-weight: 800; }
 .preview-details { display: flex; flex-direction: column; gap: 12px; }
 .detail-item { display: flex; gap: 15px; align-items: flex-start; }
-.detail-item .label { color: var(--color-text-disabled); font-size: calc(13px * var(--font-scale)); font-weight: 800; white-space: nowrap; width: 65px; }
-.detail-item .value { color: var(--color-text-primary); font-size: calc(14px * var(--font-scale)); font-weight: 600; line-height: 1.5; }
+.detail-item .label { color: var(--color-text-disabled); font-size: var(--fs-label); font-weight: 800; white-space: nowrap; width: 65px; }
+.detail-item .value { color: var(--color-text-primary); font-size: var(--fs-body); font-weight: 600; line-height: 1.5; }
 
 .start-action-zone { display: flex; justify-content: center; margin-top: auto; flex-shrink: 0; padding-top: 10px; }
-.btn-launch-game { padding: 16px; font-size: calc(16px * var(--font-scale)); width: 100%; }
+.btn-launch-game { padding: 16px; font-size: var(--fs-body); width: 100%; }
 
 .deck-builder-panel { display: flex; flex-direction: column; overflow: hidden; }
 .deck-top-section { display: flex; gap: 20px; flex-shrink: 0; }
 .deck-slots-container, .synergy-container { flex: 1; padding: 15px; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
 .deck-header-row { display: flex; justify-content: space-between; align-items: center; }
-.panel-title-small { font-size: calc(13px * var(--font-scale)); font-weight: 800; color: var(--color-text-primary); padding-left: 6px; border-left: 3px solid var(--color-cyan); }
-.auto-deploy-btn { padding: 4px 8px; font-size: calc(11px * var(--font-scale)); }
+.panel-title-small { font-size: var(--fs-label); font-weight: 800; color: var(--color-text-primary); padding-left: 6px; border-left: 3px solid var(--color-cyan); }
+.auto-deploy-btn { padding: 4px 8px; font-size: var(--fs-label); }
 
 .deck-slots { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
-.slot-item { aspect-ratio: 1/1; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s; border: 1px solid transparent; border-radius: 8px; }
+.slot-item { aspect-ratio: 1/1; display: flex; flex-direction: column; align-items: center; justify-content: center; cursor: pointer; transition: all 0.2s; border: 1px solid transparent; border-radius: var(--ui-radius-lg); }
 .slot-item:hover { border-color: var(--color-empire); color: var(--color-empire); }
-.slot-shape { font-size: calc(16px * var(--font-scale)); margin-bottom: 4px; font-family: var(--font-family); font-weight: bold; padding: 3px 6px; background: var(--overlay-hover); border-radius: 4px; }
-.slot-name { font-size: calc(10px * var(--font-scale)); font-weight: 800; text-align: center; line-height: 1.2;}
-.empty-slot { font-size: calc(24px * var(--font-scale)); color: var(--color-border-emphasized); font-family: var(--font-family); }
+.slot-shape { font-size: var(--fs-body); margin-bottom: 4px; font-family: var(--font-family); font-weight: bold; padding: 3px 6px; background: var(--overlay-hover); border-radius: var(--ui-radius); }
+.slot-name { font-size: var(--fs-caption); font-weight: 800; text-align: center; line-height: 1.2;}
+.empty-slot { font-size: var(--fs-h2); color: var(--color-border-emphasized); font-family: var(--font-family); }
 
 .synergy-list { display: flex; flex-wrap: wrap; gap: 6px; overflow-y: auto; }
-.synergy-item { background: var(--neo-surface); padding: 4px 8px; border-radius: 4px; border: 1px solid var(--neo-surface-raised); display: inline-flex; align-items: baseline; gap: 6px; width: auto; flex: 1 1 calc(50% - 6px); }
+.synergy-item { background: var(--neo-surface); padding: 4px 8px; border-radius: var(--ui-radius); border: 1px solid var(--neo-surface-raised); display: inline-flex; align-items: baseline; gap: 6px; width: auto; flex: 1 1 calc(50% - 6px); }
 .active-syn { border-color: var(--color-cyan); box-shadow: inset 0 0 8px var(--color-cyan)33; }
-.syn-name { font-size: calc(11px * var(--font-scale)); font-weight: 800; color: var(--color-cyan); white-space: nowrap; }
-.syn-desc { font-size: calc(10px * var(--font-scale)); color: var(--color-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.syn-name { font-size: var(--fs-label); font-weight: 800; color: var(--color-cyan); white-space: nowrap; }
+.syn-desc { font-size: var(--fs-caption); color: var(--color-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .can-upgrade { border: 1px solid var(--color-green); box-shadow: 0 0 15px rgba(16, 185, 129, 0.2), inset 4px 4px 8px var(--neo-surface-inset), inset -4px -4px 8px var(--neo-surface-raised); }
 .can-upgrade-btn { color: var(--color-green); border-color: var(--color-green); }
@@ -717,31 +745,31 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
 .barracks-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 15px; padding: 5px; overflow-y: auto; flex: 1; }
 .troop-card { padding: 16px; display: flex; flex-direction: column; gap: 12px; width: 100%; position: relative; }
 .in-deck { border: 1px solid var(--color-cyan); }
-.quality-badge { position: absolute; top: 10px; right: 10px; padding: 2px 6px; border-radius: 4px; font-size: calc(10px * var(--font-scale)); font-weight: 800; color: var(--color-text-primary); }
+.quality-badge { position: absolute; top: 10px; right: 10px; padding: 2px 6px; border-radius: var(--ui-radius); font-size: var(--fs-caption); font-weight: 800; color: var(--color-text-primary); }
 .q-1 { background: var(--color-text-secondary); } .q-2 { background: var(--color-green); } .q-3 { background: var(--color-alliance); } .q-4 { background: var(--color-purple); } .q-5 { background: var(--color-warning); }
 
 .troop-header { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
-.neo-icon-inset { width: 36px; height: 36px; box-shadow: inset 3px 3px 6px var(--neo-surface-inset), inset -3px -3px 6px var(--neo-surface-inset); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: calc(14px * var(--font-scale)); color: var(--color-text-primary); flex-shrink:0; font-family: var(--font-family); font-weight: bold; }
-.level-tag { background: var(--neo-surface); padding: 2px 6px; border-radius: 4px; font-size: calc(10px * var(--font-scale)); color: var(--color-text-secondary); margin-left: 6px; }
-.tags-row { font-size: calc(11px * var(--font-scale)); color: var(--color-text-disabled); margin-top: 4px; }
-.btn-equip { padding: 6px 12px; font-size: calc(11px * var(--font-scale)); }
-.troop-stats-bars { padding: 10px; font-size: calc(11px * var(--font-scale)); font-weight: 600; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 6px; }
+.neo-icon-inset { width: 36px; height: 36px; box-shadow: inset 3px 3px 6px var(--neo-surface-inset), inset -3px -3px 6px var(--neo-surface-inset); border-radius: var(--ui-radius-lg); display: flex; align-items: center; justify-content: center; font-size: var(--fs-body); color: var(--color-text-primary); flex-shrink:0; font-family: var(--font-family); font-weight: bold; }
+.level-tag { background: var(--neo-surface); padding: 2px 6px; border-radius: var(--ui-radius); font-size: var(--fs-caption); color: var(--color-text-secondary); margin-left: 6px; }
+.tags-row { font-size: var(--fs-label); color: var(--color-text-disabled); margin-top: 4px; }
+.btn-equip { padding: 6px 12px; font-size: var(--fs-label); }
+.troop-stats-bars { padding: 10px; font-size: var(--fs-label); font-weight: 600; color: var(--color-text-secondary); display: flex; flex-direction: column; gap: 6px; }
 
 .box-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 15px; }
 .box-card { padding: 20px; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 10px; width: 100%; }
 
 .editor-screen { display: flex; flex-direction: column; width: 100%; height: 100vh; overflow: hidden; }
 .editor-top-bar { padding: 10px 20px; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; }
-.editor-title { font-weight: 800; font-size: calc(14px * var(--font-scale)); color: var(--color-text-primary); }
+.editor-title { font-weight: 800; font-size: var(--fs-body); color: var(--color-text-primary); }
 .editor-actions { display: flex; gap: 8px; align-items: center; }
-.btn-editor-toolbar { height: 36px; flex-shrink: 0; padding: 0 12px; display: flex; align-items: center; justify-content: center; font-size: calc(12px * var(--font-scale)); }
+.btn-editor-toolbar { height: 36px; flex-shrink: 0; padding: 0 12px; display: flex; align-items: center; justify-content: center; font-size: var(--fs-label); }
 .editor-body { flex: 1; display: flex; flex-direction: row; overflow: hidden; position: relative; height: calc(100vh - 60px); }
 #editor-canvas-container { flex: 1; height: 100%; min-width: 0; min-height: 0; overflow: hidden; position: relative; }
 #editor-canvas-container canvas { width: 100% !important; height: 100% !important; object-fit: contain; }
 .editor-sidebar-tools { width: 220px; padding: 20px; display: flex; flex-direction: column; gap: 15px; flex-shrink: 0; overflow-y: auto; }
 .brush-list { display: flex; flex-direction: column; gap: 10px; }
-.brush-btn { padding: 12px; display: flex; align-items: center; gap: 10px; font-size: calc(13px * var(--font-scale)); height: auto; flex-shrink: 0; }
-.brush-color { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+.brush-btn { padding: 12px; display: flex; align-items: center; gap: 10px; font-size: var(--fs-label); height: auto; flex-shrink: 0; }
+.brush-color { width: 12px; height: 12px; border-radius: var(--ui-radius); flex-shrink: 0; }
 
 .game-screen { display: block; width: 100%; height: 100%; position: relative; }
 /* v3 修复（顶栏位置全错）：此处的 .ui-header/.faction-infos/.side-info/.ui-controls/
@@ -754,13 +782,13 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
 #phaser-canvas-container { display: block; width: 100%; height: 100%; position: absolute; top: 0; left: 0; z-index: 0; }
 
 /* 3D 视角预设按钮组（右下角，3D 就绪后显示） */
-.view-preset-group { position: absolute; right: 16px; bottom: 70px; display: flex; flex-direction: column; gap: 8px; z-index: 20; }
-.view-preset-btn { padding: 8px 12px; font-size: calc(12px * var(--font-scale)); font-weight: 800; color: var(--color-cyan); background: var(--overlay-surface, rgba(10,16,28,0.75)); border: 1px solid var(--color-border); border-radius: 8px; cursor: pointer; backdrop-filter: blur(4px); transition: all 0.2s; }
-.view-preset-btn:hover { background: var(--color-cyan); color: var(--neo-surface, #0a0f1c); }
+.view-preset-group { position: absolute; right: var(--ui-3); bottom: var(--ui-8); display: flex; flex-direction: column; gap: var(--ui-1); z-index: 20; }
+.view-preset-btn { min-height: 38px; padding: 0 var(--ui-2); font-size: var(--fs-label); font-weight: 800; color: var(--ui-accent); background: var(--ui-panel); border: var(--ui-frame-strong); border-radius: var(--ui-radius); cursor: pointer; backdrop-filter: blur(8px); transition: all var(--ui-dur-micro) var(--ui-ease); }
+.view-preset-btn:hover { background: var(--ui-accent); color: var(--ui-accent-ink); }
 /* 提督扮演：军议面板关闭态的开启按钮（指挥制）。top 与 CouncilWarRoom 面板对齐（170px） */
-.war-room-toggle { position: absolute; right: 16px; top: 170px; z-index: 20; padding: 10px 16px; font-size: calc(13px * var(--font-scale)); font-weight: 900; letter-spacing: 1px; color: #22d3ee; background: rgba(10,16,28,0.85); border: 2px solid rgba(34,211,238,0.65); border-radius: 8px; cursor: pointer; backdrop-filter: blur(4px); box-shadow: 0 0 12px rgba(34,211,238,0.25); animation: war-room-pulse 2.2s ease-in-out infinite; }
-@keyframes war-room-pulse { 0%, 100% { box-shadow: 0 0 8px rgba(34,211,238,0.2); } 50% { box-shadow: 0 0 18px rgba(34,211,238,0.5); } }
-.war-room-toggle:hover { background: #22d3ee; color: #0a0f1c; }
+.war-room-toggle { position: absolute; right: var(--ui-3); top: 190px; z-index: 20; min-height: 44px; padding: 0 var(--ui-3); font-size: var(--fs-label); font-weight: 900; letter-spacing: 0.12em; color: var(--ui-accent); background: var(--ui-panel); border: 1px solid var(--ui-accent); border-radius: var(--ui-radius); cursor: pointer; backdrop-filter: blur(8px); box-shadow: var(--ui-glow); animation: war-room-pulse 2.2s ease-in-out infinite; }
+@keyframes war-room-pulse { 0%, 100% { box-shadow: 0 0 8px rgba(var(--ui-accent-rgb), 0.2); } 50% { box-shadow: 0 0 18px rgba(var(--ui-accent-rgb), 0.5); } }
+.war-room-toggle:hover { background: var(--ui-accent); color: var(--ui-accent-ink); }
 
 /* ===== 3D 战场模式：隐藏 Phaser 画布与依赖 2D 坐标的跟随层 =====
    逻辑引擎（BattleScene）照常运行，仅隐藏 2D 呈现；GameHeader 读 store 数据不受影响 */
@@ -769,39 +797,39 @@ body.battle3d-mode .fleet-ui-layer { display: none; }
 
 .map-legend {
   position: absolute; bottom: 80px; left: 20px; top: auto; display: flex; flex-direction: column; gap: 8px;
-  padding: 15px; z-index: 5; background: rgba(17, 24, 39, 0.85); backdrop-filter: blur(8px); border: 1px solid var(--overlay-border); border-radius: 12px;
+  padding: 15px; z-index: 5; background: rgba(17, 24, 39, 0.85); backdrop-filter: blur(8px); border: var(--ui-frame); border-radius: var(--ui-radius-lg);
 }
-.legend-title { font-size: calc(12px * var(--font-scale)); font-weight: 800; color: var(--color-text-primary); border-bottom: 1px solid var(--overlay-border); padding-bottom: 6px; margin-bottom: 4px; }
-.legend-item { font-size: calc(11px * var(--font-scale)); color: var(--color-text-secondary); display: flex; align-items: center; gap: 8px; }
-.legend-item .icon { font-family: var(--font-family); font-size: calc(14px * var(--font-scale)); font-weight: bold; width: 16px; text-align: center; }
+.legend-title { font-size: var(--fs-label); font-weight: 800; color: var(--color-text-primary); border-bottom: 1px solid var(--overlay-border); padding-bottom: 6px; margin-bottom: 4px; }
+.legend-item { font-size: var(--fs-label); color: var(--color-text-secondary); display: flex; align-items: center; gap: 8px; }
+.legend-item .icon { font-family: var(--font-family); font-size: var(--fs-body); font-weight: bold; width: 16px; text-align: center; }
 
 /* [v36c] 空域地形图例（战场左下角）。独立命名，避免与战略地图的 .map-legend 耦合 */
 .terrain-legend {
-  position: absolute; bottom: 78px; left: 20px; z-index: 10;
-  display: flex; flex-direction: column; gap: 5px;
-  padding: 10px 12px; min-width: 216px;
-  background: rgba(10, 16, 28, 0.82); backdrop-filter: blur(8px);
-  border: 1px solid rgba(34, 211, 238, 0.28); border-radius: 10px;
+  position: absolute; bottom: var(--ui-8); left: var(--ui-3); z-index: 10;
+  display: flex; flex-direction: column; gap: var(--ui-1);
+  padding: var(--ui-2) var(--ui-3); min-width: 260px;
+  background: var(--ui-panel); backdrop-filter: blur(8px);
+  border: var(--ui-frame); border-radius: var(--ui-radius);
   pointer-events: auto;
 }
 .terrain-legend .tl-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer; }
-.terrain-legend .tl-title { font-size: calc(11px * var(--font-scale)); font-weight: 900; letter-spacing: 1px; color: #22d3ee; }
-.terrain-legend .tl-toggle { font-size: calc(12px * var(--font-scale)); font-weight: 900; color: var(--color-text-secondary); width: 12px; text-align: center; }
-.terrain-legend .tl-row { display: flex; align-items: center; gap: 7px; font-size: calc(10px * var(--font-scale)); line-height: 1.3; }
-.terrain-legend .tl-dot { width: 9px; height: 9px; border-radius: 2px; flex: 0 0 auto; }
-.terrain-legend .tl-name { color: var(--color-text-primary); font-weight: 800; width: 62px; flex: 0 0 auto; }
+.terrain-legend .tl-title { font-size: var(--fs-label); font-weight: 900; letter-spacing: 0.14em; color: var(--ui-accent); }
+.terrain-legend .tl-toggle { font-size: var(--fs-label); font-weight: 900; color: var(--color-text-secondary); width: 12px; text-align: center; }
+.terrain-legend .tl-row { display: flex; align-items: center; gap: 7px; font-size: var(--fs-caption); line-height: 1.3; }
+.terrain-legend .tl-dot { width: 9px; height: 9px; border-radius: var(--ui-radius); flex: 0 0 auto; }
+.terrain-legend .tl-name { color: var(--ui-ink); font-weight: 800; width: 76px; flex: 0 0 auto; }
 .terrain-legend .tl-desc { color: var(--color-text-secondary); font-weight: 600; }
-.terrain-legend .tl-off { font-size: calc(10px * var(--font-scale)); color: var(--color-warning); font-weight: 800; }
+.terrain-legend .tl-off { font-size: var(--fs-caption); color: var(--color-warning); font-weight: 800; }
 .terrain-legend.tl-collapsed { min-width: 0; }
 
 .ui-footer { 
-  position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
-  padding: 10px 24px; border-radius: 99px; font-size: calc(12px * var(--font-scale)); color: var(--color-text-secondary); z-index: 10; font-weight: 800;
+  position: absolute; bottom: var(--ui-3); left: 50%; transform: translateX(-50%);
+  min-height: 44px; padding: var(--ui-1) var(--ui-4); background: var(--ui-panel); border: var(--ui-frame); border-radius: var(--ui-radius); font-size: var(--fs-label); color: var(--ui-ink-2); z-index: 10; font-weight: 800;
 }
 
 .modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(11, 12, 16, 0.8); backdrop-filter: blur(8px); display: flex; justify-content: center; align-items: center; z-index: 999; }
-.modal-content { padding: 40px; max-width: 400px; width: 90%; text-align: center; }
-.modal-title { font-size: calc(24px * var(--font-scale)); font-weight: 800; margin-bottom: 10px; color: var(--color-text-primary); }
+.modal-content { padding: var(--ui-6); max-width: 560px; width: 90%; text-align: center; border-radius: var(--ui-radius); }
+.modal-title { font-size: var(--fs-h2); font-weight: 800; margin-bottom: 10px; color: var(--color-text-primary); }
 .modal-desc { color: var(--color-text-secondary); font-weight: 600; margin-bottom: 20px; }
 .settlement-rewards { padding: 20px; text-align: left; color: var(--color-text-primary); font-weight: 600; line-height: 2; margin-bottom: 24px; }
 
@@ -829,7 +857,7 @@ body.battle3d-mode .fleet-ui-layer { display: none; }
     padding: 6px 0 !important; margin: 0 !important; box-shadow: none !important; border: none !important; background: transparent !important;
   }
  
-  .nav-text { display: block !important; font-size: calc(10px * var(--font-scale)); font-weight: 800; text-align: center; color: var(--color-text-disabled); white-space: nowrap; }
+  .nav-text { display: block !important; font-size: var(--fs-caption); font-weight: 800; text-align: center; color: var(--color-text-disabled); white-space: nowrap; }
   .btn-nav-item.active .nav-text { color: var(--color-cyan); }
   
   .menu-main-content { padding: 10px 10px 75px 10px; display: block; overflow-y: auto; height: auto; }
@@ -837,22 +865,22 @@ body.battle3d-mode .fleet-ui-layer { display: none; }
   
   .global-resource-bar { padding: 10px; flex-direction: column; gap: 10px; align-items: stretch; margin-bottom: 0; }
   .res-group { justify-content: space-between; }
-  .res-item { font-size: calc(12px * var(--font-scale)); }
+  .res-item { font-size: var(--fs-label); }
   
   .tab-panel { gap: 15px; padding: 0; overflow-y: visible; }
   .setup-controls-grid { grid-template-columns: 1fr; gap: 15px; }
-  .panel-title { font-size: calc(13px * var(--font-scale)); margin-bottom: 8px; }
-  .neo-select { padding: 12px 14px; font-size: calc(13px * var(--font-scale)); }
+  .panel-title { font-size: var(--fs-label); margin-bottom: 8px; }
+  .neo-select { padding: 12px 14px; font-size: var(--fs-label); }
   
   .preview-board { padding: 16px; min-height: auto; }
-  .preview-header h3 { font-size: calc(16px * var(--font-scale)); }
+  .preview-header h3 { font-size: var(--fs-body); }
   .detail-item { flex-direction: column; gap: 4px; }
   
   .start-action-zone { margin-top: 5px; padding-top: 0;}
-  .btn-launch-game { width: 100%; padding: 14px; font-size: calc(14px * var(--font-scale)); }
+  .btn-launch-game { width: 100%; padding: 14px; font-size: var(--fs-body); }
 
   .deck-top-section { flex-direction: column; gap: 15px; }
-  .slot-name { font-size: calc(9px * var(--font-scale)); }
+  .slot-name { font-size: var(--fs-caption); }
   
   .synergy-list { display: flex; flex-wrap: wrap; gap: 6px; }
   .synergy-item { width: calc(50% - 3px); flex: none; }
@@ -860,14 +888,14 @@ body.battle3d-mode .fleet-ui-layer { display: none; }
   /* v3：顶栏全局旧规则已删（见上方 .active-bomb 注释），移动端残留一并移除；
      GameHeader.vue scoped 内有自己的 @media 规则 */
 
-  .ui-footer { bottom: 5px; padding: 8px 12px; font-size: calc(10px * var(--font-scale)); width: 95%; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ui-footer { bottom: 5px; padding: 8px 12px; font-size: var(--fs-caption); width: 95%; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   
   .editor-top-bar { flex-wrap: wrap; justify-content: center; gap: 5px; padding: 5px; }
   .editor-body { flex-direction: column; height: auto; }
   .editor-canvas-pane { flex: none; height: 50vh; width: 100%; }
   .editor-sidebar-tools { width: 100%; flex: 1; flex-direction: row; flex-wrap: wrap; padding: 10px; gap: 5px; height: auto; overflow: visible; }
   .brush-list { flex-direction: row; flex-wrap: wrap; gap: 5px; }
-  .brush-btn { padding: 6px 10px; font-size: calc(11px * var(--font-scale)); height: auto; }
+  .brush-btn { padding: 6px 10px; font-size: var(--fs-label); height: auto; }
 }
 
 @media (min-width: 769px) {
@@ -887,15 +915,15 @@ body.battle3d-mode .fleet-ui-layer { display: none; }
 .fleet-float-ui {
   position: absolute;
   transform: translate(-50%, -100%);
-  display: flex; align-items: center; gap: 6px;
-  background: rgba(11, 12, 16, 0.85);
-  border: 1px solid var(--overlay-border);
-  padding: 4px 6px; border-radius: 6px;
+  display: flex; align-items: center; gap: var(--ui-1);
+  background: var(--ui-panel);
+  border: var(--ui-frame);
+  padding: var(--ui-1); border-radius: var(--ui-radius);
   will-change: left, top;
   pointer-events: auto;
 }
 
-.fleet-portrait { width: 32px; height: 42px; object-fit: cover; border-radius: 3px; border: 1px solid var(--color-border); background: var(--neo-surface-raised); }
+.fleet-portrait { width: 44px; height: 58px; object-fit: cover; border-radius: 0; border: 1px solid var(--ui-line-strong); background: var(--ui-surface-2); }
 /* [迷雾·末次位置] 幽灵卡片：虚线框 + 半透明 + 缩排 —— 读作"档案图钉"，不是一支活着的舰队 */
 .fleet-float-ui.fleet-ghost {
   background: rgba(11, 12, 16, 0.55);
@@ -905,14 +933,14 @@ body.battle3d-mode .fleet-ui-layer { display: none; }
 }
 .fleet-float-ui.fleet-ghost .fleet-info { width: auto; }
 .fleet-float-ui.fleet-ghost .fleet-name { color: var(--color-text-secondary); font-weight: 700; }
-.fleet-info { display: flex; flex-direction: column; gap: 5px; width: 132px; }
-.fleet-name { font-size: calc(14px * var(--font-scale)); font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.1; }
-.fleet-hp-bar { width: 100%; height: 5px; background: var(--color-border); border-radius: 2px; overflow: hidden; }
+.fleet-info { display: flex; flex-direction: column; gap: var(--ui-1); width: 172px; }
+.fleet-name { font-size: var(--fs-body); font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.1; }
+.fleet-hp-bar { width: 100%; height: 5px; background: var(--color-border); border-radius: var(--ui-radius); overflow: hidden; }
 .hp-fill { height: 100%; transition: width 0.1s linear; }
 .bg-cyan { background: var(--color-cyan); }
-.bg-red { background: var(--color-empire); }
+.bg-red { background: var(--side-foe); }
 
 .stance-controls { display: flex; gap: 2px; margin-top: 4px; pointer-events: auto; }
-.stance-btn { flex: 1; background: var(--neo-surface); border: 1px solid var(--color-border); color: var(--color-text-disabled); font-size: calc(11px * var(--font-scale)); font-weight: 800; padding: 3px 0; border-radius: 3px; cursor: pointer; transition: all 0.2s; }
-.stance-btn.active { background: var(--color-cyan); color: var(--neo-surface); border-color: var(--color-cyan); }
+.stance-btn { flex: 1; min-height: 30px; background: var(--ui-surface-2); border: 1px solid var(--ui-line); color: var(--ui-ink-3); font-size: var(--fs-caption); font-weight: 800; padding: 0 var(--ui-1); border-radius: var(--ui-radius); cursor: pointer; transition: all var(--ui-dur-micro) var(--ui-ease); }
+.stance-btn.active { background: var(--ui-accent); color: var(--ui-accent-ink); border-color: var(--ui-accent); }
 </style>

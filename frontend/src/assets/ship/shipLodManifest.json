@@ -2,21 +2,21 @@
   "alliance_battleship.glb": {
     "orig": {
       "tris": 49966,
-      "longestAxis": 1.1815510094165802
+      "longestAxis": 1.1815509442597296
     },
     "lod1": {
       "tris": 9992,
-      "longestAxis": 65534
+      "longestAxis": 1.1811609376290244
     },
     "lod2": {
       "tris": 4850,
-      "longestAxis": 65534
+      "longestAxis": 1.1805949001388611
     }
   },
   "alliance_carrier.glb": {
     "orig": {
       "tris": 50036,
-      "longestAxis": 1.1811800003051758
+      "longestAxis": 1.1811801562585909
     },
     "lod1": {
       "tris": 10000,
@@ -30,7 +30,7 @@
   "alliance_cruiser.glb": {
     "orig": {
       "tris": 49992,
-      "longestAxis": 1.1821529865264893
+      "longestAxis": 1.182153143076455
     },
     "lod1": {
       "tris": 9972,
@@ -44,7 +44,7 @@
   "alliance_destroyer.glb": {
     "orig": {
       "tris": 50000,
-      "longestAxis": 1.1889989972114563
+      "longestAxis": 1.1889991601735652
     },
     "lod1": {
       "tris": 9998,
@@ -58,7 +58,7 @@
   "alliance_fighter.glb": {
     "orig": {
       "tris": 50000,
-      "longestAxis": 1.1850459575653076
+      "longestAxis": 1.1850461197694924
     },
     "lod1": {
       "tris": 9998,
@@ -72,7 +72,7 @@
   "alliance_leda2.glb": {
     "orig": {
       "tris": 49984,
-      "longestAxis": 1.1901639997959137
+      "longestAxis": 1.1901641530335332
     },
     "lod1": {
       "tris": 9996,
@@ -86,7 +86,7 @@
   "alliance_supply.glb": {
     "orig": {
       "tris": 49740,
-      "longestAxis": 1.1805019974708557
+      "longestAxis": 1.180502150868362
     },
     "lod1": {
       "tris": 9920,
@@ -100,7 +100,7 @@
   "empire_battleship.glb": {
     "orig": {
       "tris": 49958,
-      "longestAxis": 1.1762439906597137
+      "longestAxis": 1.1762441665084487
     },
     "lod1": {
       "tris": 9982,
@@ -114,7 +114,7 @@
   "empire_carrier.glb": {
     "orig": {
       "tris": 49700,
-      "longestAxis": 1.1702710092067719
+      "longestAxis": 1.1702711567955428
     },
     "lod1": {
       "tris": 9862,
@@ -128,7 +128,7 @@
   "empire_cruiser.glb": {
     "orig": {
       "tris": 50000,
-      "longestAxis": 1.1649420261383057
+      "longestAxis": 1.1649421791617591
     },
     "lod1": {
       "tris": 9998,
@@ -142,7 +142,7 @@
   "empire_destroyer.glb": {
     "orig": {
       "tris": 49910,
-      "longestAxis": 1.1791430115699768
+      "longestAxis": 1.1791431697381642
     },
     "lod1": {
       "tris": 9980,
@@ -156,7 +156,7 @@
   "empire_fast_battleship.glb": {
     "orig": {
       "tris": 49714,
-      "longestAxis": 1.1098119914531708
+      "longestAxis": 1.1098121279546498
     },
     "lod1": {
       "tris": 9896,
@@ -170,7 +170,7 @@
   "empire_fighter.glb": {
     "orig": {
       "tris": 49920,
-      "longestAxis": 1.151095986366272
+      "longestAxis": 1.1510961286090355
     },
     "lod1": {
       "tris": 9982,
@@ -184,7 +184,7 @@
   "empire_supply.glb": {
     "orig": {
       "tris": 49774,
-      "longestAxis": 0.9103939831256866
+      "longestAxis": 0.9103941403689446
     },
     "lod1": {
       "tris": 9950,
@@ -198,7 +198,7 @@
   "flagship_Ashgrimm.glb": {
     "orig": {
       "tris": 49958,
-      "longestAxis": 1.1638250052928925
+      "longestAxis": 1.163825153556146
     },
     "lod1": {
       "tris": 9990,
@@ -212,7 +212,7 @@
   "flagship_Beiowolf.glb": {
     "orig": {
       "tris": 50000,
-      "longestAxis": 1.1109179854393005
+      "longestAxis": 1.1109181131649917
     },
     "lod1": {
       "tris": 10000,
@@ -226,7 +226,7 @@
   "flagship_Berlin.glb": {
     "orig": {
       "tris": 49988,
-      "longestAxis": 1.06768599152565
+      "longestAxis": 1.0676861308178944
     },
     "lod1": {
       "tris": 9986,
@@ -254,7 +254,7 @@
   "flagship_Koenigstiger.glb": {
     "orig": {
       "tris": 49954,
-      "longestAxis": 1.0914610028266907
+      "longestAxis": 1.091461181407078
     },
     "lod1": {
       "tris": 9988,
@@ -268,7 +268,7 @@
   "flagship_MillenniumFalcon.glb": {
     "orig": {
       "tris": 49858,
-      "longestAxis": 1.1704999804496765
+      "longestAxis": 1.1705001356936733
     },
     "lod1": {
       "tris": 9818,
@@ -282,7 +282,7 @@
   "flagship_NC1701.glb": {
     "orig": {
       "tris": 50000,
-      "longestAxis": 1.140073001384735
+      "longestAxis": 1.140073148726016
     },
     "lod1": {
       "tris": 10000,
@@ -296,7 +296,7 @@
   "flagship_Pangu.glb": {
     "orig": {
       "tris": 49928,
-      "longestAxis": 1.1944590210914612
+      "longestAxis": 1.1944591730963405
     },
     "lod1": {
       "tris": 9962,
@@ -310,7 +310,7 @@
   "flagship_Parcivale.glb": {
     "orig": {
       "tris": 50000,
-      "longestAxis": 1.144635021686554
+      "longestAxis": 1.14463516268825
     },
     "lod1": {
       "tris": 10000,
@@ -324,7 +324,7 @@
   "flagship_StarDestroyer.glb": {
     "orig": {
       "tris": 49724,
-      "longestAxis": 1.1330350041389465
+      "longestAxis": 1.13303515898847
     },
     "lod1": {
       "tris": 9926,
@@ -338,7 +338,7 @@
   "flagship_Triglav.glb": {
     "orig": {
       "tris": 49899,
-      "longestAxis": 1.166832983493805
+      "longestAxis": 1.1668331431099734
     },
     "lod1": {
       "tris": 9969,
@@ -352,7 +352,7 @@
   "flagship_Ulysses.glb": {
     "orig": {
       "tris": 49954,
-      "longestAxis": 1.1827640235424042
+      "longestAxis": 1.1827641728016618
     },
     "lod1": {
       "tris": 9988,
@@ -366,7 +366,7 @@
   "flagship_Vissarr.glb": {
     "orig": {
       "tris": 50007,
-      "longestAxis": 1.1369899809360504
+      "longestAxis": 1.1369901099271347
     },
     "lod1": {
       "tris": 10001,
@@ -380,7 +380,7 @@
   "flagship_Vonkel.glb": {
     "orig": {
       "tris": 49978,
-      "longestAxis": 1.1957780122756958
+      "longestAxis": 1.195778176149164
     },
     "lod1": {
       "tris": 9990,
@@ -394,7 +394,7 @@
   "flagship_Yamato2205.glb": {
     "orig": {
       "tris": 49962,
-      "longestAxis": 1.1924859881401062
+      "longestAxis": 1.1924861592013674
     },
     "lod1": {
       "tris": 9990,
@@ -408,7 +408,7 @@
   "flagship_barbarossa.glb": {
     "orig": {
       "tris": 49938,
-      "longestAxis": 1.1822810173034668
+      "longestAxis": 1.1822811844668466
     },
     "lod1": {
       "tris": 9984,
@@ -422,7 +422,7 @@
   "flagship_brunhild.glb": {
     "orig": {
       "tris": 50000,
-      "longestAxis": 1.173205018043518
+      "longestAxis": 1.1732051699254584
     },
     "lod1": {
       "tris": 10000,
@@ -436,7 +436,7 @@
   "flagship_brunhild_new.glb": {
     "orig": {
       "tris": 49990,
-      "longestAxis": 1.1969600319862366
+      "longestAxis": 1.196960198076225
     },
     "lod1": {
       "tris": 9998,
@@ -450,7 +450,7 @@
   "flagship_hyperion.glb": {
     "orig": {
       "tris": 49992,
-      "longestAxis": 1.1885049939155579
+      "longestAxis": 1.1885051503463504
     },
     "lod1": {
       "tris": 9994,
@@ -464,7 +464,7 @@
   "flagship_hyperion_new.glb": {
     "orig": {
       "tris": 50096,
-      "longestAxis": 1.1938939988613129
+      "longestAxis": 1.1938941611673477
     },
     "lod1": {
       "tris": 10016,
@@ -473,6 +473,524 @@
     "lod2": {
       "tris": 2500,
       "longestAxis": 1.1930641531944275
+    }
+  },
+  "alliance_battleship121.glb": {
+    "orig": {
+      "tris": 9542,
+      "longestAxis": 31.219350814819336
+    },
+    "lod1": {
+      "tris": 9217,
+      "longestAxis": 31.219350814819336
+    },
+    "lod2": {
+      "tris": 9217,
+      "longestAxis": 31.219350814819336
+    }
+  },
+  "hd_fpa_battle_2.glb": {
+    "orig": {
+      "tris": 9530,
+      "longestAxis": 100
+    },
+    "lod1": {
+      "tris": 3485,
+      "longestAxis": 100
+    },
+    "lod2": {
+      "tris": 3471,
+      "longestAxis": 100
+    }
+  },
+  "hd_fpa_battle_3.glb": {
+    "orig": {
+      "tris": 9554,
+      "longestAxis": 100
+    },
+    "lod1": {
+      "tris": 3512,
+      "longestAxis": 100
+    },
+    "lod2": {
+      "tris": 3506,
+      "longestAxis": 100
+    }
+  },
+  "hd_fpa_cargo.glb": {
+    "orig": {
+      "tris": 10076,
+      "longestAxis": 100
+    },
+    "lod1": {
+      "tris": 2536,
+      "longestAxis": 99.98582458496094
+    },
+    "lod2": {
+      "tris": 2528,
+      "longestAxis": 99.98582458496094
+    }
+  },
+  "hd_fpa_carrier.glb": {
+    "orig": {
+      "tris": 25625,
+      "longestAxis": 100
+    },
+    "lod1": {
+      "tris": 10555,
+      "longestAxis": 99.99974060058594
+    },
+    "lod2": {
+      "tris": 10555,
+      "longestAxis": 99.99974060058594
+    }
+  },
+  "hd_fpa_cruiser.glb": {
+    "orig": {
+      "tris": 11813,
+      "longestAxis": 100.00000381469727
+    },
+    "lod1": {
+      "tris": 4219,
+      "longestAxis": 99.99942779541016
+    },
+    "lod2": {
+      "tris": 4217,
+      "longestAxis": 99.99942779541016
+    }
+  },
+  "hd_imp_cruiser.glb": {
+    "orig": {
+      "tris": 14040,
+      "longestAxis": 100
+    },
+    "lod1": {
+      "tris": 2807,
+      "longestAxis": 100
+    },
+    "lod2": {
+      "tris": 1741,
+      "longestAxis": 99.96232223510742
+    }
+  },
+  "hd_fpa_corvette_1.glb": {
+    "orig": {
+      "tris": 6701,
+      "longestAxis": 100.00000762939453
+    },
+    "lod1": {
+      "tris": 1618,
+      "longestAxis": 100.00000762939453
+    },
+    "lod2": {
+      "tris": 1632,
+      "longestAxis": 100.00000762939453
+    }
+  },
+  "hd_fpa_destroyer.glb": {
+    "orig": {
+      "tris": 13247,
+      "longestAxis": 100
+    },
+    "lod1": {
+      "tris": 3511,
+      "longestAxis": 100
+    },
+    "lod2": {
+      "tris": 3541,
+      "longestAxis": 100
+    }
+  },
+  "hd_fpa_engineering.glb": {
+    "orig": {
+      "tris": 3096,
+      "longestAxis": 100
+    },
+    "lod1": {
+      "tris": 2336,
+      "longestAxis": 100
+    },
+    "lod2": {
+      "tris": 2336,
+      "longestAxis": 100
+    }
+  },
+  "hd_fpa_flagship2.glb": {
+    "orig": {
+      "tris": 25711,
+      "longestAxis": 99.99999618530273
+    },
+    "lod1": {
+      "tris": 10814,
+      "longestAxis": 99.99999618530273
+    },
+    "lod2": {
+      "tris": 10814,
+      "longestAxis": 99.99999618530273
+    }
+  },
+  "hd_fpa_flagship3.glb": {
+    "orig": {
+      "tris": 25954,
+      "longestAxis": 99.99999618530273
+    },
+    "lod1": {
+      "tris": 11112,
+      "longestAxis": 99.99999618530273
+    },
+    "lod2": {
+      "tris": 11112,
+      "longestAxis": 99.99999618530273
+    }
+  },
+  "hd_fpa_flagship4.glb": {
+    "orig": {
+      "tris": 27240,
+      "longestAxis": 100
+    },
+    "lod1": {
+      "tris": 10840,
+      "longestAxis": 100
+    },
+    "lod2": {
+      "tris": 10840,
+      "longestAxis": 100
+    }
+  },
+  "hd_fpa_flagship5.glb": {
+    "orig": {
+      "tris": 24686,
+      "longestAxis": 99.99999618530273
+    },
+    "lod1": {
+      "tris": 12862,
+      "longestAxis": 99.99993133544922
+    },
+    "lod2": {
+      "tris": 12862,
+      "longestAxis": 99.99993133544922
+    }
+  },
+  "hd_fpa_flagship6.glb": {
+    "orig": {
+      "tris": 25563,
+      "longestAxis": 99.99999618530273
+    },
+    "lod1": {
+      "tris": 10771,
+      "longestAxis": 99.99999618530273
+    },
+    "lod2": {
+      "tris": 10771,
+      "longestAxis": 99.99999618530273
+    }
+  },
+  "hd_fpa_flagship7.glb": {
+    "orig": {
+      "tris": 27718,
+      "longestAxis": 100
+    },
+    "lod1": {
+      "tris": 10787,
+      "longestAxis": 100
+    },
+    "lod2": {
+      "tris": 10789,
+      "longestAxis": 100
+    }
+  },
+  "hd_fpa_flagship8.glb": {
+    "orig": {
+      "tris": 24715,
+      "longestAxis": 99.99999618530273
+    },
+    "lod1": {
+      "tris": 14677,
+      "longestAxis": 99.99999618530273
+    },
+    "lod2": {
+      "tris": 14677,
+      "longestAxis": 99.99999618530273
+    }
+  },
+  "hd_fpa_spartinian.glb": {
+    "orig": {
+      "tris": 4336,
+      "longestAxis": 100.00000381469727
+    },
+    "lod1": {
+      "tris": 956,
+      "longestAxis": 99.94902038574219
+    },
+    "lod2": {
+      "tris": 950,
+      "longestAxis": 99.94902038574219
+    }
+  },
+  "hd_hperiod.glb": {
+    "orig": {
+      "tris": 20387,
+      "longestAxis": 99.99999237060547
+    },
+    "lod1": {
+      "tris": 4928,
+      "longestAxis": 99.99813079833984
+    },
+    "lod2": {
+      "tris": 4932,
+      "longestAxis": 99.99813079833984
+    }
+  },
+  "hd_imp_battle_1.glb": {
+    "orig": {
+      "tris": 14367,
+      "longestAxis": 100
+    },
+    "lod1": {
+      "tris": 2870,
+      "longestAxis": 99.73162460327148
+    },
+    "lod2": {
+      "tris": 2880,
+      "longestAxis": 99.48524475097656
+    }
+  },
+  "hd_imp_builder.glb": {
+    "orig": {
+      "tris": 8096,
+      "longestAxis": 100.00000762939453
+    },
+    "lod1": {
+      "tris": 4092,
+      "longestAxis": 99.99999618530273
+    },
+    "lod2": {
+      "tris": 4082,
+      "longestAxis": 99.99999618530273
+    }
+  },
+  "hd_imp_carrier.glb": {
+    "orig": {
+      "tris": 22858,
+      "longestAxis": 99.99999618530273
+    },
+    "lod1": {
+      "tris": 8909,
+      "longestAxis": 99.92515563964844
+    },
+    "lod2": {
+      "tris": 8903,
+      "longestAxis": 99.13605499267578
+    }
+  },
+  "hd_imp_corvette.glb": {
+    "orig": {
+      "tris": 7966,
+      "longestAxis": 100.00000762939453
+    },
+    "lod1": {
+      "tris": 1858,
+      "longestAxis": 100.00000762939453
+    },
+    "lod2": {
+      "tris": 1854,
+      "longestAxis": 100.00000762939453
+    }
+  },
+  "hd_imp_corvette2_.glb": {
+    "orig": {
+      "tris": 7874,
+      "longestAxis": 99.99999237060547
+    },
+    "lod1": {
+      "tris": 1790,
+      "longestAxis": 99.99999237060547
+    },
+    "lod2": {
+      "tris": 1780,
+      "longestAxis": 99.99999237060547
+    }
+  },
+  "hd_imp_destroyer.glb": {
+    "orig": {
+      "tris": 12761,
+      "longestAxis": 100
+    },
+    "lod1": {
+      "tris": 3590,
+      "longestAxis": 99.95238876342773
+    },
+    "lod2": {
+      "tris": 3600,
+      "longestAxis": 99.95238876342773
+    }
+  },
+  "hd_imp_flag_1.glb": {
+    "orig": {
+      "tris": 27862,
+      "longestAxis": 100
+    },
+    "lod1": {
+      "tris": 5572,
+      "longestAxis": 100
+    },
+    "lod2": {
+      "tris": 3871,
+      "longestAxis": 100
+    }
+  },
+  "hd_imp_flag_3.glb": {
+    "orig": {
+      "tris": 37731,
+      "longestAxis": 100
+    },
+    "lod1": {
+      "tris": 7545,
+      "longestAxis": 99.99759674072266
+    },
+    "lod2": {
+      "tris": 4844,
+      "longestAxis": 99.99759674072266
+    }
+  },
+  "hd_imp_flag_4.glb": {
+    "orig": {
+      "tris": 42669,
+      "longestAxis": 100
+    },
+    "lod1": {
+      "tris": 8533,
+      "longestAxis": 99.99751663208008
+    },
+    "lod2": {
+      "tris": 5404,
+      "longestAxis": 99.99751663208008
+    }
+  },
+  "hd_imp_flag_6.glb": {
+    "orig": {
+      "tris": 26603,
+      "longestAxis": 100
+    },
+    "lod1": {
+      "tris": 5308,
+      "longestAxis": 100
+    },
+    "lod2": {
+      "tris": 4529,
+      "longestAxis": 100
+    }
+  },
+  "hd_imp_flag_7.glb": {
+    "orig": {
+      "tris": 49500,
+      "longestAxis": 100
+    },
+    "lod1": {
+      "tris": 9899,
+      "longestAxis": 99.99901580810547
+    },
+    "lod2": {
+      "tris": 5913,
+      "longestAxis": 99.99377822875977
+    }
+  },
+  "hd_imp_flag_double.glb": {
+    "orig": {
+      "tris": 14454,
+      "longestAxis": 100
+    },
+    "lod1": {
+      "tris": 3747,
+      "longestAxis": 99.73061752319336
+    },
+    "lod2": {
+      "tris": 3775,
+      "longestAxis": 99.48334121704102
+    }
+  },
+  "hd_imp_kircheis_6.glb": {
+    "orig": {
+      "tris": 40950,
+      "longestAxis": 100
+    },
+    "lod1": {
+      "tris": 8184,
+      "longestAxis": 100
+    },
+    "lod2": {
+      "tris": 7569,
+      "longestAxis": 100
+    }
+  },
+  "hd_imp_meuller.glb": {
+    "orig": {
+      "tris": 33642,
+      "longestAxis": 100
+    },
+    "lod1": {
+      "tris": 6703,
+      "longestAxis": 99.99128723144531
+    },
+    "lod2": {
+      "tris": 6370,
+      "longestAxis": 99.99128723144531
+    }
+  },
+  "hd_imp_standard_battle.glb": {
+    "orig": {
+      "tris": 14367,
+      "longestAxis": 100
+    },
+    "lod1": {
+      "tris": 2870,
+      "longestAxis": 99.73162460327148
+    },
+    "lod2": {
+      "tris": 2880,
+      "longestAxis": 99.48524475097656
+    }
+  },
+  "hd_imp_transport.glb": {
+    "orig": {
+      "tris": 26246,
+      "longestAxis": 100.00000381469727
+    },
+    "lod1": {
+      "tris": 9028,
+      "longestAxis": 100.00000381469727
+    },
+    "lod2": {
+      "tris": 9050,
+      "longestAxis": 100.00000381469727
+    }
+  },
+  "hd_imp_valkyrie.glb": {
+    "orig": {
+      "tris": 1384,
+      "longestAxis": 99.99999618530273
+    },
+    "lod1": {
+      "tris": 1002,
+      "longestAxis": 99.97013092041016
+    },
+    "lod2": {
+      "tris": 1002,
+      "longestAxis": 99.97013092041016
+    }
+  },
+  "hd_untitled.glb": {
+    "orig": {
+      "tris": 11577,
+      "longestAxis": 100
+    },
+    "lod1": {
+      "tris": 4114,
+      "longestAxis": 100
+    },
+    "lod2": {
+      "tris": 4112,
+      "longestAxis": 100
     }
   }
 }

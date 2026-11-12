@@ -36,7 +36,7 @@ const b = computed(() => {
   padding: 7px 12px 8px;
   background: rgba(15, 23, 42, 0.95);
   border: 2px solid;
-  border-radius: 8px;
+  border-radius: var(--ui-radius-lg);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
   animation: fb-pop 0.28s cubic-bezier(0.16, 1, 0.3, 1);
 }
@@ -44,7 +44,7 @@ const b = computed(() => {
   from { opacity: 0; transform: translate(-50%, calc(-100% - 6px)) scale(0.85); }
 }
 .fb-name {
-  font-size: calc(11px * var(--font-scale));
+  font-size: var(--fs-label);
   font-weight: 900;
   letter-spacing: 1px;
   margin-bottom: 3px;
@@ -53,7 +53,7 @@ const b = computed(() => {
   text-overflow: ellipsis;
 }
 .fb-text {
-  font-size: calc(13px * var(--font-scale));
+  font-size: var(--fs-label);
   font-weight: 800;
   color: #f8fafc;
   line-height: 1.45;

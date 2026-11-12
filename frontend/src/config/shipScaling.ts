@@ -151,7 +151,15 @@ export const K_VISUAL_OPTIONS: readonly number[] = [50, 100, 250];
  * 想再翻倍可设 50（⇒ 300~400 艘/队，会触到 N_MAX_PER_FLEET 与 N_MAX 上限，需同步上调）。
  * ⚠ 这只是一个**默认值**：分母越小画得越多，与守恒律无关（见文件头 ΣHP 等式）。
  */
-export const K_VISUAL_DEFAULT = 100;
+/* [v108 更密的军团] 100 → 70 → **15**。
+   口径：每队实体 = min(round(兵力/K), N_MAX_PER_FLEET)。15,000 艘 ⇒ 1,000 ⇒ 封顶 700。
+   为什么是 15 而不是 70：用户实测「70 档感觉不出来」。截图对比 150 vs 214 个点，肉眼几乎无差；
+   要"一眼看出舰队变大了"需要 **3× 以上**。70 → 15 使 15,000 艘从 150 涨到 700（**4.7×**）。
+   平衡：文件头守恒等式保证 ΣHP 与 K_VISUAL 无关 ⇒ 只改"画几艘"，不改战斗数值。
+   ⚠ 唯一的风险是 CPU：逐舰索敌/开火判定的次数随实体数线性增长。若大会战掉帧：
+     ① 先把 K 调回 30（⇒ 500/队，仍 3.3×）；② 或打开 `battle3dPerfGuard`；
+     ③ 真正的解法是把远处舰队的 AI 降为"按队整体算"，那是另一个课题。 */
+export const K_VISUAL_DEFAULT = 50;
 /**
  * 单场会战（攻守双方**全部舰队合计**）可渲染实体上限。
  * 1400 = 7 队/方 × 2 方 × **100/队**，覆盖"K_VISUAL=100 下的 6v6 满编（6×200=1200）"并留余量。
@@ -163,7 +171,7 @@ export const K_VISUAL_DEFAULT = 100;
  * 内存代价（每实体）：dotPos/dotCol 各 DOT_N×3、dotAlpha/dotPx 各 DOT_N；DOT_N=12 时 ≈ 192 B/实体
  *   ⇒ 720 → 1400 净增约 +130 KB，可忽略。
  */
-export const N_MAX = 1400;
+export const N_MAX = 2000;
 
 // 单支舰队实体上限。不是性能上限，是**防舰体互穿 + 足迹预算**的几何上限。
 // 推导（2026-09 缩舰后重推；舰体尺寸 = Battle3DOverlay.ts 的 SHIP_RATIO × SHIP_VISUAL_SCALE）：
@@ -178,7 +186,17 @@ export const N_MAX = 1400;
 // ⚠ 抬上限的收益是"军团更密"，代价是绘制量：实体档最坏 120×6 = 720 个模型 × 4 draw。
 //   兜底是 Battle3DOverlay 的三级分级（远景只画光点）+ WS7 性能兜底（帧时超预算时收 meshBudget）。
 // ⚠ line 阵（横向排宽主导）仍会轻微互穿 —— 既有问题，本轮不处理，仅在此登记。
-export const N_MAX_PER_FLEET = 200;
+/* [v108 更密的军团] 200 → **260** → **700**。
+   用户实测反馈：「增加了，但感觉和以前差不多」—— 250 → 214 只有 +43%，**观感上分辨不出来**。
+   ⇒ 必须按**倍数**加，不能按百分比。
+   几何复核（**上次我算错了，这里改正**）：
+     spacingEff = min(FORMATION_SPACING, 6×hexRadius / halfExtent)，
+     不互穿条件 = spacingEff ≥ 最宽舰宽 = 0.2155×hexRadius
+     ⇒ 6/halfExtent ≥ 0.2155 ⇒ halfExtent ≤ 27.8 ⇒ 楔形 R ≤ 28 ⇒ **n ≤ 784**。
+     实测：n=700（R=27/he=26）→ spacing/hexR = 0.2308 ✓；n=784 → 0.2222 ✓；n=900 → 0.2069 ✗。
+   注意：该上限**与 hexRadius 无关**（足迹预算与舰宽同比缩放），不是 260 那种"按 hexR=50 硬编码"的结果。
+   取 700 留 12% 余量。 */
+export const N_MAX_PER_FLEET = 300;
 
 /** 单支舰队预算实体数：S<=0 → 0（不画船）；否则 clamp(round(S/K), 1, min(N_MAX, N_MAX_PER_FLEET)) */
 export function fleetVisualCount(

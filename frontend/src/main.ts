@@ -7,9 +7,13 @@ import App from './App.vue';
 import pinia from './store';
 import './style.css';
 import './theme/tokens.css';
+// [统一界面语言] 设计系统真源必须在 tokens.css 之后引入：
+// tokens.css 里的旧变量大量以 var(--ui-*) / var(--fs-*) 作别名，靠 CSS 变量运行时解析，
+// 顺序只影响 :root 同名覆盖，不影响别名求值。
+import './theme/design-system.css';
 
-// 说明：已移除明暗模式，统一保留当前暗色+阵营配色方案（用户需求）
-// 主题初始化逻辑已删除，不再读取 logh-theme
+// 说明：已移除明暗模式，统一保留暗色 + 阵营皮肤（由 <html data-faction> 驱动）。
+// 主题初始化逻辑已删除，不再读取 logh-theme。
 
 document.addEventListener('keydown', (event) => {
   if (event.key === 'F12' || (event.ctrlKey && event.shiftKey && event.key === 'I')) {

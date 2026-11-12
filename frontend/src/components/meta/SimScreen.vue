@@ -31,16 +31,16 @@ const exitSim = () => {
 }
 .sim-header {
   display: flex; align-items: center; gap: 16px;
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--overlay-hover);
-  background: var(--overlay-surface);
+  padding: var(--ui-2) var(--ui-5);
+  border-bottom: 1px solid var(--ui-line-strong);
+  background: var(--ui-panel);
   flex-shrink: 0;
 }
 .sim-title {
-  font-size: calc(14px * var(--font-scale)); font-weight: 800; color: var(--color-text-secondary);
-  letter-spacing: 2px;
+  font-family: var(--ui-display-font); font-size: var(--fs-h2); font-weight: var(--ui-display-weight); color: var(--ui-ink);
+  letter-spacing: var(--ui-display-tracking);
 }
 .sim-body {
-  flex: 1; overflow: hidden; padding: 8px;
+  flex: 1; overflow: hidden; padding: var(--ui-3);
 }
 </style>

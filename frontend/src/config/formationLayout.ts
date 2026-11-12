@@ -40,19 +40,33 @@ export const FORMATION_SPACING = 26;
  *
  * 本系数唯一的硬约束是"压缩后的格距不得小于舰宽"，否则同排相邻舰互穿。
  *
- * ⚠ 舰宽已随 `SHIP_VISUAL_SCALE = 0.42` 缩到 0.42 倍（Battle3DOverlay.ts，【大军团】缩舰）：
- *   最宽舰 carrier W = 0.311×√3×hexR×0.42 = **0.2263×hexR**（hexR=50 ⇒ 11.31，缩舰前是 26.93）。
- *   ⇒ 不互穿约束放松约 2.4 倍：
- *     未压缩：28 ≥ 0.2263×hexR ⇒ hexR ≤ 123（会战期 50 ✓，余量很大）
- *     压缩  ：FL×hexR/halfExtent ≥ 0.2263×hexR ⇒ halfExtent ≤ FL/0.2263 = 4.42×FL
- *     与"保持 28 不压缩"的条件 halfExtent ≤ FL×hexR/28 = 1.786×FL 合并 ⇒ halfExtent ≤ 1.786×FL
+ * ⚠ 舰宽已随 `SHIP_VISUAL_SCALE = 0.40` 缩到 0.40 倍（真源 `Battle3DOverlay.ts:191`；
+ *   本文件历史上这里写成过 0.42，与同文件上方 L32 及真源三处不一致，已按真源订正）：
+ *   最宽舰 carrier W = 0.311×√3×hexR×0.40 = **0.2155×hexR**（hexR=50 ⇒ 10.77，缩舰前是 26.93）。
+ *   ⇒ 不互穿约束放松约 2.5 倍：
+ *     未压缩：26 ≥ 0.2155×hexR ⇒ hexR ≤ 120（会战期 50 ✓，余量很大）
+ *     压缩  ：FL×hexR/halfExtent ≥ 0.2155×hexR ⇒ halfExtent ≤ FL/0.2155 = 4.64×FL
+ *     与"保持 26 不压缩"的条件 halfExtent ≤ FL×hexR/26 = 1.923×FL 合并 ⇒ halfExtent ≤ 1.923×FL
  *     （**与缩舰无关**——该边界只由 FORMATION_SPACING/hexR 决定）
- *   FL=4 ⇒ halfExtent ≤ 7.14 ⇒ 楔形 R ≤ 8 ⇒ n ≤ 64（旧的 N_MAX_PER_FLEET，正是这个来由）
- *   FL=6 ⇒ halfExtent ≤ 10.7 ⇒ R ≤ 11 ⇒ n ≤ 121 ⇒ 支持 N_MAX_PER_FLEET=120 而格距仍为 28（不互穿）
+ *   FL=4 ⇒ halfExtent ≤ 7.7 ⇒ 楔形 R ≤ 8 ⇒ n ≤ 64（旧的 N_MAX_PER_FLEET，正是这个来由）
+ *   FL=6 ⇒ halfExtent ≤ 11.5 ⇒ R ≤ 11 ⇒ n ≤ 121 ⇒ 支持 N_MAX_PER_FLEET=120 而格距仍为 26（不互穿）
  * 代价：足迹上限从 4×hexR 抬到 6×hexR。hexR=50 时半跨上限 200px → 300px（整跨 600px），
  * 是棋盘（会战地图 ~1900~2500px）的 ~1/4，仍留得下多舰队战场，可接受。
  */
-export const FORMATION_FOOTPRINT_LIMIT = 6;
+/* [v108 阵型随舰数扩展] 6 → **8**。
+   用户截图实测（n=700 / hexR=74）：旧预算 6×hexR ⇒ spacing = 444/26 = **17.1**，
+   而最宽舰 = 0.2155×74 = **15.9** ⇒ 间隙只有 1.2 ⇒ 整支舰队糊成一坨（"拥挤在一起"）。
+   根因：足迹上限被当成硬预算，舰越多 halfExtent 越大 ⇒ spacing 按 1/√n 收缩，
+   **阵型不扩、只是越塞越密**。8×hexR 让 spacing 回到 22.8（间隙 6.9 ≈ 43% 舰宽）可读。
+   剩下的压缩由下面的可读性下限兜底（永不低于 1.35× 舰宽）。 */
+export const FORMATION_FOOTPRINT_LIMIT = 8;
+/** 战列舰长 ÷ hexRadius（真源：`SHIP_RATIO.battleship.L 0.733 × √3 × SHIP_VISUAL_SCALE 0.40`
+ *  = **0.5078×hexR**；与 `Battle3DOverlay.dimsOf()` 同源，勿另写一份）。 */
+const SHIP_LEN_RATIO = 0.5078;
+/** 相邻舰中心距 ≥ 本值 × **舰长**。
+ *  ⚠ 判据必须是舰长不是舰宽：阵型排距沿舰体朝向（艏艉方向），压叠首先发生在长度上。
+ *  1.15 ⇒ 留 15% 舰长的艏艉间隙；低于 1.05 时同排前后舰在远景直接连成一条带。 */
+const SPACING_MIN_K = 1.15;
 
 /** 把宽度序列的中心对齐成 gy 偏移（even 宽度会落在半整数上，仍互不重复） */
 /**
@@ -487,7 +501,14 @@ export function halfExtentOf(offsets: FormationCell[]): number {
 export function formationSpacing(offsets: FormationCell[], hexRadius: number): number {
   const budget = Math.max(1, hexRadius) * FORMATION_FOOTPRINT_LIMIT;
   const he = Math.max(halfExtentOf(offsets), 1);
-  return Math.min(FORMATION_SPACING, budget / he);
+  const packed = Math.min(FORMATION_SPACING, budget / he);
+  // [v108] **可读性下限**：足迹预算只是"尽量压在这以内"，不能突破"看成一坨"的底线。
+  //   舰越多 ⇒ halfExtent ≈ √n 越大 ⇒ packed 越小；没有这道下限时大编队必然糊成实心带。
+  //   ⚠ 判据用**舰长**：排距沿舰体朝向，压叠首先发生在长度方向。
+  //   ⚠ 本下限会让实际足迹超出 8×hexR —— 这是有意的：**阵型必须随舰数扩展**，
+  //     而不是把舰硬塞进去（用户原话："没有随着舰船数的增加扩展阵型的比例"）。
+  const minGap = Math.max(1, hexRadius) * SHIP_LEN_RATIO * SPACING_MIN_K;
+  return Math.max(packed, minGap);
 }
 
 /**

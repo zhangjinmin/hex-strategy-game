@@ -36,54 +36,40 @@ const banner = computed<{ title: string; subtitle: string; color: string; ts: nu
 
 <style scoped>
 .battle-banner {
-  position: fixed;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  /* [R3] z-index 40 → 70：原值低于 `BattleIntroOverlay` 部署全屏层（z-index 60）
-     ⇒ 部署期的两条阶段横幅（W4.3「战前部署」/ W4.1「部署时间到」）被近不透明全屏层完全压住、
-     默认流程下**根本看不到**。抬到 70 ⇒ 高于部署层。
-     ⚠ 本横幅 `pointer-events: none` ⇒ 抬高后**不遮挡**部署层的阵型/姿态/开战操作区。
-     ⚠ `.battle-loss`（z-index 30）无需抬高：它只在 `deployPhase===false`（战斗期，部署层已卸载）显示。 */
-  z-index: 70;
-  pointer-events: none;
-  text-align: center;
-  animation: bb-in 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  z-index: 70; pointer-events: none; text-align: center;
+  animation: bb-in var(--ui-dur-cine) var(--ui-ease);
 }
 @keyframes bb-in {
   from { opacity: 0; transform: translate(-50%, -50%) scale(0.86); }
   to   { opacity: 1; transform: translate(-50%, -50%) scale(1.04); }
 }
+/* 上下两道细线：把横幅从「浮在空中的字」变成「舰桥指令幕」 */
+.battle-banner::before,
+.battle-banner::after {
+  content: ''; display: block; height: 1px; margin: 0 auto;
+  width: min(560px, 72vw);
+  background: linear-gradient(to right, transparent, var(--ui-line-strong), transparent);
+}
+.battle-banner::before { margin-bottom: var(--ui-2); }
+.battle-banner::after { margin-top: var(--ui-3); }
 .bb-title {
   display: inline-block;
-  font-family: var(--font-family);
-  font-size: calc(30px * var(--font-scale));
-  font-weight: 900;
-  letter-spacing: 3px;
-  padding: 8px 24px;
-  background: rgba(4, 8, 16, 0.75);
+  font-family: var(--ui-display-font);
+  font-size: var(--fs-h1);
+  font-weight: var(--ui-display-weight);
+  letter-spacing: 0.2em;
+  padding: var(--ui-2) var(--ui-6);
+  background: var(--ui-panel);
   border: 1px solid;
-  border-radius: 4px;
+  border-radius: var(--ui-radius);
+  box-shadow: var(--ui-shadow-panel);
 }
 .bb-sub {
-  margin-top: 10px;
-  font-family: var(--font-family);
-  font-size: calc(13px * var(--font-scale));
-  color: #94a3b8;
-  letter-spacing: 2px;
-}
-.battle-loss {
-  position: fixed;
-  left: 16px;
-  top: 214px;
-  z-index: 30;
-  pointer-events: none;
-  font-family: var(--font-family);
-  font-size: calc(12px * var(--font-scale));
-  font-weight: 900;
-  color: #ef4444;
-  background: rgba(0, 0, 0, 0.55);
-  padding: 4px 8px;
-  border-radius: 4px;
+  margin-top: var(--ui-2);
+  font-family: var(--ui-display-font);
+  font-size: var(--fs-label);
+  color: var(--ui-ink-2);
+  letter-spacing: 0.24em;
 }
 </style>

@@ -81,7 +81,7 @@ export class StrategicScene extends Phaser.Scene {
             c.text = 0xE2E8F0; c.textMuted = 0x94A3B8; c.textDisabled = 0x64748B;
             c.border = 0x334155; c.borderStrong = 0x475569;
             c.hover = 0x2A3040; c.hoverText = 0xFFFFFF;
-            c.alliance = 0x3B82F6; c.empire = 0xEF4444; c.neutral = 0x6B7280;
+            c.alliance = 0x5B9DFF; c.empire = 0xD8B26A; c.neutral = 0x6B7280;
             c.accentSortie = 0xEF4444; c.accentGarrison = 0x06B6D4; c.accentHover = 0xEF4444;
             c.checkBg = 0x1E293B; c.checkActive = 0x06B6D4; c.checkBorder = 0x475569;
             c.overlay = 0x0F1117; c.overlayAlpha = 0.92;
@@ -90,7 +90,7 @@ export class StrategicScene extends Phaser.Scene {
             c.text = 0xF8FAFC; c.textMuted = 0x94A3B8; c.textDisabled = 0x64748B;
             c.border = 0x334155; c.borderStrong = 0x475569;
             c.hover = 0x1E293B; c.hoverText = 0xFFFFFF;
-            c.alliance = 0x3B82F6; c.empire = 0xEF4444; c.neutral = 0x6B7280;
+            c.alliance = 0x5B9DFF; c.empire = 0xD8B26A; c.neutral = 0x6B7280;
             c.accentSortie = 0xEF4444; c.accentGarrison = 0x06B6D4; c.accentHover = 0xEF4444;
             c.checkBg = 0x1E293B; c.checkActive = 0x06B6D4; c.checkBorder = 0x475569;
             c.overlay = 0x000000; c.overlayAlpha = 0.85;
