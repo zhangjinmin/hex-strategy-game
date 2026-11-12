@@ -55,9 +55,24 @@ jobs:
             Remove-Item $ico
           }
 
-      - name: Build
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Build application
         shell: pwsh
-        run: wails build -clean -trimpath -nsis
+        run: |
+          wails build -s -clean -trimpath -nsis 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) {
+            $tail = (Get-Content build.log -Tail 20) -join ' | '
+            $tail = $tail -replace "`r", ' ' -replace "`n", ' ' -replace '%', '%25'
+            Write-Output "::error title=Wails build failed::$tail"
+            exit 1
+          }
 
       - name: Package assets
         shell: pwsh
