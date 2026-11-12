@@ -2,7 +2,10 @@
 build/bin/
 build/*.exe
 build/HexFront_Saves.json
-frontend/dist*
+frontend/dist/*
+!frontend/dist/.gitkeep
+/frontend/dist_bak_*/
+/frontend/dist-verify/
 # 根目录 wails build 产物（149MB，可重新编译，禁止入库）
 /*.exe
 /*.msi
@@ -32,6 +35,7 @@ Thumbs.db
 
 # --- Agent 会话草稿与 QA 截图（2026-09-18 清理后追加，防复发）---
 /_*
+!/_ts_resolve.mjs
 /frontend/_*
 /docs/qa/shots-*/
 # NSIS 构建时下载的 WebView2 安装器临时文件
