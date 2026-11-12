@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Wails CLI
+        shell: pwsh
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.16.0
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path (go env GOPATH) 'bin')
+
+      - name: Ensure NSIS
+        shell: pwsh
+        run: |
+          $nsis = 'C:\Program Files (x86)\NSIS'
+          if (-not (Test-Path (Join-Path $nsis 'makensis.exe'))) {
+            choco install nsis --no-progress -y
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $nsis
+
+      - name: Prepare embed placeholder and fix stale icon
+        shell: pwsh
+        run: |
+          if (-not (Test-Path 'frontend/dist')) {
+            New-Item -ItemType Directory -Path 'frontend/dist' | Out-Null
+          }
+          if (-not (Test-Path 'frontend/dist/.gitkeep')) {
+            New-Item -ItemType File -Path 'frontend/dist/.gitkeep' | Out-Null
+          }
+          $ico = 'build/windows/icon.ico'
+          if ((Test-Path $ico) -and (Get-Item $ico).Length -gt 1MB) {
+            Remove-Item $ico
+          }
+
+      - name: Build
+        shell: pwsh
+        run: wails build -clean -trimpath -nsis
+
+      - name: Package assets
+        shell: pwsh
+        run: |
+          $bin = 'build/bin'
+          $tag = $env:GITHUB_REF_NAME
+          $exe = Join-Path $bin 'LOGH-Strategy.exe'
+          $zip = Join-Path $bin ("LOGH-Strategy-" + $tag + "-win-x64.zip")
+          Compress-Archive -Path $exe -DestinationPath $zip -CompressionLevel Optimal -Force
+          $lines = @()
+          Get-ChildItem $bin -File | Where-Object { $_.Name -match 'installer\.exe$|\.zip$' } | ForEach-Object {
+            $lines += ((Get-FileHash $_.FullName -Algorithm SHA256).Hash + "  " + $_.Name)
+          }
+          Set-Content -Path (Join-Path $bin 'SHA256SUMS.txt') -Value $lines -Encoding utf8
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body: |
+            ## 银河英雄传说 · 策略游戏 ${{ github.ref_name }}
+
+            Windows x64，下载即用，无需安装 Go / Node / Wails。
+
+            - `*-amd64-installer.exe`：安装版，含开始菜单快捷方式与卸载程序（推荐）。
+            - `*-win-x64.zip`：便携版，解压后运行 `LOGH-Strategy.exe`。
+            - `SHA256SUMS.txt`：两个安装包的校验值。
+
+            **运行要求**：Windows 10 / 11 x64；依赖 WebView2 Runtime（Win11 内置，Win10 首次启动自动联网补装）。
+
+            未做代码签名，SmartScreen 可能提示，选择「更多信息 → 仍要运行」即可。
+          files: |
+            build/bin/*-installer.exe
+            build/bin/*.zip
+            build/bin/SHA256SUMS.txt

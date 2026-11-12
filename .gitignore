@@ -34,3 +34,5 @@ Thumbs.db
 /_*
 /frontend/_*
 /docs/qa/shots-*/
+# NSIS 构建时下载的 WebView2 安装器临时文件
+build/windows/installer/tmp/
